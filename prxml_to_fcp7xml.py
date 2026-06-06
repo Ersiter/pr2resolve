@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from xml.dom import minidom
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1799,7 +1799,7 @@ _RESOLVE_API_PATHS: dict[str, list[str]] = {
 }
 
 
-def _try_import_resolve() -> Optional[object]:
+def _try_import_resolve() -> Any:
     """Attempt to import the DaVinciResolveScript module.
 
     Searches standard installation paths for the module and tries to connect.
@@ -1821,7 +1821,7 @@ def _try_import_resolve() -> Optional[object]:
             sys.path.append(p)
 
     try:
-        import DaVinciResolveScript as dvr
+        import DaVinciResolveScript as dvr  # type: ignore[import-untyped]
         resolve = dvr.scriptapp("Resolve")
         return resolve
     except ImportError:
@@ -1830,7 +1830,7 @@ def _try_import_resolve() -> Optional[object]:
         return None
 
 
-def _check_resolve_running() -> Optional[object]:
+def _check_resolve_running() -> Any:
     """Check if DaVinci Resolve is running and Scripting API is available.
 
     Returns:
@@ -1850,7 +1850,7 @@ def _check_resolve_running() -> Optional[object]:
 
 
 def _drt_import_and_export(
-    resolve: object,
+    resolve: Any,
     xml_path: Path,
     output_path: Path,
     timeline_name: str = "Imported",
@@ -1907,7 +1907,7 @@ def _drt_import_and_export(
 
 
 def _drt_supplement_lumetri(
-    resolve: object,
+    resolve: Any,
     lumetri_data: dict[str, dict[str, float]],
 ) -> bool:
     """Supplement DaVinci timeline with Lumetri color data from .prproj.
