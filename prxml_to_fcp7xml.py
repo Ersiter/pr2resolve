@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gzip
+import os
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -1780,6 +1781,202 @@ def _generate_report(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# DRT Output — DaVinci Resolve Scripting API Bridge
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# DaVinci Resolve Scripting API module paths
+_RESOLVE_API_PATHS: dict[str, list[str]] = {
+    "win32": [
+        r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules",
+        r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules",
+    ],
+    "darwin": [
+        "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules",
+    ],
+    "linux": [
+        "/opt/resolve/Developer/Scripting/Modules",
+    ],
+}
+
+
+def _try_import_resolve() -> Optional[object]:
+    """Attempt to import the DaVinciResolveScript module.
+
+    Searches standard installation paths for the module and tries to connect.
+
+    Returns:
+        The Resolve object if successful, None otherwise
+    """
+    import platform
+    sys_name = sys.platform
+    paths = _RESOLVE_API_PATHS.get(sys_name, [])
+
+    # Also check environment variable
+    env_path = os.environ.get("RESOLVE_SCRIPT_API", "")
+    if env_path:
+        paths.insert(0, env_path)
+
+    for p in paths:
+        if Path(p).exists() and p not in sys.path:
+            sys.path.append(p)
+
+    try:
+        import DaVinciResolveScript as dvr
+        resolve = dvr.scriptapp("Resolve")
+        return resolve
+    except ImportError:
+        return None
+    except Exception:
+        return None
+
+
+def _check_resolve_running() -> Optional[object]:
+    """Check if DaVinci Resolve is running and Scripting API is available.
+
+    Returns:
+        The Resolve object if available, None otherwise
+    """
+    resolve = _try_import_resolve()
+    if resolve is None:
+        return None
+    try:
+        # Test connection by getting project manager
+        pm = resolve.GetProjectManager()
+        if pm is None:
+            return None
+        return resolve
+    except Exception:
+        return None
+
+
+def _drt_import_and_export(
+    resolve: object,
+    xml_path: Path,
+    output_path: Path,
+    timeline_name: str = "Imported",
+) -> bool:
+    """Import FCP7 XML into DaVinci Resolve and export as DRT.
+
+    Args:
+        resolve: The DaVinci Resolve object
+        xml_path: Path to the FCP7 XML file
+        output_path: Path to write the .drt file
+        timeline_name: Name for the imported timeline
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        pm = resolve.GetProjectManager()
+        project = pm.GetCurrentProject()
+        if project is None:
+            # Create a new project
+            project = pm.NewProject("prxml2fcp7xml_temp")
+
+        media_pool = project.GetMediaPool()
+
+        # Import timeline from FCP7 XML
+        timeline = media_pool.ImportTimelineFromFile(
+            str(xml_path),
+            {
+                "timelineName": timeline_name,
+                "importSourceClips": True,
+            },
+        )
+        if timeline is None:
+            print("  Error: Failed to import timeline from XML")
+            return False
+
+        print(f"  Timeline imported: {timeline.GetName()}")
+
+        # Export as DRT
+        export_result = timeline.Export(
+            str(output_path),
+            resolve.EXPORT_DRT,
+        )
+        if export_result:
+            print(f"  DRT exported: {output_path}")
+            return True
+        else:
+            print("  Error: DRT export failed")
+            return False
+
+    except Exception as e:
+        print(f"  Error during DRT generation: {e}")
+        return False
+
+
+def _drt_supplement_lumetri(
+    resolve: object,
+    lumetri_data: dict[str, dict[str, float]],
+) -> bool:
+    """Supplement DaVinci timeline with Lumetri color data from .prproj.
+
+    Maps PR Lumetri parameters to DaVinci Color Corrector nodes.
+
+    Args:
+        resolve: The DaVinci Resolve object
+        lumetri_data: Dict mapping clip name → {param_name: value}
+
+    Returns:
+        True if at least one clip was updated
+    """
+    # Lumetri → DaVinci Color parameter mapping
+    _LUMETRI_TO_DAVINCI: dict[str, str] = {
+        "曝光": "Gain",
+        "对比度": "Contrast",
+        "高光": "Highlights",
+        "阴影": "Shadows",
+        "白色": "Whites",
+        "黑色": "Blacks",
+        "饱和度": "Saturation",
+        "色温": "Temperature",
+        "色彩": "Tint",
+    }
+
+    try:
+        pm = resolve.GetProjectManager()
+        project = pm.GetCurrentProject()
+        if project is None:
+            return False
+
+        timeline = project.GetCurrentTimeline()
+        if timeline is None:
+            return False
+
+        updated = 0
+        for track_idx in range(1, timeline.GetTrackCount("video") + 1):
+            clips = timeline.GetItemListInTrack("video", track_idx)
+            if not clips:
+                continue
+            for clip in clips:
+                clip_name = clip.GetName()
+                if clip_name not in lumetri_data:
+                    continue
+
+                params = lumetri_data[clip_name]
+                color = clip.GetColor()
+
+                for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
+                    if pr_name not in params:
+                        continue
+                    val = params[pr_name]
+                    # DaVinci Color API: SetCurrentParameterByName
+                    try:
+                        color.SetCurrentParameterByName(da_name, val)
+                        updated += 1
+                    except Exception:
+                        pass
+
+        print(f"  Lumetri data applied to {updated} parameters")
+        return updated > 0
+
+    except Exception as e:
+        print(f"  Error supplementing Lumetri: {e}")
+        return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1820,6 +2017,7 @@ def _run_pipeline(
     report: bool = False,
     diagnose_only: bool = False,
     sequence_name: Optional[str] = None,
+    drt: bool = False,
 ) -> int:
     """Run the full fix pipeline on an input file.
 
@@ -1945,6 +2143,24 @@ def _run_pipeline(
         _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path)
         print(f"  Report: {report_path}")
 
+    # DRT output
+    if drt:
+        print()
+        drt_path = output_dir / f"{stem}.drt"
+        print("  DRT output requested. Checking DaVinci Resolve...")
+        resolve = _check_resolve_running()
+        if resolve is None:
+            print("  DaVinci Resolve not detected.")
+            print("  DRT output requires DaVinci Resolve Studio running.")
+            print("  Please open DaVinci Resolve and try again,")
+            print("  or skip DRT output (XML was generated successfully).")
+        else:
+            print("  DaVinci Resolve detected.")
+            print(f"  Importing {output_path.name} into Resolve...")
+            seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
+            if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
+                print(f"  DRT: {drt_path}")
+
     print()
     print(f"  Done. {fix_count} fixes applied to {output_path.name}")
     return 0
@@ -1975,6 +2191,11 @@ def _parse_args() -> argparse.Namespace:
         "--report",
         action="store_true",
         help="Generate a fix report (.md)",
+    )
+    parser.add_argument(
+        "--drt",
+        action="store_true",
+        help="Generate DRT output via DaVinci Resolve Scripting API",
     )
     parser.add_argument(
         "--sequence",
@@ -2017,6 +2238,7 @@ def main() -> int:
         report=args.report,
         diagnose_only=args.diagnose_only,
         sequence_name=args.sequence,
+        drt=args.drt,
     )
 
 
