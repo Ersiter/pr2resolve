@@ -1,10 +1,9 @@
 @echo off
-chcp 65001 >nul 2>&1
 setlocal enabledelayedexpansion
 
-:: ═══════════════════════════════════════════════════════════════
-:: prxml2fcp7xml — Windows TUI Launcher
-:: ═══════════════════════════════════════════════════════════════
+:: ============================================================
+:: prxml2fcp7xml - Windows TUI Launcher
+:: ============================================================
 
 set "VERSION=1.0.0"
 set "SCRIPT=%~dp0prxml_to_fcp7xml.py"
@@ -19,6 +18,7 @@ set "OPT_REPORT=[ON]"
 
 :: Find Python
 set "PYTHON_CMD="
+set "PYTHONIOENCODING=utf-8"
 where python >nul 2>&1 && set "PYTHON_CMD=python"
 if not defined PYTHON_CMD where py >nul 2>&1 && set "PYTHON_CMD=py"
 if not defined PYTHON_CMD (
@@ -37,7 +37,7 @@ if not exist "%SCRIPT%" (
 :MAIN_MENU
 cls
 echo ============================================================
-echo   prxml2fcp7xml v%VERSION%  —  PR XML to FCP7 XML Fixer
+echo   prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer
 echo ============================================================
 echo.
 if defined INPUT_FILE (
@@ -97,16 +97,6 @@ if not exist "%INPUT_FILE%" (
     echo  File not found: %INPUT_FILE%
     timeout /t 2 >nul
     goto MAIN_MENU
-)
-:: Check extension
-set "EXT=%INPUT_FILE:~-4%"
-if /i not "%EXT%"==".xml" (
-    set "EXT5=%INPUT_FILE:~-7%"
-    if /i not "%EXT5%"==".prproj" (
-        echo  Unsupported format. Use .xml or .prproj
-        timeout /t 2 >nul
-        goto MAIN_MENU
-    )
 )
 goto MAIN_MENU
 
