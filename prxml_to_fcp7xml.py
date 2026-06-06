@@ -122,6 +122,594 @@ def load_prproj(path: Path) -> ET.Element:
     return root
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# .prproj Parser — ObjectID Graph Traversal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Adobe timebase conversion constant
+_ADOBE_TIMEBASE_CONSTANT = 10594584000
+
+# Lumetri parameter name mapping (Chinese → English)
+_LUMETRI_PARAM_MAP: dict[str, str] = {
+    "色温": "Temperature",
+    "色彩": "Tint",
+    "曝光": "Exposure",
+    "对比度": "Contrast",
+    "高光": "Highlights",
+    "阴影": "Shadows",
+    "白色": "Whites",
+    "黑色": "Blacks",
+    "饱和度": "Saturation",
+    "强度": "Intensity",
+    "淡化胶片": "Faded Film",
+    "锐化": "Sharpness",
+    "降噪": "Noise Reduction",
+    "模糊": "Blur",
+    "晕影": "Vignette",
+}
+
+
+@dataclass
+class _PrprojIndex:
+    """Index for fast ObjectID/ObjectUID lookups in a .prproj tree."""
+
+    by_id: dict[str, ET.Element]
+    by_uid: dict[str, ET.Element]
+
+    @classmethod
+    def build(cls, root: ET.Element) -> _PrprojIndex:
+        """Build indices from a <PremiereData> root element.
+
+        Args:
+            root: The <PremiereData> root element
+
+        Returns:
+            A _PrprojIndex with populated by_id and by_uid dicts
+        """
+        by_id: dict[str, ET.Element] = {}
+        by_uid: dict[str, ET.Element] = {}
+        for el in root:
+            oid = el.get("ObjectID")
+            if oid:
+                by_id[oid] = el
+            uid = el.get("ObjectUID")
+            if uid:
+                by_uid[uid] = el
+        return cls(by_id=by_id, by_uid=by_uid)
+
+    def resolve_ref(self, ref: str) -> Optional[ET.Element]:
+        """Resolve an ObjectRef to its target element.
+
+        Args:
+            ref: The ObjectRef string
+
+        Returns:
+            The referenced element, or None if not found
+        """
+        return self.by_id.get(ref)
+
+    def resolve_uref(self, uref: str) -> Optional[ET.Element]:
+        """Resolve an ObjectURef to its target element.
+
+        Args:
+            uref: The ObjectURef string
+
+        Returns:
+            The referenced element, or None if not found
+        """
+        return self.by_uid.get(uref)
+
+
+def _prproj_adobe_timebase_to_fps(timebase: int) -> float:
+    """Convert Adobe internal timebase to actual fps.
+
+    Args:
+        timebase: Adobe internal timebase value
+
+    Returns:
+        Actual frames per second
+    """
+    if timebase <= 0:
+        return DEFAULT_FPS
+    fps = round((_ADOBE_TIMEBASE_CONSTANT * 23.976) / timebase, 3)
+    return fps if fps > 0 else DEFAULT_FPS
+
+
+def _prproj_ticks_to_frames(ticks_str: str, fps: float) -> int:
+    """Convert Adobe pproTicks to FCP7 frame count.
+
+    Args:
+        ticks_str: Ticks value as string
+        fps: Actual fps
+
+    Returns:
+        Frame count (integer)
+    """
+    try:
+        ticks = int(ticks_str)
+    except (ValueError, TypeError):
+        return 0
+    if ticks <= 0:
+        return 0
+    # pproTicks per second = 254016000000
+    ppro_ticks_per_sec = 254016000000
+    seconds = ticks / ppro_ticks_per_sec
+    return int(round(seconds * fps))
+
+
+def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict]:
+    """List all sequences in a .prproj file.
+
+    Args:
+        root: The <PremiereData> root element
+        idx: The prproj index
+
+    Returns:
+        List of dicts with keys: uid, name, width, height, clip_count
+    """
+    sequences = []
+    for seq_el in root.findall("Sequence"):
+        uid = seq_el.get("ObjectUID", "")
+        name = seq_el.findtext("Name", "(unnamed)")
+
+        # Resolution from MZ.Sequence.PreviewFrameSize*
+        w = h = 0
+        props = seq_el.find(".//Properties")
+        if props is not None:
+            for p in props:
+                if "PreviewFrameSizeWidth" in p.tag:
+                    w = int(p.text or "0")
+                if "PreviewFrameSizeHeight" in p.tag:
+                    h = int(p.text or "0")
+
+        # Count clips in first video track
+        clip_count = 0
+        tg_section = seq_el.find("TrackGroups")
+        if tg_section is not None:
+            for tg_pair in tg_section.findall("TrackGroup"):
+                second = tg_pair.find("Second")
+                if second is not None:
+                    ref = second.get("ObjectRef")
+                    tg_el = idx.resolve_ref(ref) if ref else None
+                    if tg_el is not None and tg_el.tag == "VideoTrackGroup":
+                        tracks = tg_el.find(".//Tracks")
+                        if tracks is not None:
+                            first_track = tracks.find("Track")
+                            if first_track is not None:
+                                uref = first_track.get("ObjectURef")
+                                track_el = idx.resolve_uref(uref) if uref else None
+                                if track_el is not None:
+                                    items = track_el.find(".//TrackItems")
+                                    if items is not None:
+                                        clip_count = len(items.findall("TrackItem"))
+                        break
+
+        sequences.append({
+            "uid": uid,
+            "name": name,
+            "width": w,
+            "height": h,
+            "clip_count": clip_count,
+        })
+    return sequences
+
+
+def _prproj_extract_lumetri(
+    idx: _PrprojIndex,
+    component_chain_id: str,
+) -> dict[str, float]:
+    """Extract Lumetri parameters from a VideoComponentChain.
+
+    Args:
+        idx: The prproj index
+        component_chain_id: ObjectID of the VideoComponentChain
+
+    Returns:
+        Dict mapping parameter name (Chinese) to float value
+    """
+    params: dict[str, float] = {}
+    chain = idx.resolve_ref(component_chain_id)
+    if chain is None:
+        return params
+
+    # Find VideoFilterComponents in the chain
+    comps = chain.find("Components")
+    if comps is None:
+        return params
+
+    for comp_ref in comps.findall("Component"):
+        ref = comp_ref.get("ObjectRef")
+        if not ref:
+            continue
+        comp = idx.resolve_ref(ref)
+        if comp is None:
+            continue
+
+        # Check if this is a Lumetri filter
+        match_name = comp.findtext("MatchName", "")
+        if "Lumetri" not in match_name:
+            continue
+
+        # Extract params
+        params_section = comp.find(".//Params")
+        if params_section is None:
+            continue
+
+        for param_ref in params_section.findall("Param"):
+            pref = param_ref.get("ObjectRef")
+            if not pref:
+                continue
+            param = idx.resolve_ref(pref)
+            if param is None:
+                continue
+
+            pname = param.findtext("Name", "")
+            sk = param.findtext("StartKeyframe", "")
+            if not pname or not sk:
+                continue
+
+            # Parse StartKeyframe: "ticks,value,..." — value is field[1]
+            parts = sk.split(",")
+            if len(parts) >= 2:
+                try:
+                    val = float(parts[1])
+                    params[pname] = val
+                except ValueError:
+                    pass
+
+    return params
+
+
+def _prproj_parse_sequence(
+    prproj_root: ET.Element,
+    sequence_uid: str,
+    input_path: Path,
+) -> ET.Element:
+    """Convert a .prproj Sequence into an FCP7 XML <xmeml> tree.
+
+    This is the core Entry B conversion: .prproj → unified FCP7 XML.
+
+    Args:
+        prproj_root: The <PremiereData> root element
+        sequence_uid: ObjectUID of the sequence to convert
+        input_path: Path to the .prproj file (for pathurl generation)
+
+    Returns:
+        An <xmeml> root element in FCP7 XML format
+    """
+    idx = _PrprojIndex.build(prproj_root)
+
+    # Find the sequence
+    seq_el = None
+    for s in prproj_root.findall("Sequence"):
+        if s.get("ObjectUID") == sequence_uid:
+            seq_el = s
+            break
+    if seq_el is None:
+        raise ValueError(f"Sequence not found: {sequence_uid}")
+
+    seq_name = seq_el.findtext("Name", "(unnamed)")
+
+    # Get resolution
+    w, h = 1920, 1080
+    props = seq_el.find(".//Properties")
+    if props is not None:
+        for p in props:
+            if "PreviewFrameSizeWidth" in p.tag:
+                w = int(p.text or "1920")
+            if "PreviewFrameSizeHeight" in p.tag:
+                h = int(p.text or "1080")
+
+    # Get fps from first VideoTrackGroup
+    fps = DEFAULT_FPS
+    tg_section = seq_el.find("TrackGroups")
+    video_tg = None
+    audio_tg = None
+    if tg_section is not None:
+        for tg_pair in tg_section.findall("TrackGroup"):
+            second = tg_pair.find("Second")
+            if second is not None:
+                ref = second.get("ObjectRef")
+                tg_el = idx.resolve_ref(ref) if ref else None
+                if tg_el is not None:
+                    if tg_el.tag == "VideoTrackGroup":
+                        video_tg = tg_el
+                        fr = tg_el.find("FrameRate")
+                        if fr is not None and fr.text:
+                            try:
+                                fps = _prproj_adobe_timebase_to_fps(int(fr.text))
+                            except ValueError:
+                                pass
+                    elif tg_el.tag == "AudioTrackGroup":
+                        audio_tg = tg_el
+
+    is_ntsc = abs(fps - round(fps)) > 0.01
+    timebase = int(round(fps))
+
+    # Build FCP7 XML tree
+    xmeml = ET.Element("xmeml")
+    xmeml.set("version", FCP7_VERSION)
+
+    sequence = ET.SubElement(xmeml, "sequence")
+    sequence.set("id", "sequence-1")
+    sequence.set("MZ.Sequence.PreviewFrameSizeWidth", str(w))
+    sequence.set("MZ.Sequence.PreviewFrameSizeHeight", str(h))
+
+    # Sequence duration — sum of first video track clip durations
+    total_frames = 0
+
+    dur_elem = ET.SubElement(sequence, "duration")
+    rate_elem = ET.SubElement(sequence, "rate")
+    tb_elem = ET.SubElement(rate_elem, "timebase")
+    tb_elem.text = str(timebase)
+    if is_ntsc:
+        ntsc_elem = ET.SubElement(rate_elem, "ntsc")
+        ntsc_elem.text = "TRUE"
+
+    name_elem = ET.SubElement(sequence, "name")
+    name_elem.text = seq_name
+
+    media = ET.SubElement(sequence, "media")
+    video_section = ET.SubElement(media, "video")
+    audio_section = ET.SubElement(media, "audio")
+
+    # Video format
+    vfmt = ET.SubElement(video_section, "format")
+    vsc = ET.SubElement(vfmt, "samplecharacteristics")
+    vrate = ET.SubElement(vsc, "rate")
+    vtb = ET.SubElement(vrate, "timebase")
+    vtb.text = str(timebase)
+    if is_ntsc:
+        vntsc = ET.SubElement(vrate, "ntsc")
+        vntsc.text = "TRUE"
+    vw = ET.SubElement(vsc, "width")
+    vw.text = str(w)
+    vh = ET.SubElement(vsc, "height")
+    vh.text = str(h)
+
+    # Audio format
+    afmt = ET.SubElement(audio_section, "format")
+    asc = ET.SubElement(afmt, "samplecharacteristics")
+    asr = ET.SubElement(asc, "samplerate")
+    asr.text = "48000"
+
+    # Parse video tracks
+    file_counter = [1]
+    mc_counter = [1]
+
+    def _next_file_id() -> str:
+        fid = f"file-{file_counter[0]}"
+        file_counter[0] += 1
+        return fid
+
+    def _next_mc_id() -> str:
+        mid = f"masterclip-{mc_counter[0]}"
+        mc_counter[0] += 1
+        return mid
+
+    if video_tg is not None:
+        tracks_el = video_tg.find("TrackGroup/Tracks")
+        if tracks_el is not None:
+            for track_ref in tracks_el.findall("Track"):
+                uref = track_ref.get("ObjectURef")
+                track_el = idx.resolve_uref(uref) if uref else None
+                if track_el is None:
+                    continue
+
+                fcp_track = ET.SubElement(video_section, "track")
+                ct = track_el.find("ClipTrack")
+                if ct is None:
+                    continue
+                ti_section = ct.find(".//TrackItems")
+                if ti_section is None:
+                    continue
+
+                track_start = 0
+                for ti_ref in ti_section.findall("TrackItem"):
+                    ref = ti_ref.get("ObjectRef")
+                    ti_el = idx.resolve_ref(ref) if ref else None
+                    if ti_el is None:
+                        continue
+
+                    cti = ti_el.find("ClipTrackItem")
+                    if cti is None:
+                        continue
+
+                    # Timeline position
+                    ti_inner = cti.find("TrackItem")
+                    start = track_start
+                    end = 0
+                    if ti_inner is not None:
+                        s = ti_inner.findtext("Start")
+                        e = ti_inner.findtext("End")
+                        if s:
+                            start = _prproj_ticks_to_frames(s, fps)
+                        if e:
+                            end = _prproj_ticks_to_frames(e, fps)
+                    track_start = end
+
+                    # SubClip → MasterClip + Clip data
+                    subclip = cti.find("SubClip")
+                    mc_name = "(unknown)"
+                    in_point = 0
+                    out_point = 0
+                    playback_speed = 100
+                    media_path = ""
+
+                    if subclip is not None:
+                        sc_ref = subclip.get("ObjectRef")
+                        sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
+                        if sc_el is not None:
+                            mc_name = sc_el.findtext("Name", mc_name)
+
+                            # MasterClip → filepath
+                            mc_uref_el = sc_el.find("MasterClip")
+                            if mc_uref_el is not None:
+                                mc_uref = mc_uref_el.get("ObjectURef")
+                                mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
+                                if mc_el is not None:
+                                    # Try to get filepath from ClipLoggingInfo or Media
+                                    logging_ref = mc_el.find("LoggingInfo")
+                                    if logging_ref is not None:
+                                        li_ref = logging_ref.get("ObjectRef")
+                                        li_el = idx.resolve_ref(li_ref) if li_ref else None
+                                        if li_el is not None:
+                                            tape = li_el.findtext("Tape", "")
+                                            if tape:
+                                                media_path = tape
+
+                            # Clip → InPoint/OutPoint/PlaybackSpeed
+                            clip_ref_el = sc_el.find("Clip")
+                            if clip_ref_el is not None:
+                                clip_ref = clip_ref_el.get("ObjectRef")
+                                clip_el = idx.resolve_ref(clip_ref) if clip_ref else None
+                                if clip_el is not None:
+                                    ip = clip_el.findtext("InPoint")
+                                    op = clip_el.findtext("OutPoint")
+                                    ps = clip_el.findtext("PlaybackSpeed")
+                                    if ip:
+                                        in_point = _prproj_ticks_to_frames(ip, fps)
+                                    if op:
+                                        out_point = _prproj_ticks_to_frames(op, fps)
+                                    if ps:
+                                        try:
+                                            playback_speed = int(float(ps))
+                                        except ValueError:
+                                            pass
+
+                    # Source resolution from MasterClip Media
+                    src_w, src_h = w, h  # default to timeline
+                    # (simplified — full resolution extraction requires deeper Media traversal)
+
+                    # ComponentOwner → transform data
+                    co = cti.find("ComponentOwner")
+                    scale_val = 100.0
+                    rotation_val = 0.0
+                    has_motion = False
+                    if co is not None:
+                        comps = co.find("Components")
+                        if comps is not None:
+                            chain_ref = comps.get("ObjectRef")
+                            chain = idx.resolve_ref(chain_ref) if chain_ref else None
+                            if chain is not None:
+                                dm = chain.find("DefaultMotion")
+                                if dm is not None and dm.text == "false":
+                                    has_motion = True
+                                    # Extract actual transform params from VideoComponentParam
+                                    chain_comps = chain.find("Components")
+                                    if chain_comps is not None:
+                                        for c in chain_comps.findall("Component"):
+                                            c_ref = c.get("ObjectRef")
+                                            c_el = idx.resolve_ref(c_ref) if c_ref else None
+                                            if c_el is None:
+                                                continue
+                                            inner_comps = c_el.find(".//Params")
+                                            if inner_comps is None:
+                                                continue
+                                            for p_ref in inner_comps.findall("Param"):
+                                                p_el = idx.resolve_ref(p_ref.get("ObjectRef", "")) if p_ref.get("ObjectRef") else None
+                                                if p_el is None:
+                                                    continue
+                                                pname = p_el.findtext("Name", "")
+                                                sk = p_el.findtext("StartKeyframe", "")
+                                                if not pname or not sk:
+                                                    continue
+                                                parts = sk.split(",")
+                                                if len(parts) >= 2:
+                                                    try:
+                                                        val = float(parts[1])
+                                                    except ValueError:
+                                                        continue
+                                                    if pname == "Scale":
+                                                        scale_val = val
+                                                        has_motion = True
+                                                    elif pname == "Rotation":
+                                                        rotation_val = val
+                                                        has_motion = True
+
+                    # Build clipitem
+                    clipitem = ET.SubElement(fcp_track, "clipitem")
+                    clipitem.set("id", f"clipitem-{file_counter[0]}")
+
+                    mcid = ET.SubElement(clipitem, "masterclipid")
+                    mcid.text = _next_mc_id()
+
+                    nm = ET.SubElement(clipitem, "name")
+                    nm.text = mc_name
+
+                    en = ET.SubElement(clipitem, "enabled")
+                    en.text = "TRUE"
+
+                    dur = ET.SubElement(clipitem, "duration")
+                    dur.text = str(out_point - in_point if out_point > in_point else end - start)
+
+                    ci_rate = ET.SubElement(clipitem, "rate")
+                    ci_tb = ET.SubElement(ci_rate, "timebase")
+                    ci_tb.text = str(timebase)
+                    if is_ntsc:
+                        ci_ntsc = ET.SubElement(ci_rate, "ntsc")
+                        ci_ntsc.text = "TRUE"
+
+                    st_el = ET.SubElement(clipitem, "start")
+                    st_el.text = str(start)
+                    en_el = ET.SubElement(clipitem, "end")
+                    en_el.text = str(end)
+                    in_el = ET.SubElement(clipitem, "in")
+                    in_el.text = str(in_point)
+                    out_el = ET.SubElement(clipitem, "out")
+                    out_el.text = str(out_point)
+
+                    # File element
+                    fid = _next_file_id()
+                    file_el = ET.SubElement(clipitem, "file")
+                    file_el.set("id", fid)
+                    fn = ET.SubElement(file_el, "name")
+                    fn.text = mc_name
+                    if media_path:
+                        pu = ET.SubElement(file_el, "pathurl")
+                        pu.text = Path(media_path).as_uri()
+                    else:
+                        pu = ET.SubElement(file_el, "pathurl")
+                        pu.text = f"file:///{mc_name}"
+
+                    # Sourcetrack
+                    sourcetrack = ET.SubElement(clipitem, "sourcetrack")
+                    stype = ET.SubElement(sourcetrack, "mediatype")
+                    stype.text = "video"
+                    stt = ET.SubElement(sourcetrack, "tracktype")
+                    stt.text = "Video"
+
+                    # Basic effect (transform) if non-default
+                    if has_motion and (abs(scale_val - 100.0) > 0.01 or abs(rotation_val) > 0.01):
+                        filt = ET.SubElement(clipitem, "filter")
+                        eff = ET.SubElement(filt, "effect")
+                        eid = ET.SubElement(eff, "effectid")
+                        eid.text = "basic"
+                        ename = ET.SubElement(eff, "name")
+                        ename.text = "Basic Motion"
+                        etype = ET.SubElement(eff, "effecttype")
+                        etype.text = "motion"
+                        mt = ET.SubElement(eff, "mediatype")
+                        mt.text = "video"
+
+                        sp = ET.SubElement(eff, "parameter")
+                        sn = ET.SubElement(sp, "name")
+                        sn.text = "Scale"
+                        sv = ET.SubElement(sp, "value")
+                        sv.text = str(scale_val)
+
+                        rp = ET.SubElement(eff, "parameter")
+                        rn = ET.SubElement(rp, "name")
+                        rn.text = "Rotation"
+                        rv = ET.SubElement(rp, "value")
+                        rv.text = str(rotation_val)
+
+    # Set total duration
+    dur_elem.text = str(total_frames if total_frames > 0 else end)
+
+    return xmeml
+
+
 def _build_file_index(root: ET.Element) -> dict[str, ET.Element]:
     """Build a mapping from file element id to the <file> element.
 
@@ -1231,6 +1819,7 @@ def _run_pipeline(
     output_dir: Optional[Path] = None,
     report: bool = False,
     diagnose_only: bool = False,
+    sequence_name: Optional[str] = None,
 ) -> int:
     """Run the full fix pipeline on an input file.
 
@@ -1259,13 +1848,55 @@ def _run_pipeline(
     print(f"  Loading: {input_path}")
     try:
         if input_path.suffix.lower() == ".prproj":
-            root = load_prproj(input_path)
+            prproj_root = load_prproj(input_path)
             print(f"  Format: .prproj (Premiere Pro project)")
+
+            # List sequences
+            idx = _PrprojIndex.build(prproj_root)
+            sequences = _prproj_list_sequences(prproj_root, idx)
+            if not sequences:
+                print("  Error: No sequences found in .prproj")
+                return 1
+
+            # Auto-select: if only one non-empty sequence, use it
+            non_empty = [s for s in sequences if s["clip_count"] > 0]
+            if sequence_name:
+                matching = [s for s in sequences if s["name"] == sequence_name]
+                if matching:
+                    selected = matching[0]
+                else:
+                    print(f"  Error: Sequence '{sequence_name}' not found")
+                    print(f"  Available: {[s['name'] for s in sequences]}")
+                    return 1
+            elif len(non_empty) == 1:
+                selected = non_empty[0]
+            elif len(sequences) == 1:
+                selected = sequences[0]
+            else:
+                print(f"  Found {len(sequences)} sequences:")
+                for i, s in enumerate(sequences, 1):
+                    marker = " <--" if s["clip_count"] > 0 else ""
+                    print(f"    [{i}] {s['name']}  {s['width']}x{s['height']}  {s['clip_count']} clips{marker}")
+                # Auto-select the one with most clips
+                selected = max(sequences, key=lambda s: s["clip_count"])
+                print(f"  Auto-selected: [{sequences.index(selected)+1}] {selected['name']}")
+
+            print(f"  Sequence: {selected['name']} ({selected['width']}x{selected['height']}, {selected['clip_count']} clips)")
+            print()
+
+            # Convert to FCP7 XML
+            print("  Converting .prproj to FCP7 XML...")
+            root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
+            print("  Conversion complete.")
+            print()
+
+            # Update output path to .xml
+            output_path = output_dir / f"{stem}.xml"
         else:
             root = load_xml(input_path)
             print(f"  Format: FCP7 XML")
     except Exception as e:
-        print(f"  ❌ Error loading file: {e}")
+        print(f"  Error loading file: {e}")
         return 1
 
     seq = root.find("sequence")
@@ -1346,6 +1977,12 @@ def _parse_args() -> argparse.Namespace:
         help="Generate a fix report (.md)",
     )
     parser.add_argument(
+        "--sequence",
+        type=str,
+        default=None,
+        help="Sequence name to extract from .prproj (default: auto-select)",
+    )
+    parser.add_argument(
         "--diagnose-only",
         action="store_true",
         help="Only diagnose issues, do not fix",
@@ -1379,6 +2016,7 @@ def main() -> int:
         output_dir=args.output,
         report=args.report,
         diagnose_only=args.diagnose_only,
+        sequence_name=args.sequence,
     )
 
 
