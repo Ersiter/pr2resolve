@@ -85,39 +85,32 @@ echo  (or drag and drop the file onto this window)
 echo.
 set "INPUT_FILE="
 set /p "INPUT_FILE=  > "
-:: Remove quotes if present
+if not defined INPUT_FILE goto _INPUT_EMPTY
 set "INPUT_FILE=%INPUT_FILE:"=%"
-:: Validate
-if not defined INPUT_FILE (
-    echo  No file specified.
-    timeout /t 2 >nul
-    goto MAIN_MENU
-)
-if not exist "%INPUT_FILE%" (
-    echo  File not found: %INPUT_FILE%
-    timeout /t 2 >nul
-    goto MAIN_MENU
-)
+if not defined INPUT_FILE goto _INPUT_EMPTY
+if exist "%INPUT_FILE%" goto MAIN_MENU
+echo  File not found: %INPUT_FILE%
+timeout /t 2 >nul
+goto MAIN_MENU
+:_INPUT_EMPTY
+echo  No file specified.
+timeout /t 2 >nul
 goto MAIN_MENU
 
 :SET_OUTPUT
 echo.
 echo  Enter output directory (or press Enter for same as input):
+set "OUTPUT_DIR="
 set /p "OUTPUT_DIR=  > "
+if not defined OUTPUT_DIR goto MAIN_MENU
 set "OUTPUT_DIR=%OUTPUT_DIR:"=%"
-if not defined OUTPUT_DIR (
-    set "OUTPUT_DIR="
-    echo  Output will be in the same directory as input.
-) else (
-    if not exist "%OUTPUT_DIR%" (
-        mkdir "%OUTPUT_DIR%" 2>nul
-        if errorlevel 1 (
-            echo  Cannot create directory: %OUTPUT_DIR%
-            set "OUTPUT_DIR="
-            timeout /t 2 >nul
-        )
-    )
-)
+if not defined OUTPUT_DIR goto MAIN_MENU
+if exist "%OUTPUT_DIR%" goto MAIN_MENU
+mkdir "%OUTPUT_DIR%" 2>nul
+if exist "%OUTPUT_DIR%" goto MAIN_MENU
+echo  Cannot create directory: %OUTPUT_DIR%
+set "OUTPUT_DIR="
+timeout /t 2 >nul
 goto MAIN_MENU
 
 :OPTIONS_MENU
