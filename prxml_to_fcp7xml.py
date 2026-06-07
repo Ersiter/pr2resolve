@@ -554,6 +554,7 @@ def _prproj_parse_sequence(
                     out_point = 0
                     playback_speed = 100
                     media_path = ""
+                    src_w, src_h = w, h  # default to timeline
 
                     if subclip is not None:
                         sc_ref = subclip.get("ObjectRef")
@@ -561,21 +562,24 @@ def _prproj_parse_sequence(
                         if sc_el is not None:
                             mc_name = sc_el.findtext("Name", mc_name)
 
-                            # MasterClip → filepath
+                            # MasterClip → Media (ObjectUID lookup for file path + resolution)
                             mc_uref_el = sc_el.find("MasterClip")
                             if mc_uref_el is not None:
                                 mc_uref = mc_uref_el.get("ObjectURef")
                                 mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
                                 if mc_el is not None:
-                                    # Try to get filepath from ClipLoggingInfo or Media
-                                    logging_ref = mc_el.find("LoggingInfo")
-                                    if logging_ref is not None:
-                                        li_ref = logging_ref.get("ObjectRef")
-                                        li_el = idx.resolve_ref(li_ref) if li_ref else None
-                                        if li_el is not None:
-                                            tape = li_el.findtext("Tape", "")
-                                            if tape:
-                                                media_path = tape
+                                    # Get file path from Media element
+                                    for media_el in prproj_root.findall("Media"):
+                                        mfp = media_el.findtext("FilePath")
+                                        if not mfp:
+                                            continue
+                                        # Match by filename: Media's FilePath vs SubClip's Name
+                                        from pathlib import PureWindowsPath
+                                        media_filename = PureWindowsPath(mfp).name
+                                        subclip_name = sc_el.findtext("Name", "")
+                                        if media_filename == subclip_name:
+                                            media_path = mfp
+                                            break
 
                             # Clip → InPoint/OutPoint/PlaybackSpeed
                             clip_ref_el = sc_el.find("Clip")
@@ -583,22 +587,23 @@ def _prproj_parse_sequence(
                                 clip_ref = clip_ref_el.get("ObjectRef")
                                 clip_el = idx.resolve_ref(clip_ref) if clip_ref else None
                                 if clip_el is not None:
-                                    ip = clip_el.findtext("InPoint")
-                                    op = clip_el.findtext("OutPoint")
+                                    # InPoint/OutPoint are inside nested <Clip> element
+                                    inner_clip = clip_el.find("Clip")
+                                    if inner_clip is not None:
+                                        ip = inner_clip.findtext("InPoint")
+                                        op = inner_clip.findtext("OutPoint")
+                                        # InPoint=0 is valid (clip starts at media beginning)
+                                        # None means "no trimming info" → use default 0
+                                        if ip is not None:
+                                            in_point = _prproj_ticks_to_frames(ip, fps)
+                                        if op is not None:
+                                            out_point = _prproj_ticks_to_frames(op, fps)
                                     ps = clip_el.findtext("PlaybackSpeed")
-                                    if ip:
-                                        in_point = _prproj_ticks_to_frames(ip, fps)
-                                    if op:
-                                        out_point = _prproj_ticks_to_frames(op, fps)
                                     if ps:
                                         try:
                                             playback_speed = int(float(ps))
                                         except ValueError:
                                             pass
-
-                    # Source resolution from MasterClip Media
-                    src_w, src_h = w, h  # default to timeline
-                    # (simplified — full resolution extraction requires deeper Media traversal)
 
                     # ComponentOwner → transform data
                     co = cti.find("ComponentOwner")
@@ -690,6 +695,10 @@ def _prproj_parse_sequence(
                     else:
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file:///{mc_name}"
+
+                    # File duration from source media
+                    fd = ET.SubElement(file_el, "duration")
+                    fd.text = str(out_point - in_point if out_point > in_point else end - start)
 
                     # Media details — source resolution for scale detection
                     media_el = ET.SubElement(file_el, "media")
