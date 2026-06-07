@@ -2171,25 +2171,83 @@ def _run_pipeline(
         print(f"  Report: {report_path}")
 
     # DRT output
+    xml_written = output_path.exists()
     if drt:
         print()
         drt_path = output_dir / f"{stem}.drt"
         print("  DRT output requested. Checking DaVinci Resolve...")
         resolve = _check_resolve_running()
-        if resolve is None:
-            print("  DaVinci Resolve not detected.")
-            print("  DRT output requires DaVinci Resolve Studio running.")
-            print("  Please open DaVinci Resolve and try again,")
-            print("  or skip DRT output (XML was generated successfully).")
+        if resolve is None and not xml_written:
+            # No DaVinci AND no XML → nothing usable
+            print("  [X] DaVinci Resolve not detected, and XML output failed.")
+            print("      DRT generation is not possible.")
+        elif resolve is None:
+            # No DaVinci BUT XML succeeded → prompt user
+            print("  [!] DaVinci Resolve not detected.")
+            print("      XML was generated successfully (can be used as-is).")
+            print("      DRT requires DaVinci Resolve Studio running.")
+            print()
+            print("      [R]etry  - open DaVinci Resolve, then press R to retry")
+            print("      [L]eave  - continue without DRT (keep XML)")
+            print()
+            choice = input("  > ").strip().lower()
+            if choice == "r":
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    print(f"  Checking DaVinci... (attempt {attempt}/{max_retries})")
+                    resolve = _check_resolve_running()
+                    if resolve is not None:
+                        break
+                    if attempt < max_retries:
+                        print("  Still not detected. Press Enter to retry, or type 'l' to leave.")
+                        quit_choice = input("  > ").strip().lower()
+                        if quit_choice == "l":
+                            resolve = None
+                            break
+                if resolve is None:
+                    print("  [!] Continuing without DRT. XML kept.")
+                else:
+                    # DaVinci now running → proceed with DRT
+                    print("  DaVinci Resolve detected!")
+                    print(f"  Importing {output_path.name} into Resolve...")
+                    seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
+                    if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
+                        # DRT success → delete XML, show checkmark
+                        try:
+                            output_path.unlink()
+                            print(f"  [OK] DRT: {drt_path}")
+                            print(f"       (intermediate XML removed)")
+                            xml_written = False
+                        except OSError:
+                            print(f"  [OK] DRT: {drt_path}")
+                            print(f"       (could not remove intermediate XML: {output_path})")
+                    else:
+                        print("  [X] DRT export failed. XML kept.")
+            else:
+                print("  Continuing without DRT. XML kept.")
         else:
+            # DaVinci running → direct DRT export
             print("  DaVinci Resolve detected.")
             print(f"  Importing {output_path.name} into Resolve...")
             seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
             if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
-                print(f"  DRT: {drt_path}")
+                # DRT success → delete XML, show checkmark
+                try:
+                    output_path.unlink()
+                    print(f"  [OK] DRT: {drt_path}")
+                    print(f"       (intermediate XML removed)")
+                    xml_written = False
+                except OSError:
+                    print(f"  [OK] DRT: {drt_path}")
+                    print(f"       (could not remove intermediate XML: {output_path})")
+            else:
+                print("  [X] DRT export failed. XML kept.")
 
     print()
-    print(f"  Done. {fix_count} fixes applied to {output_path.name}")
+    if xml_written:
+        print(f"  Done. {fix_count} fixes applied to {output_path.name}")
+    elif drt:
+        print(f"  Done. Output: {drt_path.name}")
     return 0
 
 
