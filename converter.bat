@@ -47,12 +47,12 @@ if defined INPUT_FILE (
 if defined OUTPUT_DIR (
     echo   [OUTPUT] !OUTPUT_DIR!
 ) else (
-    echo   [OUTPUT] (same as input)
+    echo   [OUTPUT] (same as input^)
 )
 if defined SEQ_NAME (
     echo   [SEQ]    !SEQ_NAME!
 ) else (
-    echo   [SEQ]    (auto)
+    echo   [SEQ]    (auto^)
 )
 echo.
 echo   XML:     [ON]    FCP7 XML output (always on)
@@ -107,13 +107,14 @@ echo ============================================================
 echo   Output Options
 echo ============================================================
 echo.
-echo   [1] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio)
-echo   [2] Fix report     !OPT_REPORT!
+echo   [1] FCP7 XML       [ON]    (always on, primary output)
+echo   [2] DRT            !OPT_DRT!  (optional, needs DaVinci Resolve Studio)
+echo   [3] Fix report     !OPT_REPORT!
 echo   [0] Back
 echo.
-choice /c 120 /n /m "  Select [1-2, 0]: "
-if errorlevel 3 goto MENU
-if errorlevel 2 (
+choice /c 1230 /n /m "  Select [1-3, 0]: "
+if errorlevel 4 goto MENU
+if errorlevel 3 (
     if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
     goto OPTIONS
 )
