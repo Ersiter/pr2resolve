@@ -221,9 +221,15 @@ AudioClipTrackItem
 
 ---
 
-## 7. Lumetri 数据（待研究）
+## 7. Lumetri 数据
 
-Lumetri 在 .prproj 中以 `SyntheticClip` + `VideoFilterComponent` 存在。PRPROJ-READER 未解析 Lumetri（仅处理了 Position/Scale/Rotation/Opacity）。这是 Phase 2 研究项——如果能从 .prproj 提取 Lumetri 原始参数值，就可以在生成 DRT 时将其映射到达芬奇 Color 节点。
+Lumetri 在 .prproj 中以 `VideoFilterComponent` 存储（MatchName=`AE.ADBE Lumetri`），通过 `Component/Params/Param[@ObjectRef]` 引用 `VideoComponentParam` 元素。
+
+每个 VFC 包含 ~130 个参数，每个参数的 `StartKeyframe` 格式为 `ticks,value,...`，其中 value 是实际参数值（第 2 字段）。
+
+中文参数名映射（基于荷花样本实测）：色温=Temperature, 色彩=Tint, 曝光=Exposure, 对比度=Contrast, 高光=Highlights, 阴影=Shadows, 白色=Whites, 黑色=Blacks, 饱和度=Saturation。
+
+**实现状态**: 已在 `prxml_to_fcp7xml.py` 的 `_prproj_extract_lumetri()` 中实现。
 
 ---
 
