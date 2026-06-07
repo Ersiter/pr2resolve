@@ -682,6 +682,13 @@ def _prproj_parse_sequence(
                     in_el.text = str(in_point)
                     out_el = ET.SubElement(clipitem, "out")
                     out_el.text = str(out_point)
+                    # Standard clipitem metadata
+                    alpha_el = ET.SubElement(clipitem, "alphatype")
+                    alpha_el.text = "none"
+                    par_el = ET.SubElement(clipitem, "pixelaspectratio")
+                    par_el.text = "square"
+                    ana_el = ET.SubElement(clipitem, "anamorphic")
+                    ana_el.text = "FALSE"
 
                     # File element
                     fid = _next_file_id()
@@ -696,18 +703,67 @@ def _prproj_parse_sequence(
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file:///{mc_name}"
 
-                    # File duration from source media
+                    # File rate (source media timebase)
+                    f_rate = ET.SubElement(file_el, "rate")
+                    fr_tb = ET.SubElement(f_rate, "timebase")
+                    fr_tb.text = str(timebase)
+                    if is_ntsc:
+                        fr_ntsc = ET.SubElement(f_rate, "ntsc")
+                        fr_ntsc.text = "TRUE"
+
+                    # File duration
                     fd = ET.SubElement(file_el, "duration")
                     fd.text = str(out_point - in_point if out_point > in_point else end - start)
 
-                    # Media details — source resolution for scale detection
+                    # File timecode
+                    f_tc = ET.SubElement(file_el, "timecode")
+                    ftc_rate = ET.SubElement(f_tc, "rate")
+                    ftc_tb = ET.SubElement(ftc_rate, "timebase")
+                    ftc_tb.text = str(timebase)
+                    if is_ntsc:
+                        ftc_ntsc = ET.SubElement(ftc_rate, "ntsc")
+                        ftc_ntsc.text = "TRUE"
+                    ftc_str = ET.SubElement(f_tc, "string")
+                    ftc_str.text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+                    ftc_frame = ET.SubElement(f_tc, "frame")
+                    ftc_frame.text = "0"
+                    ftc_df = ET.SubElement(f_tc, "displayformat")
+                    ftc_df.text = "DF" if is_ntsc else "NDF"
+
+                    # Media details (full structure matching PR FCP7 XML)
                     media_el = ET.SubElement(file_el, "media")
+
+                    # Video
                     video_el = ET.SubElement(media_el, "video")
-                    sc_el = ET.SubElement(video_el, "samplecharacteristics")
-                    sw = ET.SubElement(sc_el, "width")
-                    sw.text = str(src_w)
-                    sh = ET.SubElement(sc_el, "height")
-                    sh.text = str(src_h)
+                    vsc = ET.SubElement(video_el, "samplecharacteristics")
+                    # rate
+                    vsc_rate = ET.SubElement(vsc, "rate")
+                    vsc_tb = ET.SubElement(vsc_rate, "timebase")
+                    vsc_tb.text = str(timebase)
+                    if is_ntsc:
+                        vsc_ntsc = ET.SubElement(vsc_rate, "ntsc")
+                        vsc_ntsc.text = "TRUE"
+                    # Resolution
+                    vsc_w = ET.SubElement(vsc, "width")
+                    vsc_w.text = str(src_w)
+                    vsc_h = ET.SubElement(vsc, "height")
+                    vsc_h.text = str(src_h)
+                    vsc_ana = ET.SubElement(vsc, "anamorphic")
+                    vsc_ana.text = "FALSE"
+                    vsc_par = ET.SubElement(vsc, "pixelaspectratio")
+                    vsc_par.text = "square"
+                    vsc_fd = ET.SubElement(vsc, "fielddominance")
+                    vsc_fd.text = "none"
+                    vsc_cd = ET.SubElement(vsc, "colordepth")
+                    vsc_cd.text = "24"
+
+                    # Audio
+                    ael = ET.SubElement(media_el, "audio")
+                    asc = ET.SubElement(ael, "samplecharacteristics")
+                    asr = ET.SubElement(asc, "samplerate")
+                    asr.text = "48000"
+                    ach = ET.SubElement(asc, "channelcount")
+                    ach.text = "2"
 
                     # Sourcetrack
                     sourcetrack = ET.SubElement(clipitem, "sourcetrack")
@@ -1973,12 +2029,13 @@ def _drt_import_and_export(
         pm = resolve.GetProjectManager()
         project = pm.GetCurrentProject()
         if project is None:
-            # Create a new project
             project = pm.NewProject("prxml2fcp7xml_temp")
 
         media_pool = project.GetMediaPool()
 
-        # Import timeline from FCP7 XML
+        # Try importing with source clips first.
+        # If media files don't exist on this machine, fall back to
+        # skeleton import (timeline structure only, no media).
         timeline = media_pool.ImportTimelineFromFile(
             str(xml_path),
             {
@@ -1987,7 +2044,20 @@ def _drt_import_and_export(
             },
         )
         if timeline is None:
+            # Fallback: import without source clips
+            timeline = media_pool.ImportTimelineFromFile(
+                str(xml_path),
+                {
+                    "timelineName": timeline_name,
+                    "importSourceClips": False,
+                },
+            )
+            if timeline is not None:
+                print("  (imported timeline structure only, media offline)")
+
+        if timeline is None:
             print("  Error: Failed to import timeline from XML")
+            print("  Check that: XML structure is valid, and DaVinci Studio is running")
             return False
 
         print(f"  Timeline imported: {timeline.GetName()}")
