@@ -10,8 +10,11 @@ SCRIPT="${SCRIPT_DIR}/prxml_to_fcp7xml.py"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+DIM='\033[0;90m'
+BOLD='\033[1m'
+# Premiere Pro icon purple (RGB 140,69,255)
+PR_PURPLE='\033[38;2;140;69;255m'
 NC='\033[0m'
 
 # State
@@ -43,31 +46,37 @@ fi
 
 print_header() {
     clear
-    echo "============================================================"
-    echo "  prxml2fcp7xml v${VERSION}  —  PR XML to FCP7 XML Fixer"
-    echo "============================================================"
     echo ""
+    echo -e "  ${PR_PURPLE}============================================================${NC}"
+    echo -e "  ${BOLD}${PR_PURPLE}  prxml2fcp7xml v${VERSION}  -  PR XML to FCP7 XML Fixer${NC}"
+    echo -e "  ${PR_PURPLE}============================================================${NC}"
+    echo ""
+    echo -e "  ${DIM}------------------------------------------------------------${NC}"
     if [ -n "$INPUT_FILE" ]; then
-        echo -e "  [INPUT]  ${CYAN}${INPUT_FILE}${NC}"
+        echo -e "  [INPUT]  ${GREEN}${INPUT_FILE}${NC}"
     else
-        echo -e "  [INPUT]  ${YELLOW}NOT SET - Please select first${NC}"
+        echo -e "  [INPUT]  ${YELLOW}NOT SET${NC} - Please select first"
     fi
     if [ -n "$OUTPUT_DIR" ]; then
-        echo "  [OUTPUT] ${OUTPUT_DIR}"
+        echo -e "  [OUTPUT] ${GREEN}${OUTPUT_DIR}${NC}"
     else
-        echo "  [OUTPUT] (same as input)"
+        echo -e "  [OUTPUT] (same as input)"
     fi
     if [ -n "$SEQ_NAME" ]; then
-        echo "  [SEQ]    ${SEQ_NAME}"
+        echo -e "  [SEQ]    ${GREEN}${SEQ_NAME}${NC}"
     else
-        echo "  [SEQ]    (auto)"
+        echo -e "  [SEQ]    (auto)"
     fi
     echo ""
-    echo -e "  XML:     ${OPT_XML}   FCP7 XML output"
-    echo -e "  DRT:     ${OPT_DRT}  DaVinci DRT output (needs Resolve Studio)"
-    echo -e "  Report:  ${OPT_REPORT}   Fix report (.md)"
+    # Conditional color for toggle states
+    xml_clr=$([ "$OPT_XML" = "[ON]" ] && echo "$GREEN" || echo "")
+    drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
+    rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
+    echo -e "  XML:     ${xml_clr}${OPT_XML}${NC}   FCP7 XML output"
+    echo -e "  DRT:     ${drt_clr}${OPT_DRT}${NC}  DaVinci DRT output (needs Resolve Studio)"
+    echo -e "  Report:  ${rpt_clr}${OPT_REPORT}${NC}   Fix report (.md)"
     echo ""
-    echo "------------------------------------------------------------"
+    echo -e "  ${DIM}------------------------------------------------------------${NC}"
     echo ""
     echo "  [1] Select input file (.xml / .prproj)"
     echo "  [2] Set output directory"
@@ -75,7 +84,7 @@ print_header() {
     echo "  [4] START"
     echo "  [0] Quit"
     echo ""
-    echo "------------------------------------------------------------"
+    echo -e "  ${DIM}------------------------------------------------------------${NC}"
 }
 
 select_input() {
@@ -119,13 +128,17 @@ set_output() {
 options_menu() {
     while true; do
         clear
-        echo "============================================================"
-        echo "  Output Options"
-        echo "============================================================"
         echo ""
-        echo -e "  [1] FCP7 XML       ${OPT_XML}"
-        echo -e "  [2] DRT            ${OPT_DRT}  (needs DaVinci Resolve Studio)"
-        echo -e "  [3] Fix report     ${OPT_REPORT}"
+        echo -e "  ${PR_PURPLE}============================================================${NC}"
+        echo -e "  ${BOLD}  Output Options${NC}"
+        echo -e "  ${PR_PURPLE}============================================================${NC}"
+        echo ""
+        xml_clr=$([ "$OPT_XML" = "[ON]" ] && echo "$GREEN" || echo "")
+        drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
+        rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
+        echo -e "  [1] FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
+        echo -e "  [2] DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
+        echo -e "  [3] Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
         echo "  [0] Back"
         echo ""
         read -r -p "  Select [1-3, 0]: " choice
