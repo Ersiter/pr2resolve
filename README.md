@@ -103,9 +103,14 @@ pr2drt/
 ├── test/
 │   ├── 序列 01_pr_direct.xml  # 测试样本 (PR XML)
 │   └── 荷花.prproj            # 测试样本 (.prproj)
-├── docs/                  # 研究文档
-├── PRJCT_PLAN.md          # 项目规划
-└── README.md
+├── docs/
+│   ├── PRJCT_PLAN.md          # 项目规划 v2
+│   ├── RESEARCH_PHASE1.md     # 兼容性研究
+│   ├── PRPROJ_FORMAT.md       # .prproj 格式文档
+│   ├── SAMPLE_ANALYSIS.md     # 样本分析
+│   └── PRPROJ_PARSE_RESULTS.md # .prproj 实测结果
+├── README.md
+└── LICENSE
 ```
 
 ## 运行测试

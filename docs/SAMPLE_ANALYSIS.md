@@ -133,19 +133,19 @@ sequence id="sequence-1"
 
 ---
 
-## 5. .prproj 入口的潜力 (无法实际验证，基于 PRPROJ-READER 源码推断)
+## 5. .prproj 入口验证结果
 
-如果 bash 可用，预期能从 .prproj 中提取以下**XML 丢失的数据**：
+.prproj 解析已在 Phase 2 实现并验证（2026-06-07）。实测确认：
 
-| 数据 | PR FCP7 XML | .prproj (预期) |
+| 数据 | PR FCP7 XML | .prproj (实测) |
 |------|:----------:|:------------:|
-| Scale to Frame Size | ❌ 不存在 | ✅ 可推算 (compare src dims vs effect) |
-| 完整的 Motion 参数 | ⚠️ 100% 缩放值存疑 | ✅ 原始值含关键帧 |
-| Lumetri 完整层级 | ⚠️ 仅 base64 blob | ✅ SyntheticClip 结构 |
-| 嵌套序列 | ❌ | ✅ SequenceSource |
-| 原始 "Scale to Frame Size" 标记 | ❌ | ✅ (推测) |
+| Scale to Frame Size | ❌ 不存在 | ❌ 同样不存在（PR 显示策略，不存储） |
+| 完整的 Motion 参数 | ⚠️ basic effect | ⚠️ DefaultMotion=true（本样本） |
+| Lumetri 完整层级 | ⚠️ base64 blob | ✅ **StartKeyframe 直接可读** (55 params/VFC) |
+| 嵌套序列 | ❌ | ✅ Sequence[3] |
+| 素材路径 | ✅ file:// pathurl | ❌ Media 无 FilePath 子元素 |
 
-**.prproj 实际验证需要 bash/gzip 可用时再执行。**
+详见 `docs/PRPROJ_PARSE_RESULTS.md`。
 
 ---
 

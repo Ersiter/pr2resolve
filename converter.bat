@@ -1,10 +1,22 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: ============================================================
+:: prxml2fcp7xml - Windows TUI Launcher
+:: ============================================================
+
 set "VERSION=1.0.0"
 set "SCRIPT=%~dp0prxml_to_fcp7xml.py"
 set "PYTHONIOENCODING=utf-8"
 
+:: State
+set "INPUT_FILE="
+set "OUTPUT_DIR="
+set "SEQ_NAME="
+set "OPT_DRT=[OFF]"
+set "OPT_REPORT=[ON]"
+
+:: Find Python
 set "PYTHON_CMD="
 where python >nul 2>&1 && set "PYTHON_CMD=python"
 if not defined PYTHON_CMD where py >nul 2>&1 && set "PYTHON_CMD=py"
@@ -14,14 +26,12 @@ if not defined PYTHON_CMD (
     exit /b 1
 )
 
+:: Check script
 if not exist "%SCRIPT%" (
     echo ERROR: prxml_to_fcp7xml.py not found in %~dp0
     pause
     exit /b 1
 )
-
-set "INPUT_FILE="
-set "OUTPUT_DIR="
 
 :MENU
 cls
@@ -32,33 +42,52 @@ echo.
 if defined INPUT_FILE (
     echo   [INPUT]  !INPUT_FILE!
 ) else (
-    echo   [INPUT]  NOT SET
+    echo   [INPUT]  NOT SET - Please select first
 )
 if defined OUTPUT_DIR (
     echo   [OUTPUT] !OUTPUT_DIR!
 ) else (
     echo   [OUTPUT] (same as input)
 )
+if defined SEQ_NAME (
+    echo   [SEQ]    !SEQ_NAME!
+) else (
+    echo   [SEQ]    (auto)
+)
 echo.
-echo   [1] Select input file
+echo   XML:     [ON]    FCP7 XML output (always on)
+echo   DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio)
+echo   Report:  !OPT_REPORT!   Fix report (.md)
+echo.
+echo ------------------------------------------------------------
+echo.
+echo   [1] Select input file (.xml / .prproj)
 echo   [2] Set output directory
-echo   [3] START
+echo   [3] Output options
+echo   [4] START
 echo   [0] Quit
 echo.
-choice /c 1230 /n /m "  Select: "
-if errorlevel 4 goto DONE
-if errorlevel 3 goto RUN
+echo ------------------------------------------------------------
+echo.
+
+choice /c 12340 /n /m "  Select [1-4, 0]: "
+if errorlevel 5 goto DONE
+if errorlevel 4 goto RUN
+if errorlevel 3 goto OPTIONS
 if errorlevel 2 goto OUT
 if errorlevel 1 goto INP
 
 :INP
 echo.
+echo  Enter path to input file (.xml or .prproj):
+echo  (or drag and drop the file onto this window)
+echo.
 set "INPUT_FILE="
-set /p "INPUT_FILE=  Path: "
+set /p "INPUT_FILE=  > "
 if not defined INPUT_FILE goto MENU
 call :stripquotes INPUT_FILE
 if not exist "!INPUT_FILE!" (
-    echo   Not found: !INPUT_FILE!
+    echo  File not found: !INPUT_FILE!
     pause
     set "INPUT_FILE="
 )
@@ -72,17 +101,42 @@ if not defined OUTPUT_DIR goto MENU
 call :stripquotes OUTPUT_DIR
 goto MENU
 
+:OPTIONS
+cls
+echo ============================================================
+echo   Output Options
+echo ============================================================
+echo.
+echo   [1] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio)
+echo   [2] Fix report     !OPT_REPORT!
+echo   [0] Back
+echo.
+choice /c 120 /n /m "  Select [1-2, 0]: "
+if errorlevel 3 goto MENU
+if errorlevel 2 (
+    if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+    goto OPTIONS
+)
+if errorlevel 1 (
+    if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
+    goto OPTIONS
+)
+
 :RUN
 if not defined INPUT_FILE (
-    echo   No input file.
+    echo.
+    echo  No input file selected.
     pause
     goto MENU
 )
 echo.
-echo   Running...
+echo  Running...
 echo.
 set "CMD=!PYTHON_CMD! "!SCRIPT!" "!INPUT_FILE!""
 if defined OUTPUT_DIR set "CMD=!CMD! -o "!OUTPUT_DIR!""
+if defined SEQ_NAME set "CMD=!CMD! --sequence "!SEQ_NAME!""
+if "!OPT_REPORT!"=="[ON]" set "CMD=!CMD! --report"
+if "!OPT_DRT!"=="[ON]" set "CMD=!CMD! --drt"
 !CMD!
 echo.
 pause
