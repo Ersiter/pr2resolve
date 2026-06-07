@@ -17,16 +17,6 @@ set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[ON]"
 set "OPT_XML=[ON]"
 
-:: Colors (VT100 - requires Windows 10+ Terminal)
-for /f "delims=" %%a in ('echo prompt $E ^| cmd') do set "ESC=%%a"
-set "C_RED=%ESC%[0;31m"
-set "C_GREEN=%ESC%[0;32m"
-set "C_YELLOW=%ESC%[0;33m"
-set "C_DIM=%ESC%[0;90m"
-set "C_BOLD=%ESC%[1m"
-set "C_PR=%ESC%[38;2;140;69;255m"
-set "C_RESET=%ESC%[0m"
-
 :: Find Python
 set "PYTHON_CMD="
 where python >nul 2>&1 && set "PYTHON_CMD=python"
@@ -47,35 +37,32 @@ if not exist "%SCRIPT%" (
 :MENU
 cls
 echo.
-echo  %C_PR%============================================================%C_RESET%
-echo  %C_BOLD%%C_PR%  prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer%C_RESET%
-echo  %C_PR%============================================================%C_RESET%
+echo  ============================================================
+echo   prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer
+echo  ============================================================
 echo.
-echo  %C_DIM%------------------------------------------------------------%C_RESET%
+echo  ------------------------------------------------------------
 if defined INPUT_FILE (
-    echo  [INPUT]  %C_GREEN%!INPUT_FILE!%C_RESET%
+    echo  [INPUT]  !INPUT_FILE!
 ) else (
-    echo  [INPUT]  %C_YELLOW%NOT SET%C_RESET% - Please select first
+    echo  [INPUT]  NOT SET - Please select first
 )
 if defined OUTPUT_DIR (
-    echo  [OUTPUT] %C_GREEN%!OUTPUT_DIR!%C_RESET%
+    echo  [OUTPUT] !OUTPUT_DIR!
 ) else (
     echo  [OUTPUT] (same as input^)
 )
 if defined SEQ_NAME (
-    echo  [SEQ]    %C_GREEN%!SEQ_NAME!%C_RESET%
+    echo  [SEQ]    !SEQ_NAME!
 ) else (
     echo  [SEQ]    (auto^)
 )
 echo.
-if "!OPT_XML!"=="[ON]" (set "_XC=%C_GREEN%") else (set "_XC=%C_RESET%")
-if "!OPT_DRT!"=="[ON]" (set "_DC=%C_GREEN%") else (set "_DC=%C_RESET%")
-if "!OPT_REPORT!"=="[ON]" (set "_RC=%C_GREEN%") else (set "_RC=%C_RESET%")
-echo  XML:     %_XC%!OPT_XML!%C_RESET%   FCP7 XML output
-echo  DRT:     %_DC%!OPT_DRT!%C_RESET%  DaVinci DRT output (needs Resolve Studio^)
-echo  Report:  %_RC%!OPT_REPORT!%C_RESET%   Fix report (.md^)
+echo  XML:     !OPT_XML!   FCP7 XML output
+echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
+echo  Report:  !OPT_REPORT!   Fix report (.md^)
 echo.
-echo  %C_DIM%------------------------------------------------------------%C_RESET%
+echo  ------------------------------------------------------------
 echo.
 echo  [1] Select input file (.xml / .prproj^)
 echo  [2] Set output directory
@@ -83,7 +70,7 @@ echo  [3] Output options
 echo  [4] START
 echo  [0] Quit
 echo.
-echo  %C_DIM%------------------------------------------------------------%C_RESET%
+echo  ------------------------------------------------------------
 echo.
 
 choice /c 12340 /n /m "  Select [1-4, 0]: "
@@ -120,16 +107,13 @@ goto MENU
 :OPTIONS
 cls
 echo.
-echo  %C_PR%============================================================%C_RESET%
-echo  %C_BOLD%  Output Options%C_RESET%
-echo  %C_PR%============================================================%C_RESET%
+echo  ============================================================
+echo   Output Options
+echo  ============================================================
 echo.
-if "!OPT_XML!"=="[ON]" (set "_XC=%C_GREEN%") else (set "_XC=%C_RESET%")
-if "!OPT_DRT!"=="[ON]" (set "_DC=%C_GREEN%") else (set "_DC=%C_RESET%")
-if "!OPT_REPORT!"=="[ON]" (set "_RC=%C_GREEN%") else (set "_RC=%C_RESET%")
-echo  [1] FCP7 XML       %_XC%!OPT_XML!%C_RESET%
-echo  [2] DRT            %_DC%!OPT_DRT!%C_RESET%  (needs DaVinci Resolve Studio^)
-echo  [3] Fix report     %_RC%!OPT_REPORT!%C_RESET%
+echo  [1] FCP7 XML       !OPT_XML!
+echo  [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio^)
+echo  [3] Fix report     !OPT_REPORT!
 echo  [0] Back
 echo.
 choice /c 1230 /n /m "  Select [1-3, 0]: "

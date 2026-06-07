@@ -78,11 +78,11 @@ print_header() {
     echo ""
     echo -e "  ${DIM}------------------------------------------------------------${NC}"
     echo ""
-    echo "  [1] Select input file (.xml / .prproj)"
-    echo "  [2] Set output directory"
-    echo "  [3] Output options"
-    echo "  [4] START"
-    echo "  [0] Quit"
+    echo -e "  ${BOLD}[1]${NC} Select input file (.xml / .prproj)"
+    echo -e "  ${BOLD}[2]${NC} Set output directory"
+    echo -e "  ${BOLD}[3]${NC} Output options"
+    echo -e "  ${BOLD}[4]${NC} START"
+    echo -e "  ${BOLD}[0]${NC} Quit"
     echo ""
     echo -e "  ${DIM}------------------------------------------------------------${NC}"
 }
@@ -136,12 +136,13 @@ options_menu() {
         xml_clr=$([ "$OPT_XML" = "[ON]" ] && echo "$GREEN" || echo "")
         drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
         rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
-        echo -e "  [1] FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
-        echo -e "  [2] DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
-        echo -e "  [3] Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
-        echo "  [0] Back"
+        echo -e "  ${BOLD}[1]${NC} FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
+        echo -e "  ${BOLD}[2]${NC} DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
+        echo -e "  ${BOLD}[3]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
+        echo -e "  ${BOLD}[0]${NC} Back"
         echo ""
-        read -r -p "  Select [1-3, 0]: " choice
+        read -n 1 -r -p "  Select [1-3, 0]: " choice
+        echo ""
         choice="${choice%%$'\r'}"
         case "$choice" in
             1) if [ "$OPT_XML" = "[ON]" ]; then OPT_XML="[OFF]"; else OPT_XML="[ON]"; fi ;;
@@ -190,7 +191,8 @@ run_pipeline() {
 # Main loop
 while true; do
     print_header
-    read -r -p "  Select [1-4, 0]: " choice
+    read -n 1 -r -p "  Select [1-4, 0]: " choice
+    echo ""
     choice="${choice%%$'\r'}"
     case "$choice" in
         1) select_input ;;
