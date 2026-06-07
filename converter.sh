@@ -87,11 +87,59 @@ print_header() {
     echo -e "  ${DIM}------------------------------------------------------------${NC}"
 }
 
+set_output() {
+    clear
+    echo ""
+    echo -e "  ${PR_PURPLE}============================================================${NC}"
+    echo -e "  ${BOLD}  Set Output Directory${NC}"
+    echo -e "  ${PR_PURPLE}============================================================${NC}"
+    echo ""
+    if [ -n "$OUTPUT_DIR" ]; then
+        echo -e "  Current: ${GREEN}${OUTPUT_DIR}${NC}"
+    else
+        echo "  Current: (same as input)"
+    fi
+    echo ""
+    echo "  [1] Keep current"
+    echo "  [2] Script folder /output"
+    echo "  [3] Same as input file folder"
+    echo "  [4] Custom path"
+    echo ""
+    read -n 1 -r -p "  > " opt
+    echo ""
+
+    case "$opt" in
+        1) return ;;
+        2)
+            OUTPUT_DIR="$SCRIPT_DIR/output"
+            mkdir -p "$OUTPUT_DIR"
+            echo -e "  ${GREEN}Set to: $OUTPUT_DIR${NC}"
+            sleep 1 ;;
+        3)
+            if [ -n "$INPUT_FILE" ]; then
+                OUTPUT_DIR="$(dirname "$INPUT_FILE")"
+                echo -e "  ${GREEN}Set to: $OUTPUT_DIR${NC}"
+            else
+                echo -e "  ${YELLOW}Please select input file first.${NC}"
+            fi
+            sleep 1 ;;
+        4)
+            read -r -p "  Path: " custom
+            custom="${custom//\"/}"
+            custom="${custom%%$'\r'}"
+            if [ -n "$custom" ]; then
+                mkdir -p "$custom" 2>/dev/null
+                OUTPUT_DIR="$custom"
+                echo -e "  ${GREEN}Set to: $OUTPUT_DIR${NC}"
+            fi
+            sleep 1 ;;
+    esac
+}
+
 select_input() {
     echo ""
     echo "  Enter path to input file (.xml or .prproj):"
     read -r -p "  > " input
-    # Strip quotes and trailing \r (Git Bash on Windows)
     input="${input%\"}"
     input="${input#\"}"
     input="${input%%$'\r'}"
@@ -106,23 +154,6 @@ select_input() {
         return
     fi
     INPUT_FILE="$input"
-}
-
-set_output() {
-    echo ""
-    echo "  Enter output directory (or press Enter for same as input):"
-    read -r -p "  > " dir
-    dir="${dir%\"}"
-    dir="${dir#\"}"
-    dir="${dir%%$'\r'}"
-    if [ -z "$dir" ]; then
-        OUTPUT_DIR=""
-        echo "  Output will be in the same directory as input."
-    else
-        mkdir -p "$dir" 2>/dev/null
-        OUTPUT_DIR="$dir"
-    fi
-    sleep 1
 }
 
 options_menu() {
