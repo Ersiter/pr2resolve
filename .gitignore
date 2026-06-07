@@ -26,6 +26,10 @@ desktop.ini
 # Claude Code
 .claude/
 
+# Docs & test samples (local only)
+docs/
+test/
+
 # Output
 output/
 *.bak
