@@ -115,10 +115,9 @@ choice /c 120 /n /m "  Select [1-2, 0]: "
 if errorlevel 3 goto MENU
 if errorlevel 2 (
     if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+    goto OPTIONS
 )
-if errorlevel 1 (
-    if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
-)
+if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
 goto OPTIONS
 
 :RUN
