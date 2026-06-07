@@ -81,7 +81,7 @@ print_header() {
     echo -e "  ${BOLD}[1]${NC} Select input file (.xml / .prproj)"
     echo -e "  ${BOLD}[2]${NC} Set output directory"
     echo -e "  ${BOLD}[3]${NC} Output options"
-    echo -e "  ${BOLD}[4]${NC} START"
+    echo -e "  ${BOLD}[4] START${NC}"
     echo -e "  ${BOLD}[0]${NC} Quit"
     echo ""
     echo -e "  ${DIM}------------------------------------------------------------${NC}"

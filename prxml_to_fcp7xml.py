@@ -403,6 +403,7 @@ def _prproj_parse_sequence(
 
     # Get fps from first VideoTrackGroup
     fps = DEFAULT_FPS
+    internal_tb = 0
     tg_section = seq_el.find("TrackGroups")
     video_tg = None
     audio_tg = None
@@ -415,16 +416,18 @@ def _prproj_parse_sequence(
                 if tg_el is not None:
                     if tg_el.tag == "VideoTrackGroup":
                         video_tg = tg_el
-                        fr = tg_el.find("FrameRate")
+                        fr = tg_el.find(".//FrameRate")
                         if fr is not None and fr.text:
                             try:
-                                fps = _prproj_adobe_timebase_to_fps(int(fr.text))
+                                internal_tb = int(fr.text)
+                                fps = _prproj_adobe_timebase_to_fps(internal_tb)
                             except ValueError:
                                 pass
                     elif tg_el.tag == "AudioTrackGroup":
                         audio_tg = tg_el
 
-    is_ntsc = abs(fps - round(fps)) > 0.01
+    # NTSC detection: fractional fps (29.97), or internal timebase 24/30/60
+    is_ntsc = abs(fps - round(fps)) > 0.01 or internal_tb in [24, 30, 60]
     timebase = int(round(fps))
 
     # Build FCP7 XML tree
@@ -449,6 +452,21 @@ def _prproj_parse_sequence(
 
     name_elem = ET.SubElement(sequence, "name")
     name_elem.text = seq_name
+
+    # Timecode
+    tc = ET.SubElement(sequence, "timecode")
+    tc_rate = ET.SubElement(tc, "rate")
+    tc_tb = ET.SubElement(tc_rate, "timebase")
+    tc_tb.text = str(timebase)
+    if is_ntsc:
+        tc_ntsc = ET.SubElement(tc_rate, "ntsc")
+        tc_ntsc.text = "TRUE"
+    tc_str = ET.SubElement(tc, "string")
+    tc_str.text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+    tc_frame = ET.SubElement(tc, "frame")
+    tc_frame.text = "0"
+    tc_df = ET.SubElement(tc, "displayformat")
+    tc_df.text = "DF" if is_ntsc else "NDF"
 
     media = ET.SubElement(sequence, "media")
     video_section = ET.SubElement(media, "video")
@@ -672,6 +690,15 @@ def _prproj_parse_sequence(
                     else:
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file:///{mc_name}"
+
+                    # Media details — source resolution for scale detection
+                    media_el = ET.SubElement(file_el, "media")
+                    video_el = ET.SubElement(media_el, "video")
+                    sc_el = ET.SubElement(video_el, "samplecharacteristics")
+                    sw = ET.SubElement(sc_el, "width")
+                    sw.text = str(src_w)
+                    sh = ET.SubElement(sc_el, "height")
+                    sh.text = str(src_h)
 
                     # Sourcetrack
                     sourcetrack = ET.SubElement(clipitem, "sourcetrack")
