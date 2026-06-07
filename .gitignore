@@ -23,6 +23,9 @@ env/
 Thumbs.db
 desktop.ini
 
+# Claude Code
+.claude/
+
 # Output
 output/
 *.bak
