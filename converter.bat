@@ -97,11 +97,55 @@ if not exist "!INPUT_FILE!" (
 goto MENU
 
 :OUT
+cls
+echo.
+echo  ============================================================
+echo   Set Output Directory
+echo  ============================================================
+echo.
+if defined OUTPUT_DIR (
+    echo  Current: !OUTPUT_DIR!
+) else (
+    echo  Current: (same as input^)
+)
+echo.
+echo  [1] Keep current
+echo  [2] Script folder \output
+echo  [3] Same as input file folder
+echo  [4] Custom path
+echo.
+choice /c 1234 /n /m "  > "
+if errorlevel 4 goto _OUT_CUSTOM
+if errorlevel 3 goto _OUT_INPUT
+if errorlevel 2 goto _OUT_SCRIPT
+goto MENU
+:_OUT_SCRIPT
+set "OUTPUT_DIR=%~dp0output"
+if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
+echo  Set to: !OUTPUT_DIR!
+timeout /t 1 >nul
+goto MENU
+:_OUT_INPUT
+if not defined INPUT_FILE (
+    echo  Please select input file first.
+    timeout /t 1 >nul
+    goto MENU
+)
+for %%F in ("!INPUT_FILE!") do set "OUTPUT_DIR=%%~dpF"
+rem Remove trailing backslash
+if "!OUTPUT_DIR:~-1!"=="\" set "OUTPUT_DIR=!OUTPUT_DIR:~0,-1!"
+echo  Set to: !OUTPUT_DIR!
+timeout /t 1 >nul
+goto MENU
+:_OUT_CUSTOM
 echo.
 set "OUTPUT_DIR="
-set /p "OUTPUT_DIR=  Path (Enter=same as input): "
+set /p "OUTPUT_DIR=  Path: "
 if not defined OUTPUT_DIR goto MENU
 call :stripquotes OUTPUT_DIR
+if not exist "!OUTPUT_DIR!" mkdir "!OUTPUT_DIR!"
+echo  Set to: !OUTPUT_DIR!
+timeout /t 1 >nul
 goto MENU
 
 :OPTIONS
