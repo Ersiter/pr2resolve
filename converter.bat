@@ -15,6 +15,7 @@ set "OUTPUT_DIR="
 set "SEQ_NAME="
 set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[ON]"
+set "OPT_XML=[ON]"
 
 :: Find Python
 set "PYTHON_CMD="
@@ -55,7 +56,7 @@ if defined SEQ_NAME (
     echo   [SEQ]    (auto^)
 )
 echo.
-echo   XML:     [ON]    FCP7 XML output (always on)
+echo   XML:     !OPT_XML!   FCP7 XML output (always on)
 echo   DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio)
 echo   Report:  !OPT_REPORT!   Fix report (.md)
 echo.
@@ -107,17 +108,21 @@ echo ============================================================
 echo   Output Options
 echo ============================================================
 echo.
-echo   [1] FCP7 XML       [ON]    (always on, primary output)
-echo   [2] DRT            !OPT_DRT!  (optional, needs DaVinci Resolve Studio)
+echo   [1] FCP7 XML       !OPT_XML!
+echo   [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio)
 echo   [3] Fix report     !OPT_REPORT!
 echo   [0] Back
 echo.
 choice /c 1230 /n /m "  Select [1-3, 0]: "
 if errorlevel 4 goto MENU
-if errorlevel 3 (
-    if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
-    goto OPTIONS
-)
+if errorlevel 3 goto _TOG_REPORT
+if errorlevel 2 goto _TOG_DRT
+if "!OPT_XML!"=="[ON]" (set "OPT_XML=[OFF]") else (set "OPT_XML=[ON]")
+goto OPTIONS
+:_TOG_REPORT
+if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+goto OPTIONS
+:_TOG_DRT
 if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
 goto OPTIONS
 

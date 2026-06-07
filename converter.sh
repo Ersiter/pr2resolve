@@ -20,6 +20,7 @@ OUTPUT_DIR=""
 SEQ_NAME=""
 OPT_DRT="[OFF]"
 OPT_REPORT="[ON]"
+OPT_XML="[ON]"
 
 # Find Python
 PYTHON_CMD=""
@@ -62,7 +63,7 @@ print_header() {
         echo "  [SEQ]    (auto)"
     fi
     echo ""
-    echo -e "  XML:     ${GREEN}[ON]${NC}    FCP7 XML output (always on)"
+    echo -e "  XML:     ${OPT_XML}   FCP7 XML output"
     echo -e "  DRT:     ${OPT_DRT}  DaVinci DRT output (needs Resolve Studio)"
     echo -e "  Report:  ${OPT_REPORT}   Fix report (.md)"
     echo ""
@@ -122,15 +123,15 @@ options_menu() {
         echo "  Output Options"
         echo "============================================================"
         echo ""
-        echo -e "  [1] FCP7 XML       ${GREEN}[ON]${NC}    (always on, primary output)"
-        echo -e "  [2] DRT            ${OPT_DRT}   (optional, needs DaVinci Resolve Studio)"
+        echo -e "  [1] FCP7 XML       ${OPT_XML}"
+        echo -e "  [2] DRT            ${OPT_DRT}  (needs DaVinci Resolve Studio)"
         echo -e "  [3] Fix report     ${OPT_REPORT}"
         echo "  [0] Back"
         echo ""
         read -r -p "  Select [1-3, 0]: " choice
         choice="${choice%%$'\r'}"
         case "$choice" in
-            1) ;; # Always on
+            1) if [ "$OPT_XML" = "[ON]" ]; then OPT_XML="[OFF]"; else OPT_XML="[ON]"; fi ;;
             2) if [ "$OPT_DRT" = "[ON]" ]; then OPT_DRT="[OFF]"; else OPT_DRT="[ON]"; fi ;;
             3) if [ "$OPT_REPORT" = "[ON]" ]; then OPT_REPORT="[OFF]"; else OPT_REPORT="[ON]"; fi ;;
             0) return ;;
