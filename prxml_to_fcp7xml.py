@@ -554,6 +554,7 @@ def _prproj_parse_sequence(
                     out_point = 0
                     playback_speed = 100
                     media_path = ""
+                    src_w, src_h = w, h  # default to timeline
 
                     if subclip is not None:
                         sc_ref = subclip.get("ObjectRef")
@@ -561,21 +562,24 @@ def _prproj_parse_sequence(
                         if sc_el is not None:
                             mc_name = sc_el.findtext("Name", mc_name)
 
-                            # MasterClip → filepath
+                            # MasterClip → Media (ObjectUID lookup for file path + resolution)
                             mc_uref_el = sc_el.find("MasterClip")
                             if mc_uref_el is not None:
                                 mc_uref = mc_uref_el.get("ObjectURef")
                                 mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
                                 if mc_el is not None:
-                                    # Try to get filepath from ClipLoggingInfo or Media
-                                    logging_ref = mc_el.find("LoggingInfo")
-                                    if logging_ref is not None:
-                                        li_ref = logging_ref.get("ObjectRef")
-                                        li_el = idx.resolve_ref(li_ref) if li_ref else None
-                                        if li_el is not None:
-                                            tape = li_el.findtext("Tape", "")
-                                            if tape:
-                                                media_path = tape
+                                    # Get file path from Media element
+                                    for media_el in prproj_root.findall("Media"):
+                                        mfp = media_el.findtext("FilePath")
+                                        if not mfp:
+                                            continue
+                                        # Match by filename: Media's FilePath vs SubClip's Name
+                                        from pathlib import PureWindowsPath
+                                        media_filename = PureWindowsPath(mfp).name
+                                        subclip_name = sc_el.findtext("Name", "")
+                                        if media_filename == subclip_name:
+                                            media_path = mfp
+                                            break
 
                             # Clip → InPoint/OutPoint/PlaybackSpeed
                             clip_ref_el = sc_el.find("Clip")
@@ -583,22 +587,23 @@ def _prproj_parse_sequence(
                                 clip_ref = clip_ref_el.get("ObjectRef")
                                 clip_el = idx.resolve_ref(clip_ref) if clip_ref else None
                                 if clip_el is not None:
-                                    ip = clip_el.findtext("InPoint")
-                                    op = clip_el.findtext("OutPoint")
+                                    # InPoint/OutPoint are inside nested <Clip> element
+                                    inner_clip = clip_el.find("Clip")
+                                    if inner_clip is not None:
+                                        ip = inner_clip.findtext("InPoint")
+                                        op = inner_clip.findtext("OutPoint")
+                                        # InPoint=0 is valid (clip starts at media beginning)
+                                        # None means "no trimming info" → use default 0
+                                        if ip is not None:
+                                            in_point = _prproj_ticks_to_frames(ip, fps)
+                                        if op is not None:
+                                            out_point = _prproj_ticks_to_frames(op, fps)
                                     ps = clip_el.findtext("PlaybackSpeed")
-                                    if ip:
-                                        in_point = _prproj_ticks_to_frames(ip, fps)
-                                    if op:
-                                        out_point = _prproj_ticks_to_frames(op, fps)
                                     if ps:
                                         try:
                                             playback_speed = int(float(ps))
                                         except ValueError:
                                             pass
-
-                    # Source resolution from MasterClip Media
-                    src_w, src_h = w, h  # default to timeline
-                    # (simplified — full resolution extraction requires deeper Media traversal)
 
                     # ComponentOwner → transform data
                     co = cti.find("ComponentOwner")
@@ -690,6 +695,10 @@ def _prproj_parse_sequence(
                     else:
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file:///{mc_name}"
+
+                    # File duration from source media
+                    fd = ET.SubElement(file_el, "duration")
+                    fd.text = str(out_point - in_point if out_point > in_point else end - start)
 
                     # Media details — source resolution for scale detection
                     media_el = ET.SubElement(file_el, "media")
@@ -1825,23 +1834,86 @@ _RESOLVE_API_PATHS: dict[str, list[str]] = {
     ],
 }
 
+# DaVinci Resolve install directories (for fusionscript.dll)
+_RESOLVE_INSTALL_CANDIDATES: list[str] = [
+    r"C:\Program Files\Blackmagic Design\DaVinci Resolve",
+    r"D:\Program Files\Blackmagic Design\DaVinci Resolve",
+    r"E:\Program Files\Blackmagic Design\DaVinci Resolve",
+]
+
+
+def _find_resolve_install_dir() -> Optional[Path]:
+    """Find DaVinci Resolve installation directory by checking running process and common paths.
+
+    Returns:
+        Path to DaVinci Resolve install dir, or None
+    """
+    import subprocess
+    # 1. Check if Resolve.exe is running and get its path
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/V", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "Resolve.exe" in result.stdout:
+            # Try to find install dir from common candidates
+            for candidate in _RESOLVE_INSTALL_CANDIDATES:
+                p = Path(candidate)
+                if p.exists() and (p / "fusionscript.dll").exists():
+                    return p
+    except Exception:
+        pass
+
+    # 2. Fallback: scan common candidates for fusionscript.dll
+    for candidate in _RESOLVE_INSTALL_CANDIDATES:
+        p = Path(candidate)
+        if (p / "fusionscript.dll").exists():
+            return p
+
+    return None
+
+
+def _is_resolve_running() -> bool:
+    """Check if DaVinci Resolve (Resolve.exe) is running as a process.
+
+    Returns:
+        True if Resolve.exe is found in running processes
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/NH"],
+            capture_output=True, text=True, timeout=5
+        )
+        return "Resolve.exe" in result.stdout
+    except Exception:
+        return False
+
 
 def _try_import_resolve() -> Any:
     """Attempt to import the DaVinciResolveScript module.
 
-    Searches standard installation paths for the module and tries to connect.
+    Searches standard installation paths for the module, sets RESOLVE_SCRIPT_LIB
+    to point to fusionscript.dll in the detected install directory, then imports.
 
     Returns:
         The Resolve object if successful, None otherwise
     """
-    import platform
     sys_name = sys.platform
     paths = _RESOLVE_API_PATHS.get(sys_name, [])
 
-    # Also check environment variable
+    # Check environment variable
     env_path = os.environ.get("RESOLVE_SCRIPT_API", "")
     if env_path:
         paths.insert(0, env_path)
+
+    # Find install dir and set RESOLVE_SCRIPT_LIB for DaVinciResolveScript.py
+    # (which hardcodes "C:\Program Files" on line 42)
+    install_dir = _find_resolve_install_dir()
+    if install_dir:
+        dll_path = str(install_dir / "fusionscript.dll")
+        if Path(dll_path).exists():
+            os.environ["RESOLVE_SCRIPT_LIB"] = dll_path
 
     for p in paths:
         if Path(p).exists() and p not in sys.path:
@@ -1860,14 +1932,18 @@ def _try_import_resolve() -> Any:
 def _check_resolve_running() -> Any:
     """Check if DaVinci Resolve is running and Scripting API is available.
 
+    First checks if Resolve.exe process is running. If so, attempts to
+    connect via Scripting API.
+
     Returns:
         The Resolve object if available, None otherwise
     """
+    if not _is_resolve_running():
+        return None
     resolve = _try_import_resolve()
     if resolve is None:
         return None
     try:
-        # Test connection by getting project manager
         pm = resolve.GetProjectManager()
         if pm is None:
             return None
@@ -2171,25 +2247,83 @@ def _run_pipeline(
         print(f"  Report: {report_path}")
 
     # DRT output
+    xml_written = output_path.exists()
     if drt:
         print()
         drt_path = output_dir / f"{stem}.drt"
         print("  DRT output requested. Checking DaVinci Resolve...")
         resolve = _check_resolve_running()
-        if resolve is None:
-            print("  DaVinci Resolve not detected.")
-            print("  DRT output requires DaVinci Resolve Studio running.")
-            print("  Please open DaVinci Resolve and try again,")
-            print("  or skip DRT output (XML was generated successfully).")
+        if resolve is None and not xml_written:
+            # No DaVinci AND no XML → nothing usable
+            print("  ❌ DaVinci Resolve not detected, and XML output failed.")
+            print("     DRT generation is not possible.")
+        elif resolve is None:
+            # No DaVinci BUT XML succeeded → prompt user
+            print("  ❕ DaVinci Resolve not detected.")
+            print("     XML was generated successfully (can be used as-is).")
+            print("     DRT requires DaVinci Resolve Studio running.")
+            print()
+            print("      [R]etry  - open DaVinci Resolve, then press R to retry")
+            print("      [L]eave  - continue without DRT (keep XML)")
+            print()
+            choice = input("  > ").strip().lower()
+            if choice == "r":
+                max_retries = 3
+                for attempt in range(1, max_retries + 1):
+                    print(f"  Checking DaVinci... (attempt {attempt}/{max_retries})")
+                    resolve = _check_resolve_running()
+                    if resolve is not None:
+                        break
+                    if attempt < max_retries:
+                        print("  Still not detected. Press Enter to retry, or type 'l' to leave.")
+                        quit_choice = input("  > ").strip().lower()
+                        if quit_choice == "l":
+                            resolve = None
+                            break
+                if resolve is None:
+                    print("  ❕ Continuing without DRT. XML kept.")
+                else:
+                    # DaVinci now running → proceed with DRT
+                    print("  DaVinci Resolve detected!")
+                    print(f"  Importing {output_path.name} into Resolve...")
+                    seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
+                    if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
+                        # DRT success → delete XML, show checkmark
+                        try:
+                            output_path.unlink()
+                            print(f"  ✅ DRT: {drt_path}")
+                            print(f"       (intermediate XML removed)")
+                            xml_written = False
+                        except OSError:
+                            print(f"  ✅ DRT: {drt_path}")
+                            print(f"       (could not remove intermediate XML: {output_path})")
+                    else:
+                        print("  ❌ DRT export failed. XML kept.")
+            else:
+                print("  Continuing without DRT. XML kept.")
         else:
+            # DaVinci running → direct DRT export
             print("  DaVinci Resolve detected.")
             print(f"  Importing {output_path.name} into Resolve...")
             seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
             if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
-                print(f"  DRT: {drt_path}")
+                # DRT success → delete XML, show checkmark
+                try:
+                    output_path.unlink()
+                    print(f"  ✅ DRT: {drt_path}")
+                    print(f"       (intermediate XML removed)")
+                    xml_written = False
+                except OSError:
+                    print(f"  ✅ DRT: {drt_path}")
+                    print(f"       (could not remove intermediate XML: {output_path})")
+            else:
+                print("  ❌ DRT export failed. XML kept.")
 
     print()
-    print(f"  Done. {fix_count} fixes applied to {output_path.name}")
+    if xml_written:
+        print(f"  Done. {fix_count} fixes applied to {output_path.name}")
+    elif drt:
+        print(f"  Done. Output: {drt_path.name}")
     return 0
 
 
