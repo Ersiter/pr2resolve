@@ -15,6 +15,7 @@ set "OUTPUT_DIR="
 set "SEQ_NAME="
 set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[ON]"
+set "OPT_XML=[ON]"
 
 :: Find Python
 set "PYTHON_CMD="
@@ -35,39 +36,41 @@ if not exist "%SCRIPT%" (
 
 :MENU
 cls
-echo ============================================================
-echo   prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer
-echo ============================================================
 echo.
+echo  ============================================================
+echo   prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer
+echo  ============================================================
+echo.
+echo  ------------------------------------------------------------
 if defined INPUT_FILE (
-    echo   [INPUT]  !INPUT_FILE!
+    echo  [INPUT]  !INPUT_FILE!
 ) else (
-    echo   [INPUT]  NOT SET - Please select first
+    echo  [INPUT]  NOT SET - Please select first
 )
 if defined OUTPUT_DIR (
-    echo   [OUTPUT] !OUTPUT_DIR!
+    echo  [OUTPUT] !OUTPUT_DIR!
 ) else (
-    echo   [OUTPUT] (same as input)
+    echo  [OUTPUT] (same as input^)
 )
 if defined SEQ_NAME (
-    echo   [SEQ]    !SEQ_NAME!
+    echo  [SEQ]    !SEQ_NAME!
 ) else (
-    echo   [SEQ]    (auto)
+    echo  [SEQ]    (auto^)
 )
 echo.
-echo   XML:     [ON]    FCP7 XML output (always on)
-echo   DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio)
-echo   Report:  !OPT_REPORT!   Fix report (.md)
+echo  XML:     !OPT_XML!   FCP7 XML output
+echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
+echo  Report:  !OPT_REPORT!   Fix report (.md^)
 echo.
-echo ------------------------------------------------------------
+echo  ------------------------------------------------------------
 echo.
-echo   [1] Select input file (.xml / .prproj)
-echo   [2] Set output directory
-echo   [3] Output options
-echo   [4] START
-echo   [0] Quit
+echo  [1] Select input file (.xml / .prproj^)
+echo  [2] Set output directory
+echo  [3] Output options
+echo  [4] START
+echo  [0] Quit
 echo.
-echo ------------------------------------------------------------
+echo  ------------------------------------------------------------
 echo.
 
 choice /c 12340 /n /m "  Select [1-4, 0]: "
@@ -103,24 +106,28 @@ goto MENU
 
 :OPTIONS
 cls
-echo ============================================================
+echo.
+echo  ============================================================
 echo   Output Options
-echo ============================================================
+echo  ============================================================
 echo.
-echo   [1] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio)
-echo   [2] Fix report     !OPT_REPORT!
-echo   [0] Back
+echo  [1] FCP7 XML       !OPT_XML!
+echo  [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio^)
+echo  [3] Fix report     !OPT_REPORT!
+echo  [0] Back
 echo.
-choice /c 120 /n /m "  Select [1-2, 0]: "
-if errorlevel 3 goto MENU
-if errorlevel 2 (
-    if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
-    goto OPTIONS
-)
-if errorlevel 1 (
-    if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
-    goto OPTIONS
-)
+choice /c 1230 /n /m "  Select [1-3, 0]: "
+if errorlevel 4 goto MENU
+if errorlevel 3 goto _TOG_REPORT
+if errorlevel 2 goto _TOG_DRT
+if "!OPT_XML!"=="[ON]" (set "OPT_XML=[OFF]") else (set "OPT_XML=[ON]")
+goto OPTIONS
+:_TOG_REPORT
+if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+goto OPTIONS
+:_TOG_DRT
+if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
+goto OPTIONS
 
 :RUN
 if not defined INPUT_FILE (
