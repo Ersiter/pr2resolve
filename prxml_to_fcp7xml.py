@@ -1825,23 +1825,86 @@ _RESOLVE_API_PATHS: dict[str, list[str]] = {
     ],
 }
 
+# DaVinci Resolve install directories (for fusionscript.dll)
+_RESOLVE_INSTALL_CANDIDATES: list[str] = [
+    r"C:\Program Files\Blackmagic Design\DaVinci Resolve",
+    r"D:\Program Files\Blackmagic Design\DaVinci Resolve",
+    r"E:\Program Files\Blackmagic Design\DaVinci Resolve",
+]
+
+
+def _find_resolve_install_dir() -> Optional[Path]:
+    """Find DaVinci Resolve installation directory by checking running process and common paths.
+
+    Returns:
+        Path to DaVinci Resolve install dir, or None
+    """
+    import subprocess
+    # 1. Check if Resolve.exe is running and get its path
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/V", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "Resolve.exe" in result.stdout:
+            # Try to find install dir from common candidates
+            for candidate in _RESOLVE_INSTALL_CANDIDATES:
+                p = Path(candidate)
+                if p.exists() and (p / "fusionscript.dll").exists():
+                    return p
+    except Exception:
+        pass
+
+    # 2. Fallback: scan common candidates for fusionscript.dll
+    for candidate in _RESOLVE_INSTALL_CANDIDATES:
+        p = Path(candidate)
+        if (p / "fusionscript.dll").exists():
+            return p
+
+    return None
+
+
+def _is_resolve_running() -> bool:
+    """Check if DaVinci Resolve (Resolve.exe) is running as a process.
+
+    Returns:
+        True if Resolve.exe is found in running processes
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Resolve.exe", "/NH"],
+            capture_output=True, text=True, timeout=5
+        )
+        return "Resolve.exe" in result.stdout
+    except Exception:
+        return False
+
 
 def _try_import_resolve() -> Any:
     """Attempt to import the DaVinciResolveScript module.
 
-    Searches standard installation paths for the module and tries to connect.
+    Searches standard installation paths for the module, sets RESOLVE_SCRIPT_LIB
+    to point to fusionscript.dll in the detected install directory, then imports.
 
     Returns:
         The Resolve object if successful, None otherwise
     """
-    import platform
     sys_name = sys.platform
     paths = _RESOLVE_API_PATHS.get(sys_name, [])
 
-    # Also check environment variable
+    # Check environment variable
     env_path = os.environ.get("RESOLVE_SCRIPT_API", "")
     if env_path:
         paths.insert(0, env_path)
+
+    # Find install dir and set RESOLVE_SCRIPT_LIB for DaVinciResolveScript.py
+    # (which hardcodes "C:\Program Files" on line 42)
+    install_dir = _find_resolve_install_dir()
+    if install_dir:
+        dll_path = str(install_dir / "fusionscript.dll")
+        if Path(dll_path).exists():
+            os.environ["RESOLVE_SCRIPT_LIB"] = dll_path
 
     for p in paths:
         if Path(p).exists() and p not in sys.path:
@@ -1860,14 +1923,18 @@ def _try_import_resolve() -> Any:
 def _check_resolve_running() -> Any:
     """Check if DaVinci Resolve is running and Scripting API is available.
 
+    First checks if Resolve.exe process is running. If so, attempts to
+    connect via Scripting API.
+
     Returns:
         The Resolve object if available, None otherwise
     """
+    if not _is_resolve_running():
+        return None
     resolve = _try_import_resolve()
     if resolve is None:
         return None
     try:
-        # Test connection by getting project manager
         pm = resolve.GetProjectManager()
         if pm is None:
             return None
@@ -2179,13 +2246,13 @@ def _run_pipeline(
         resolve = _check_resolve_running()
         if resolve is None and not xml_written:
             # No DaVinci AND no XML → nothing usable
-            print("  [X] DaVinci Resolve not detected, and XML output failed.")
-            print("      DRT generation is not possible.")
+            print("  ❌ DaVinci Resolve not detected, and XML output failed.")
+            print("     DRT generation is not possible.")
         elif resolve is None:
             # No DaVinci BUT XML succeeded → prompt user
-            print("  [!] DaVinci Resolve not detected.")
-            print("      XML was generated successfully (can be used as-is).")
-            print("      DRT requires DaVinci Resolve Studio running.")
+            print("  ❕ DaVinci Resolve not detected.")
+            print("     XML was generated successfully (can be used as-is).")
+            print("     DRT requires DaVinci Resolve Studio running.")
             print()
             print("      [R]etry  - open DaVinci Resolve, then press R to retry")
             print("      [L]eave  - continue without DRT (keep XML)")
@@ -2205,7 +2272,7 @@ def _run_pipeline(
                             resolve = None
                             break
                 if resolve is None:
-                    print("  [!] Continuing without DRT. XML kept.")
+                    print("  ❕ Continuing without DRT. XML kept.")
                 else:
                     # DaVinci now running → proceed with DRT
                     print("  DaVinci Resolve detected!")
@@ -2215,14 +2282,14 @@ def _run_pipeline(
                         # DRT success → delete XML, show checkmark
                         try:
                             output_path.unlink()
-                            print(f"  [OK] DRT: {drt_path}")
+                            print(f"  ✅ DRT: {drt_path}")
                             print(f"       (intermediate XML removed)")
                             xml_written = False
                         except OSError:
-                            print(f"  [OK] DRT: {drt_path}")
+                            print(f"  ✅ DRT: {drt_path}")
                             print(f"       (could not remove intermediate XML: {output_path})")
                     else:
-                        print("  [X] DRT export failed. XML kept.")
+                        print("  ❌ DRT export failed. XML kept.")
             else:
                 print("  Continuing without DRT. XML kept.")
         else:
@@ -2234,14 +2301,14 @@ def _run_pipeline(
                 # DRT success → delete XML, show checkmark
                 try:
                     output_path.unlink()
-                    print(f"  [OK] DRT: {drt_path}")
+                    print(f"  ✅ DRT: {drt_path}")
                     print(f"       (intermediate XML removed)")
                     xml_written = False
                 except OSError:
-                    print(f"  [OK] DRT: {drt_path}")
+                    print(f"  ✅ DRT: {drt_path}")
                     print(f"       (could not remove intermediate XML: {output_path})")
             else:
-                print("  [X] DRT export failed. XML kept.")
+                print("  ❌ DRT export failed. XML kept.")
 
     print()
     if xml_written:
