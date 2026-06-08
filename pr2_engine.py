@@ -2427,9 +2427,19 @@ def _drt_sandbox_export(
         temp_name = f"pr2resolve_drt_{int(time.time())}"
         print(f"  Creating temporary project: \"{temp_name}\"")
 
-        # Close current project first if one is open
+        # Detach from current project if one is open.
+        # Scenario 1: No project -> skip save/close
+        # Scenario 2: User editing -> save before close
+        # Scenario 3: Auto-load recent -> treat as scenario 1 (Untitled = no user work)
         if original_project is not None:
-            pm.SaveProject()
+            project_name = original_project.GetName() or ""
+            is_default = not project_name or project_name.startswith("Untitled")
+            if not is_default:
+                # User has real work open — save before switching
+                try:
+                    pm.SaveProject()
+                except Exception:
+                    pass
             pm.CloseProject(original_project)
 
         project = pm.CreateProject(temp_name)
