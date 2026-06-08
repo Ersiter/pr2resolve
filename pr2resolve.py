@@ -11,6 +11,7 @@ import copy
 import gzip
 import os
 import sys
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -2268,6 +2269,41 @@ def _generate_report(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Utilities
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _recycle(path: Path) -> None:
+    """Move a file to the Windows recycle bin. Never permanently delete.
+
+    Uses Windows shell API via PowerShell. On non-Windows systems,
+    falls back to moving to a local trash directory.
+
+    Args:
+        path: Path to the file to recycle
+    """
+    if not path.exists():
+        return
+    try:
+        if sys.platform == "win32":
+            import subprocess
+            subprocess.run([
+                "powershell", "-Command",
+                f"Add-Type -AssemblyName Microsoft.VisualBasic;"
+                f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+                f"'{path}','OnlyErrorDialogs','SendToRecycleBin')"
+            ], capture_output=True, timeout=10)
+        else:
+            # macOS/Linux: move to trash
+            import shutil
+            trash = Path.home() / ".Trash"
+            trash.mkdir(exist_ok=True)
+            shutil.move(str(path), str(trash / path.name))
+    except Exception:
+        # Silently ignore recycle failures — file may be locked
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # DRT Output — DaVinci Resolve Scripting API Bridge
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2412,13 +2448,22 @@ def _check_resolve_running() -> Any:
         return None
 
 
-def _drt_import_and_export(
+def _drt_sandbox_export(
     resolve: Any,
     xml_path: Path,
     output_path: Path,
     timeline_name: str = "Imported",
 ) -> bool:
-    """Import FCP7 XML into DaVinci Resolve and export as DRT.
+    """Export DRT via a temporary sandbox project.
+
+    Creates a temporary DaVinci project, imports the XML, exports DRT,
+    then restores the user's original project. Never touches user's project.
+
+    DaVinci API facts used:
+    - DeleteTimeline() does NOT exist → sandbox project is the only clean path
+    - DeleteProject() only works on unloaded projects
+    - CloseProject() closes without saving
+    - LoadProject(name) loads an existing project
 
     Args:
         resolve: The DaVinci Resolve object
@@ -2431,15 +2476,29 @@ def _drt_import_and_export(
     """
     try:
         pm = resolve.GetProjectManager()
-        project = pm.GetCurrentProject()
+        original_project = pm.GetCurrentProject()
+        original_name = original_project.GetName() if original_project else None
+
+        # Create unique temp project name
+        temp_name = f"pr2resolve_drt_{int(time.time())}"
+        print(f"  Creating temporary project: \"{temp_name}\"")
+
+        # Close current project first if one is open
+        if original_project is not None:
+            pm.SaveProject()
+            pm.CloseProject(original_project)
+
+        project = pm.CreateProject(temp_name)
         if project is None:
-            project = pm.NewProject("pr2resolve_temp")
+            print("  Error: Could not create temporary project")
+            # Try to restore original
+            if original_name:
+                pm.LoadProject(original_name)
+            return False
 
         media_pool = project.GetMediaPool()
 
-        # Try importing with source clips first.
-        # If media files don't exist on this machine, fall back to
-        # skeleton import (timeline structure only, no media).
+        # Import with source clips first; fall back to skeleton import
         timeline = media_pool.ImportTimelineFromFile(
             str(xml_path),
             {
@@ -2448,7 +2507,6 @@ def _drt_import_and_export(
             },
         )
         if timeline is None:
-            # Fallback: import without source clips
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
                 {
@@ -2461,25 +2519,88 @@ def _drt_import_and_export(
 
         if timeline is None:
             print("  Error: Failed to import timeline from XML")
-            print("  Check that: XML structure is valid, and DaVinci Studio is running")
+            # Clean up and restore
+            pm.CloseProject(project)
+            if original_name:
+                pm.LoadProject(original_name)
             return False
 
         print(f"  Timeline imported: {timeline.GetName()}")
 
-        # Export as DRT
+        # Export DRT
         export_result = timeline.Export(
             str(output_path),
             resolve.EXPORT_DRT,
         )
-        if export_result:
-            print(f"  DRT exported: {output_path}")
-            return True
-        else:
+        if not export_result:
             print("  Error: DRT export failed")
+            pm.CloseProject(project)
+            if original_name:
+                pm.LoadProject(original_name)
             return False
 
+        print(f"  DRT exported: {output_path}")
+
+        # Restore user's original project
+        pm.CloseProject(project)
+        if original_name:
+            pm.LoadProject(original_name)
+            print(f"  Restored: \"{original_name}\"")
+        else:
+            print("  (no original project to restore)")
+
+        # Clean up: delete temp project (only deletable when unloaded)
+        try:
+            pm.DeleteProject(temp_name)
+        except Exception:
+            pass  # best-effort cleanup
+
+        return True
+
     except Exception as e:
-        print(f"  Error during DRT generation: {e}")
+        print(f"  Error during DRT sandbox: {e}")
+        # Best-effort restore
+        try:
+            pm = resolve.GetProjectManager()
+            current = pm.GetCurrentProject()
+            if current is not None and original_name and (
+                current.GetName() if hasattr(current, 'GetName') else ""
+            ) != original_name:
+                pm.CloseProject(current)
+                pm.LoadProject(original_name)
+        except Exception:
+            pass
+        return False
+
+
+def _launch_resolve() -> bool:
+    """Attempt to launch DaVinci Resolve automatically.
+
+    Finds the install directory via _find_resolve_install_dir and starts
+    Resolve.exe as a detached process. The user still needs to wait for
+    DaVinci to finish initializing before the API becomes available
+    (typically 10-30 seconds).
+
+    Returns:
+        True if the process was started, False otherwise
+    """
+    install_dir = _find_resolve_install_dir()
+    if not install_dir:
+        return False
+    exe = install_dir / "Resolve.exe"
+    if not exe.exists():
+        return False
+    try:
+        import subprocess
+        subprocess.Popen(
+            [str(exe)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=0x00000008 if sys.platform == "win32" else 0,  # DETACHED_PROCESS
+        )
+        print(f"  Launched: {exe}")
+        return True
+    except Exception:
         return False
 
 
@@ -2736,76 +2857,76 @@ def _run_pipeline(
         print()
         drt_path = output_dir / f"{stem}.drt"
         print("  DRT output requested. Checking DaVinci Resolve...")
+
+        def _try_drt(resolve_obj: Any) -> bool:
+            """Run sandbox DRT export. Returns True on success."""
+            print("  DRT uses a temporary sandbox project to avoid")
+            print("  touching your current project. It will briefly")
+            print("  switch projects and restore afterward.")
+            seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
+            if not _drt_sandbox_export(resolve_obj, output_path, drt_path, seq_name_drt):
+                return False
+            if lumetri_data:
+                _drt_supplement_lumetri(resolve_obj, lumetri_data)
+            _recycle(output_path)
+            print(f"  ✅ DRT: {drt_path}")
+            print(f"     (intermediate XML moved to recycle bin)")
+            return True
+
         resolve = _check_resolve_running()
-        if resolve is None and not xml_written:
+        if resolve is not None:
+            # DaVinci running → sandbox export
+            print("  DaVinci Resolve detected.")
+            if _try_drt(resolve):
+                xml_written = False
+        elif not xml_written:
             # No DaVinci AND no XML → nothing usable
             print("  ❌ DaVinci Resolve not detected, and XML output failed.")
             print("     DRT generation is not possible.")
-        elif resolve is None:
+        else:
             # No DaVinci BUT XML succeeded → prompt user
             print("  ❕ DaVinci Resolve not detected.")
             print("     XML was generated successfully (can be used as-is).")
             print("     DRT requires DaVinci Resolve Studio running.")
             print()
-            print("      [R]etry  - open DaVinci Resolve, then press R to retry")
-            print("      [L]eave  - continue without DRT (keep XML)")
+            print("      [A]uto-launch DaVinci  - start Resolve automatically")
+            print("      [R]etry               - check again for DaVinci")
+            print("      [L]eave               - continue without DRT (keep XML)")
             print()
             choice = input("  > ").strip().lower()
-            if choice == "r":
-                max_retries = 3
-                for attempt in range(1, max_retries + 1):
-                    print(f"  Checking DaVinci... (attempt {attempt}/{max_retries})")
+            if choice == "a":
+                print("  Launching DaVinci Resolve...")
+                if _launch_resolve():
+                    print("  DaVinci is starting. This may take 10-30 seconds.")
+                    print("  After it finishes loading, it will automatically create a new project if none is open.")
+                else:
+                    print("  Could not auto-launch. Please start DaVinci manually.")
+                for attempt in range(1, 6):
+                    print(f"  Checking DaVinci... (attempt {attempt}/5)")
+                    time.sleep(3 if attempt <= 2 else 5)
                     resolve = _check_resolve_running()
                     if resolve is not None:
-                        break
-                    if attempt < max_retries:
-                        print("  Still not detected. Press Enter to retry, or type 'l' to leave.")
-                        quit_choice = input("  > ").strip().lower()
-                        if quit_choice == "l":
-                            resolve = None
-                            break
-                if resolve is None:
-                    print("  ❕ Continuing without DRT. XML kept.")
-                else:
-                    # DaVinci now running → proceed with DRT
-                    print("  DaVinci Resolve detected!")
-                    print(f"  Importing {output_path.name} into Resolve...")
-                    seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
-                    if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
-                        # Supplement Lumetri Color nodes if data available
-                        if lumetri_data:
-                            _drt_supplement_lumetri(resolve, lumetri_data)
-                        # DRT success → delete XML, show checkmark
-                        try:
-                            output_path.unlink()
-                            print(f"  ✅ DRT: {drt_path}")
-                            print(f"       (intermediate XML removed)")
+                        if _try_drt(resolve):
                             xml_written = False
-                        except OSError:
-                            print(f"  ✅ DRT: {drt_path}")
-                            print(f"       (could not remove intermediate XML: {output_path})")
-                    else:
-                        print("  ❌ DRT export failed. XML kept.")
+                        break
+                else:
+                    print("  ❕ DaVinci still not accessible. XML kept.")
+            elif choice == "r":
+                for attempt in range(1, 4):
+                    print(f"  Checking DaVinci... (attempt {attempt}/3)")
+                    resolve = _check_resolve_running()
+                    if resolve is not None:
+                        if _try_drt(resolve):
+                            xml_written = False
+                        break
+                    if attempt < 3:
+                        print("  Still not detected. Press Enter to retry, or type 'l' to leave.")
+                        if input("  > ").strip().lower() == "l":
+                            break
+                else:
+                    print("  ❕ Continuing without DRT. XML kept.")
             else:
-                print("  Continuing without DRT. XML kept.")
-        else:
-            # DaVinci running → direct DRT export
-            print("  DaVinci Resolve detected.")
-            print(f"  Importing {output_path.name} into Resolve...")
-            seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
-            if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
-                if lumetri_data:
-                    _drt_supplement_lumetri(resolve, lumetri_data)
-                try:
-                    output_path.unlink()
-                    print(f"  ✅ DRT: {drt_path}")
-                    print(f"       (intermediate XML removed)")
-                    xml_written = False
-                except OSError:
-                    print(f"  ✅ DRT: {drt_path}")
-                    print(f"       (could not remove intermediate XML: {output_path})")
-            else:
-                print("  ❌ DRT export failed. XML kept.")
+                print("  ❕ Continuing without DRT. XML kept.")
 
     print()
     if xml_written:
