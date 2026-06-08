@@ -1,6 +1,6 @@
 <div align="center">
 
-# prxml2fcp7xml
+# pr2resolve
 
 Convert Premiere Pro timelines to DaVinci Resolve-ready FCP7 XML. Optional DRT export if you have Resolve Studio running.
 
@@ -85,22 +85,22 @@ chmod +x converter.sh
 
 ```bash
 # PR XML -- fixed XML
-python prxml_to_fcp7xml.py "input.xml"
+python pr2resolve.py "input.xml"
 
 # .prproj -- output XML directly (recommended)
-python prxml_to_fcp7xml.py "project.prproj" -o ./output
+python pr2resolve.py "project.prproj" -o ./output
 
 # .prproj with specific sequence
-python prxml_to_fcp7xml.py "project.prproj" --sequence "Sequence 01"
+python pr2resolve.py "project.prproj" --sequence "Sequence 01"
 
 # DRT output (requires DaVinci Resolve Studio running)
-python prxml_to_fcp7xml.py "input.xml" --drt
+python pr2resolve.py "input.xml" --drt
 
 # Generate fix report
-python prxml_to_fcp7xml.py "input.xml" --report
+python pr2resolve.py "input.xml" --report
 
 # Diagnose only, no fixes
-python prxml_to_fcp7xml.py "input.xml" --diagnose-only
+python pr2resolve.py "input.xml" --diagnose-only
 ```
 
 ---
@@ -221,7 +221,7 @@ FCP7 XML path: No -- Lumetri is a PR-proprietary effect and is removed from XML.
 
 ```
 pr2drt/
-├── prxml_to_fcp7xml.py    # Core CLI tool (parse / diagnose / fix / validate / DRT)
+├── pr2resolve.py    # Core CLI tool (parse / diagnose / fix / validate / DRT)
 ├── converter.bat           # Windows TUI
 ├── converter.sh            # macOS/Linux TUI
 ├── tests/
