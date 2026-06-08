@@ -668,8 +668,8 @@ def _prproj_parse_sequence(
                                         if not mfp:
                                             continue
                                         # Match by filename: Media's FilePath vs SubClip's Name
-                                        media_filename = PureWindowsPath(mfp).name.casefold()
-                                        subclip_name = sc_el.findtext("Name", "").casefold()
+                                        media_filename = PureWindowsPath(mfp).name.lower()
+                                        subclip_name = sc_el.findtext("Name", "").lower()
                                         if media_filename == subclip_name:
                                             media_path = mfp
                                             break
@@ -952,7 +952,7 @@ def _prproj_parse_sequence(
                                     mfp = media_el.findtext("FilePath")
                                     if not mfp:
                                         continue
-                                    if PureWindowsPath(mfp).name.casefold() == a_mc_name.casefold():
+                                    if PureWindowsPath(mfp).name.lower() == a_mc_name.lower():
                                         a_media_path = mfp
                                         break
 
