@@ -3,7 +3,7 @@
 
 Dual-entry (FCP7 XML / .prproj) -> Unified Timeline Model -> FCP7 XML / DRT output.
 
-Thin CLI entry point. Core logic lives in pr2_*.py modules.
+Thin CLI entry point. Core logic lives in pr2_engine.py.
 Constants and data models live in pr2_constants.py.
 """
 
@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Optional
 
-# ── Re-export from pr2_constants (single source of truth) ─────────────────
+# ── Constants + data models (single source of truth) ──────────────
 from pr2_constants import (
     VERSION, DEFAULT_FPS, NTSC_RATES, PAL_RATES, FPS_TOLERANCE,
     FCP7_VERSION, FCP7_DOCTYPE, CRITICAL, MAJOR, MINOR,
@@ -25,20 +25,18 @@ from pr2_constants import (
     load_xml, load_prproj,
 )
 
-# ── Module imports ────────────────────────────────────────────────────────
-from pr2_diagnostics import _scan, _is_ntsc_fps, _is_ntsc_timebase
-from pr2_fix_engine import _apply_fixes
-from pr2_validator import _validate
-from pr2_output import _write_fixed_xml, _generate_report
-from pr2_prproj_parser import (
+# ── Engine (consolidated: diagnostics + fix + validate + output + prproj + drt) ─
+from pr2_engine import (
+    _scan, _apply_fixes, _validate,
+    _write_fixed_xml, _generate_report,
     _PrprojIndex, _prproj_parse_sequence, _prproj_list_sequences,
     _prproj_extract_all_lumetri,
-)
-from pr2_drt_bridge import (
     _check_resolve_running, _ensure_resolve_running,
     _drt_sandbox_export, _drt_supplement_lumetri,
+    _recycle,
 )
-from pr2_utils import _recycle
+
+# ── Recycle utility (also lives in pr2_engine, re-export for convenience) ──
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
