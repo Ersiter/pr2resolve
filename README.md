@@ -2,7 +2,7 @@
 
 # .PRPROJ-.DRT Converter
 
-Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT。
+Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT。
 
 [**README in English**](README_EN.md)
 

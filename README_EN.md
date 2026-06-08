@@ -1,21 +1,26 @@
 <div align="center">
 
-# pr2resolve
+# .PRPROJ-.DRT Converter
 
 Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML and DRT.
 
-[**Chinese**](README.md)
+[**中文 README**](README.md)
 
 </div>
 
 ---
 
+<!-- omit from toc -->
 ## Table of Contents
 
-- [Installation](#installation)
+- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [What It Is](#what-it-is)
-- [Why You Need It](#why-you-need-it)
+  - [Windows](#windows)
+  - [macOS / Linux](#macos--linux)
+  - [TUI](#tui)
+  - [CLI](#cli)
+- [What Can I Do](#what-can-i-do)
+- [Why You Need Me](#why-you-need-me)
 - [CLI Reference](#cli-reference)
 - [How It Works](#how-it-works)
 - [Fix Rules](#fix-rules)
@@ -25,35 +30,45 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML and DRT.
 
 ---
 
-## Installation
+## Prerequisites
 
-```bash
-git clone <repo-url>
-cd pr2resolve
-```
+1. **Install Python 3.8+**  
+   - Download from [python.org](https://www.python.org/downloads/)  
+   - **Important**: Check `Add Python to PATH` during installation  
+   - Already installed but PATH is missing? Re-run the installer and check it this time
 
-Python 3.8+ is the only dependency. No pip install needed.
+2. **Verify**  
+   Open a terminal (cmd or bash) and run:
+   ```bash
+   python --version
+   ```
 
 ---
 
 ## Quick Start
 
+Download the [latest source archive]() and extract it.
+
 ### Windows
 
 Double-click `converter.bat`.
-
-```
-[1] Select input file (.xml or .prproj)
-[2] Set output directory
-[3] Configure options (XML / DRT / Report)
-[4] Start conversion
-```
 
 ### macOS / Linux
 
 ```bash
 chmod +x converter.sh
 ./converter.sh
+```
+
+
+### TUI
+
+```bash
+Pick a number:
+[1] Select input file (.xml or .prproj)
+[2] Set output directory
+[3] Configure options (XML / DRT / Report)
+[4] Start conversion
 ```
 
 ### CLI
@@ -86,9 +101,9 @@ File → Import Timeline → Import AAF, EDL, XML... → pick the .xml file
 
 ---
 
-## What It Is
+## What Can I Do
 
-pr2resolve reads Premiere Pro timeline data and outputs files DaVinci Resolve can use.
+**pr2resolve reads Premiere Pro timeline data and outputs files DaVinci Resolve can use directly (or opens them in DaVinci on the spot).**
 
 Two input formats:
 - PR-exported FCP7 XML (.xml)
@@ -100,21 +115,31 @@ Two output formats:
 
 ---
 
-## Why You Need It
+## Why You Need Me
 
-PR's FCP7 XML export to DaVinci is unreliable. Not your fault — the export is broken.
+**Born from real PR-to-Resolve roundtrip pain and the flood of complaints online — PR's FCP7 XML export is notoriously bad. After digging in:**
 
-**Every clip shows Scale=100%.** You fit clips to the frame in PR. The XML says 100%. In DaVinci they render 2x or 3x bigger than expected. You calculate fix values by hand for each one.
+- **Every clip shows Scale=100%.**
 
-**Lumetri grades disappear.** Your color work becomes a base64 blob in the XML. DaVinci doesn't know what to do with it. It skips the block. Hours of grading, gone.
+    You scaled clips to fit in PR. The XML writes Scale=100%. In DaVinci they render 2× or 3× bigger than the frame. You calculate fix values by hand for each one.
 
-**Paths are wrong. All media shows offline.** PR on Windows writes `file://localhost/C%3a/Users/...`. DaVinci rejects it. You relink every single file.
+- **Lumetri grades are lost.**
 
-pr2resolve reads the input, fixes all of this, and writes clean XML.
+    Your color work becomes a blob of base64 in the XML. DaVinci doesn't understand it, skips the block, and can even crash (it opens but hangs on timeline changes — likely an IO backlog from parsing errors).
 
-**Why .prproj instead of XML export?** PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with Lumetri params, speed curves, and keyframes intact. Feed it .prproj directly.
+- **Offline media from bad paths.**
 
-**When to use DRT?** You spent a lot of time grading in PR and don't want to redo it in DaVinci. DRT goes through DaVinci's Scripting API and writes Lumetri params into Color Corrector nodes. DaVinci Studio needs to be running.
+    PR writes `file://localhost/C%3a/Users/...` on Windows. DaVinci doesn't recognize this format. You relink every single file.
+
+**pr2resolve reads the input, fixes all of this, and writes clean FCP7 XML.**
+
+- **Why .prproj instead of XML export?**
+
+    PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with Lumetri params, speed curves, and keyframes intact. Feed it .prproj directly, no need to export XML first.
+
+- **When to use DRT?**
+
+    You spent time grading in PR and don't want to redo it in DaVinci. DRT goes through DaVinci's Scripting API and writes Lumetri params directly into Color Corrector nodes. DaVinci Studio needs to be running.
 
 ---
 
@@ -141,7 +166,7 @@ Input (.xml or .prproj)
     ├─ .prproj → gzip decompress → ObjectID graph traversal
     │
     ▼
-Scan 21 issues → Auto-fix by severity → Validate 23 checks
+Scan 21 known issues → Auto-fix by severity → Validate 23 checks
     │
     ▼
 Output:
@@ -195,4 +220,4 @@ All rules apply automatically. They're not optional — skip them and the import
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+[MIT LICENSE](./LICENSE)

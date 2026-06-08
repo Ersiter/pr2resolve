@@ -202,7 +202,7 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
             tb_val = rate_elem.findtext("timebase")
             if tb_val and _is_ntsc_timebase(float(tb_val)):
                 issues.append(Issue(
-                    MAJOR, "C3",
+                    CRITICAL, "C3",
                     "<rate> missing <ntsc> (NTSC timebase)",
                     f"rate (parent context unavailable in iter)",
                 ))
