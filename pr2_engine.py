@@ -314,7 +314,7 @@ def _scan_major(root: ET.Element) -> list[Issue]:
         "sourcetrack", "filter", "logginginfo", "colorinfo", "labels", "link",
     ]
     _order_map = {t: i for i, t in enumerate(_order_ref)}
-    for ci in list(root.iter("clipitem"))[:50]:
+    for ci in list(root.iter("clipitem")):
         ci_tags = [c.tag for c in ci if c.tag in _order_map]
         sorted_tags = sorted(ci_tags, key=lambda t: _order_map.get(t, 999))
         if ci_tags != sorted_tags:
@@ -596,12 +596,13 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     for pathurl_elem in root.iter("pathurl"):
         url = pathurl_elem.text or ""
         if url and not url.startswith("file:///"):
-            # Convert file://localhost/ or file:// to file:///
             if url.startswith("file://localhost/"):
                 pathurl_elem.text = "file:///" + url[len("file://localhost/"):]
+                fix_count += 1
             elif url.startswith("file://"):
                 pathurl_elem.text = "file:///" + url[len("file://"):]
-            fix_count += 1
+                fix_count += 1
+    if any(i.rule_id == "C5" for i in issues):
         _mark_fixed(issues, "C5", "pathurl")
 
     # C6: Reorder media children (video before audio)
@@ -810,11 +811,27 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     # N2: Add missing <displayformat> to timecode elements
     for tc in root.iter("timecode"):
         if tc.find("displayformat") is None:
-            # Determine DF/NDF from rate
+            # DF/NDF depends on actual frame rate, not just NTSC flag.
+            # 23.976/24fps NDF (no drop-frame for film rates).
+            # 29.97fps DF, 30.00fps NDF, 59.94fps DF, 60.00fps NDF.
             tc_tb = tc.findtext("rate/timebase", "30")
             tc_has_ntsc = tc.find("rate/ntsc") is not None
+            is_df = False
+            try:
+                tb_val = float(tc_tb)
+                # NTSC drop-frame: only fractional rates (23.976, 29.97, 59.94)
+                if tc_has_ntsc and abs(tb_val - round(tb_val)) < 0.01:
+                    # integer timebase with ntsc = check if fractional NTSC rate
+                    # 24 -> 23.976 NDF, 30 -> 29.97 DF, 60 -> 59.94 DF
+                    is_df = tb_val in [30, 60]
+                elif abs(tb_val - 29.97) < 0.01:
+                    is_df = True
+                elif abs(tb_val - 59.94) < 0.01:
+                    is_df = True
+            except ValueError:
+                pass
             df = ET.SubElement(tc, "displayformat")
-            df.text = "DF" if tc_has_ntsc else "NDF"
+            df.text = "DF" if is_df else "NDF"
             fix_count += 1
     if any(i.rule_id == "N2" for i in issues):
         _mark_fixed(issues, "N2", "displayformat")
@@ -2255,8 +2272,8 @@ def _prproj_parse_sequence(
 # DaVinci Resolve Scripting API module paths
 _RESOLVE_API_PATHS: dict[str, list[str]] = {
     "win32": [
-        r"C:\ProgramData\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules",
-        r"C:\Program Files\Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules",
+        str(Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData"))
+            / r"Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules"),
     ],
     "darwin": [
         "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting/Modules",
@@ -2630,12 +2647,12 @@ def _drt_supplement_lumetri(
     """
     # Lumetri -> DaVinci Color parameter mapping
     _LUMETRI_TO_DAVINCI: dict[str, str] = {
-        "曝光": "Gain",        # Exposure -> Gain wheel
+        "曝光": "Exposure",    # Exposure (DaVinci Color Page Exposure)
         "对比度": "Contrast",
         "高光": "Highlights",
         "阴影": "Shadows",
-        "白色": "Gain",        # Whites -> Gain (not "Whites")
-        "黑色": "Lift",        # Blacks -> Lift (not "Blacks")
+        "白色": "Gain",        # Whites -> Gain wheel
+        "黑色": "Lift",        # Blacks -> Lift wheel
         "饱和度": "Saturation",
         "色温": "Temperature",
         "色彩": "Tint",
