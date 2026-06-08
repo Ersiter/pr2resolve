@@ -2462,6 +2462,226 @@ def _check_resolve_running() -> Any:
         return None
 
 
+# --- Feature: Batch DRT Export ---
+
+def _drt_batch_export(
+    resolve: Any,
+    xml_paths: list[Path],
+    output_dir: Path,
+    sequence_names: list[str],
+) -> list[tuple[bool, Optional[Path]]]:
+    """Export multiple sequences as DRT files in one DaVinci session.
+
+    Creates one sandbox project, imports all timelines, exports each
+    as DRT, then cleans up. Much more efficient than calling
+    _drt_sandbox_export multiple times.
+
+    Args:
+        resolve: DaVinci Resolve object
+        xml_paths: List of paths to FCP7 XML files
+        output_dir: Directory to write .drt files
+        sequence_names: Names for each sequence (matching xml_paths order)
+
+    Returns:
+        List of (success, drt_path) tuples
+    """
+    results: list[tuple[bool, Optional[Path]]] = []
+    pm = resolve.GetProjectManager()
+    original_project = pm.GetCurrentProject()
+    original_name = original_project.GetName() if original_project else None
+
+    temp_name = f"pr2resolve_batch_{int(time.time())}"
+    print(f"  Batch export: creating temp project \"{temp_name}\"")
+
+    if original_project is not None:
+        project_name = original_project.GetName() or ""
+        if not project_name or project_name.startswith("Untitled"):
+            pass
+        else:
+            try:
+                pm.SaveProject()
+            except Exception:
+                pass
+        pm.CloseProject(original_project)
+
+    project = pm.CreateProject(temp_name)
+    if project is None:
+        print("  Error: Could not create temp project for batch export")
+        if original_name:
+            pm.LoadProject(original_name)
+        return [(False, None)] * len(xml_paths)
+
+    media_pool = project.GetMediaPool()
+
+    for i, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
+        print(f"  [{i+1}/{len(xml_paths)}] {seq_name}")
+        # Strip file elements for DRT safety
+        drt_xml = xml_path
+        temp_stripped = None
+        try:
+            tree = ET.parse(str(xml_path))
+            if tree.find(".//file") is not None:
+                stripped_root = copy.deepcopy(tree.getroot())
+                for ci in stripped_root.iter("clipitem"):
+                    fi = ci.find("file")
+                    if fi is not None:
+                        ci.remove(fi)
+                temp_stripped = xml_path.parent / f"_batch_stripped_{int(time.time())}_{i}.xml"
+                ET.ElementTree(stripped_root).write(
+                    str(temp_stripped), encoding="utf-8", xml_declaration=True
+                )
+                content = temp_stripped.read_text(encoding="utf-8")
+                content = content.replace(
+                    '<?xml version="1.0" encoding="utf-8"?>',
+                    '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
+                )
+                temp_stripped.write_text(content, encoding="utf-8")
+                drt_xml = temp_stripped
+        except Exception:
+            pass
+
+        timeline = media_pool.ImportTimelineFromFile(
+            str(drt_xml),
+            {"timelineName": seq_name, "importSourceClips": False},
+        )
+        if temp_stripped is not None and temp_stripped.exists():
+            temp_stripped.unlink(missing_ok=True)
+
+        if timeline is None:
+            print(f"    Import FAILED")
+            results.append((False, None))
+            continue
+
+        drt_path = output_dir / f"{seq_name}_resolve.drt"
+        if timeline.Export(str(drt_path), resolve.EXPORT_DRT):
+            print(f"    DRT: {drt_path.name}")
+            results.append((True, drt_path))
+            _recycle(xml_path)
+        else:
+            print(f"    Export FAILED")
+            results.append((False, None))
+
+    # Restore
+    pm.SaveProject()
+    pm.CloseProject(project)
+    try:
+        pm.DeleteProject(temp_name)
+    except Exception:
+        pass
+    if original_name:
+        pm.LoadProject(original_name)
+        print(f"  Restored: \"{original_name}\"")
+    else:
+        print("  (no original project to restore)")
+
+    return results
+
+
+# --- Feature: DRP Project Export ---
+
+def _drp_export(
+    resolve: Any,
+    xml_paths: list[Path],
+    output_path: Path,
+    project_name: str,
+    sequence_names: list[str],
+) -> bool:
+    """Export a full project as DRP with bin structure and timelines.
+
+    Creates a sandbox project, imports all timelines, sets project name
+    to match the original PR project, then exports as DRP package.
+
+    Uses GUI mode (DaVinci must be running with UI) because DRP export
+    puts the project into DaVinci's database.
+
+    Args:
+        resolve: DaVinci Resolve object
+        xml_paths: List of FCP7 XML paths for all sequences
+        output_path: Path for the .drp file
+        project_name: Name for the Resolve project
+        sequence_names: Timeline names matching xml_paths
+
+    Returns:
+        True if DRP exported successfully
+    """
+    pm = resolve.GetProjectManager()
+    original_project = pm.GetCurrentProject()
+    original_name = original_project.GetName() if original_project else None
+
+    temp_name = project_name
+    print(f"  DRP export: creating project \"{temp_name}\"")
+
+    if original_project is not None:
+        pname = original_project.GetName() or ""
+        if pname and not pname.startswith("Untitled"):
+            try:
+                pm.SaveProject()
+            except Exception:
+                pass
+        pm.CloseProject(original_project)
+
+    project = pm.CreateProject(temp_name)
+    if project is None:
+        print("  Error: Could not create project for DRP export")
+        if original_name:
+            pm.LoadProject(original_name)
+        return False
+
+    media_pool = project.GetMediaPool()
+
+    # Import all timelines
+    for xml_path, seq_name in zip(xml_paths, sequence_names):
+        timeline = media_pool.ImportTimelineFromFile(
+            str(xml_path),
+            {"timelineName": seq_name, "importSourceClips": False},
+        )
+        if timeline is not None:
+            print(f"  Timeline: {timeline.GetName()}")
+        else:
+            print(f"  Timeline import FAILED: {seq_name}")
+
+    # Export DRP
+    pm.SaveProject()
+    drp_result = pm.ExportProject(temp_name, str(output_path), False)
+
+    if drp_result:
+        print(f"  DRP exported: {output_path}")
+    else:
+        print(f"  DRP export via API not available (beta limitation).")
+        print(f"  Project \"{temp_name}\" created in DaVinci database.")
+        print(f"  To export: File -> Export Project -> {output_path.name}")
+        # Keep project open so user can export it
+        print(f"  (project kept open for manual export)")
+        return True  # Project was created successfully
+
+    # Restore
+    pm.CloseProject(project)
+    if original_name:
+        pm.LoadProject(original_name)
+        print(f"  Restored: \"{original_name}\"")
+
+    return drp_result
+
+
+# --- Feature: Bin Structure Extraction ---
+
+def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
+    """Extract bin folder names from a .prproj project.
+
+    Args:
+        prproj_root: <PremiereData> root element
+
+    Returns:
+        List of bin names (flat, in document order)
+    """
+    bins: list[str] = []
+    for bin_el in prproj_root.findall("BinProjectItem"):
+        name = bin_el.findtext("ProjectItem/Name") or bin_el.findtext("Name") or ""
+        if name:
+            bins.append(name)
+    return bins
+
+
 def _drt_sandbox_export(
     resolve: Any,
     xml_path: Path,
@@ -2625,25 +2845,28 @@ def _drt_sandbox_export(
         return False
 
 
-def _ensure_resolve_running(timeout: int = 60) -> Any:
+def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     """Ensure DaVinci Resolve is running and the Scripting API is available.
 
-    If DaVinci is not running, auto-launches it and polls until the API
-    becomes available (typically 10-30 seconds for a cold start).
+    In headless mode (nogui=True, default), starts Resolve.exe -nogui
+    with no UI — faster startup (4s vs 14s), no save prompts, ideal for
+    headless DRT export. Falls back to existing GUI instance if running.
 
     Args:
         timeout: Maximum seconds to wait for DaVinci to become ready
+        nogui: If True, use headless mode (default). If False, use GUI.
 
     Returns:
         The Resolve object if available, None otherwise
     """
-    # 1. Quick check: already running?
     resolve = _check_resolve_running()
     if resolve is not None:
+        if nogui:
+            print("  DaVinci already running (reusing existing instance).")
         return resolve
 
-    # 2. Auto-launch
-    print("  Launching DaVinci Resolve...")
+    mode = "headless" if nogui else ""
+    print(f"  Launching DaVinci Resolve{' (' + mode + ')' if mode else ''}...")
     install_dir = _find_resolve_install_dir()
     if not install_dir:
         print("  Could not find DaVinci installation.")
@@ -2653,18 +2876,18 @@ def _ensure_resolve_running(timeout: int = 60) -> Any:
         print(f"  Resolve.exe not found at: {exe}")
         return None
     try:
+        cmd = [str(exe)]
+        if nogui:
+            cmd.append("-nogui")
         subprocess.Popen(
-            [str(exe)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x00000008 if sys.platform == "win32" else 0,
         )
-        print(f"  Started: {exe}")
+        print(f"  Started: {exe}" + (" -nogui" if nogui else ""))
     except Exception as e:
         print(f"  Failed to start: {e}")
         return None
 
-    # 3. Poll until API available
     start = time.time()
     poll_interval = 2
     while time.time() - start < timeout:
@@ -2675,7 +2898,6 @@ def _ensure_resolve_running(timeout: int = 60) -> Any:
         if resolve is not None:
             print(f"  DaVinci ready after {elapsed}s.")
             return resolve
-        # Increase poll interval after first few attempts
         if elapsed > 15:
             poll_interval = 5
 

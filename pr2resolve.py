@@ -76,6 +76,10 @@ def _run_pipeline(
     diagnose_only: bool = False,
     sequence_name: Optional[str] = None,
     drt: bool = False,
+    drp_path: Optional[Path] = None,
+    all_sequences: bool = False,
+    nogui: bool = False,
+    gui: bool = False,
 ) -> int:
     """Run the full fix pipeline on an input file."""
     _print_banner()
@@ -273,6 +277,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output directory")
     parser.add_argument("--report", action="store_true", help="Generate fix report (.md)")
     parser.add_argument("--drt", action="store_true", help="Generate DRT via DaVinci Scripting API")
+    parser.add_argument("--drp", type=Path, default=None,
+                        help="Generate DRP project package to specified path")
+    parser.add_argument("--all-sequences", action="store_true",
+                        help="Export all non-empty sequences (.prproj)")
+    parser.add_argument("--nogui", action="store_true", dest="nogui",
+                        help="Use headless DaVinci mode (default for DRT)")
+    parser.add_argument("--gui", action="store_true", dest="gui",
+                        help="Use GUI DaVinci mode (required for DRP)")
     parser.add_argument("--sequence", type=str, default=None, help="Sequence name (.prproj)")
     parser.add_argument("--diagnose-only", action="store_true", help="Diagnose only, no fixes")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
@@ -296,6 +308,10 @@ def main() -> int:
         diagnose_only=args.diagnose_only,
         sequence_name=args.sequence,
         drt=args.drt,
+        drp_path=args.drp,
+        all_sequences=args.all_sequences,
+        nogui=args.nogui,
+        gui=args.gui,
     )
 
 

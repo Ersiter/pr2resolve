@@ -25,6 +25,7 @@ desktop.ini
 
 # Claude Code
 .claude/
+CLAUDE.md
 
 # Docs & test samples (local only)
 docs/
