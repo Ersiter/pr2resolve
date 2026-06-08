@@ -2507,18 +2507,22 @@ def _drt_supplement_lumetri(
                     continue
 
                 params = lumetri_data[clip_name]
-                color = clip.GetColor()
-
-                for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
-                    if pr_name not in params:
+                if not params:
+                    continue
+                try:
+                    color = clip.GetColor()
+                    if color is None:
                         continue
-                    val = params[pr_name]
-                    # DaVinci Color API: SetCurrentParameterByName
-                    try:
-                        color.SetCurrentParameterByName(da_name, val)
-                        updated += 1
-                    except Exception:
-                        pass
+                    for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
+                        if pr_name not in params:
+                            continue
+                        try:
+                            color.SetCurrentParameterByName(da_name, params[pr_name])
+                            updated += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
         print(f"  Lumetri data applied to {updated} parameters")
         return updated > 0
