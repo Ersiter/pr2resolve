@@ -29,6 +29,7 @@ desktop.ini
 # Docs & test samples (local only)
 docs/
 test/
+tests/
 
 # Output
 output/

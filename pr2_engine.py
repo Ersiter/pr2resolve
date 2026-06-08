@@ -2541,7 +2541,12 @@ def _drt_sandbox_export(
 
         print(f"  DRT exported: {output_path}")
 
-        # Restore user's original project
+        # Save temp project before closing to avoid DaVinci save prompt,
+        # then switch back to original. Delete temp afterward.
+        try:
+            pm.SaveProject()
+        except Exception:
+            pass
         pm.CloseProject(project)
         if original_name:
             pm.LoadProject(original_name)
@@ -2697,7 +2702,10 @@ def _drt_supplement_lumetri(
                 except Exception:
                     pass
 
-        print(f"  Lumetri data applied to {updated} parameters")
+        if updated > 0:
+            print(f"  Lumetri data applied to {updated} parameters")
+        else:
+            print("  (Lumetri skipped: skeleton import, no source media to attach Color nodes)")
         return updated > 0
 
     except Exception as e:
