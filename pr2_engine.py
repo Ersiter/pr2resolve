@@ -2528,37 +2528,15 @@ def _drt_batch_export(
 
     for i, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
         print(f"  [{i+1}/{len(xml_paths)}] {seq_name}")
-        # Strip file elements for DRT safety
-        drt_xml = xml_path
-        temp_stripped = None
-        try:
-            tree = ET.parse(str(xml_path))
-            if tree.find(".//file") is not None:
-                stripped_root = copy.deepcopy(tree.getroot())
-                for ci in stripped_root.iter("clipitem"):
-                    fi = ci.find("file")
-                    if fi is not None:
-                        ci.remove(fi)
-                temp_stripped = xml_path.parent / f"_batch_stripped_{int(time.time())}_{i}.xml"
-                ET.ElementTree(stripped_root).write(
-                    str(temp_stripped), encoding="utf-8", xml_declaration=True
-                )
-                content = temp_stripped.read_text(encoding="utf-8")
-                content = content.replace(
-                    '<?xml version="1.0" encoding="utf-8"?>',
-                    '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
-                )
-                temp_stripped.write_text(content, encoding="utf-8")
-                drt_xml = temp_stripped
-        except Exception:
-            pass
+        # Strip <file> to prevent <MediaFilePath> DRT flash-crash
+        drt_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
 
         timeline = media_pool.ImportTimelineFromFile(
             str(drt_xml),
             {"timelineName": seq_name, "importSourceClips": False},
         )
-        if temp_stripped is not None and temp_stripped.exists():
-            temp_stripped.unlink(missing_ok=True)
+        if needs_cleanup and drt_xml.exists():
+            drt_xml.unlink(missing_ok=True)
 
         if timeline is None:
             print(f"    Import FAILED")
@@ -2642,12 +2620,16 @@ def _drp_export(
 
     media_pool = project.GetMediaPool()
 
-    # Import all timelines
+    # Import all timelines (strip <file> to prevent DRP flash-crash
+    # from offline media paths — same root cause as DRT crash 2833d85)
     for xml_path, seq_name in zip(xml_paths, sequence_names):
+        stripped_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
         timeline = media_pool.ImportTimelineFromFile(
-            str(xml_path),
+            str(stripped_xml),
             {"timelineName": seq_name, "importSourceClips": False},
         )
+        if needs_cleanup and stripped_xml.exists():
+            stripped_xml.unlink(missing_ok=True)
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
         else:
@@ -2693,6 +2675,41 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
         if name:
             bins.append(name)
     return bins
+
+
+def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
+    """Create a temp XML copy with <file> elements stripped.
+
+    Offline media paths in <file> get encoded into the DRT/DRP
+    as <MediaFilePath> entries that crash DaVinci on reimport.
+
+    Args:
+        xml_path: Path to the original FCP7 XML file
+
+    Returns:
+        (path_to_use, needs_cleanup) tuple. If files were stripped,
+        path is a temp file and needs_cleanup is True.
+    """
+    try:
+        tree = ET.parse(str(xml_path))
+        if tree.find(".//file") is None:
+            return (xml_path, False)
+        stripped = copy.deepcopy(tree.getroot())
+        for ci in stripped.iter("clipitem"):
+            fi = ci.find("file")
+            if fi is not None:
+                ci.remove(fi)
+        temp = xml_path.parent / f"_pr2resolve_stripped_{int(time.time())}.xml"
+        ET.ElementTree(stripped).write(str(temp), encoding="utf-8", xml_declaration=True)
+        content = temp.read_text(encoding="utf-8")
+        content = content.replace(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
+        )
+        temp.write_text(content, encoding="utf-8")
+        return (temp, True)
+    except Exception:
+        return (xml_path, False)
 
 
 def _drt_sandbox_export(
@@ -2755,44 +2772,16 @@ def _drt_sandbox_export(
 
         media_pool = project.GetMediaPool()
 
-        # Strip <file> elements from a temp XML copy before DRT import.
-        # Offline media paths get encoded into the DRT's SeqContainer
-        # as <MediaFilePath> entries that crash DaVinci on reimport.
-        # Stripping them from a temp copy avoids corruption while
-        # keeping the user's output XML intact.
-        drt_import_xml = xml_path
-        temp_stripped = None
-        try:
-            tree = ET.parse(str(xml_path))
-            has_files = tree.find(".//file") is not None
-            if has_files:
-                stripped = copy.deepcopy(tree.getroot())
-                for ci in stripped.iter("clipitem"):
-                    fi = ci.find("file")
-                    if fi is not None:
-                        ci.remove(fi)
-                temp_stripped = xml_path.parent / f"_pr2resolve_stripped_{int(time.time())}.xml"
-                ET.ElementTree(stripped).write(
-                    str(temp_stripped), encoding="utf-8",
-                    xml_declaration=True
-                )
-                # Fix up DOCTYPE that ET strips
-                content = temp_stripped.read_text(encoding="utf-8")
-                content = content.replace(
-                    '<?xml version="1.0" encoding="utf-8"?>',
-                    '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
-                )
-                temp_stripped.write_text(content, encoding="utf-8")
-                drt_import_xml = temp_stripped
-        except Exception:
-            pass  # fall back to original file
+        # Strip <file> elements from temp XML copy to prevent
+        # <MediaFilePath> crash in DRT — see commit 2833d85
+        drt_import_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
 
         timeline = media_pool.ImportTimelineFromFile(
             str(drt_import_xml),
             {"timelineName": timeline_name, "importSourceClips": False},
         )
-        if temp_stripped is not None and temp_stripped.exists():
-            temp_stripped.unlink(missing_ok=True)
+        if needs_cleanup and drt_import_xml.exists():
+            drt_import_xml.unlink(missing_ok=True)
 
         if timeline is not None:
             print("  (timeline structure imported, media to be relinked on target machine)")
