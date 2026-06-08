@@ -1,8 +1,12 @@
+<div align="center">
+
 # prxml2fcp7xml
 
 Convert Premiere Pro project files into DaVinci Resolve-compatible FCP7 XML format. Optional DRT output for full color grading data preservation.
 
 [**Chinese Version**](README.md)
+
+</div>
 
 ---
 
@@ -204,6 +208,8 @@ FCP7 XML path: No -- Lumetri is a PR-proprietary effect and is removed from XML.
 - [prproj_downgrade](https://github.com/snorkem/prproj_downgrade) — .prproj version downgrade tool
 - [ppro-scripting.docsforadobe.dev](https://ppro-scripting.docsforadobe.dev) — Adobe official object model docs
 - [DaVinci Resolve Scripting API](https://resolvedevdoc.readthedocs.io/) — DaVinci Python API reference
+
+---
 
 ## License
 
