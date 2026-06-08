@@ -2,7 +2,7 @@
 
 # pr2resolve
 
-Convert Premiere Pro timelines to DaVinci Resolve-ready FCP7 XML. Optional DRT export if you have Resolve Studio running.
+Convert Premiere Pro timelines to DaVinci Resolve compatible formats. Dual output: FCP7 XML and DRT.
 
 [**Chinese Version**](README.md)
 
@@ -10,53 +10,27 @@ Convert Premiere Pro timelines to DaVinci Resolve-ready FCP7 XML. Optional DRT e
 
 ---
 
-## Have You Encountered This
+## Features
 
-PR's FCP7 XML export to DaVinci is a well-known mess — clips show up at the wrong scale, color grades are gone, media is offline. It's not you. It's PR's XML.
-
-**Scale to Frame Size vanishes.** You fit clips to the frame in PR. The XML says Scale=100%. In DaVinci, every clip renders 2-3x bigger than it should. You do the math by hand for each one.
-
-**Lumetri grading gets thrown out.** Your color work becomes a raw base64 blob in the XML. DaVinci has no Lumetri plugin — it skips the block entirely. All that grading? Gone. Start over in DaVinci.
-
-**pathurl format makes DaVinci lose your media.** PR on Windows exports `file://localhost/C%3a/Users/...`. DaVinci doesn't recognize it. All media shows offline. You relink each file by hand.
-
-This tool handles the dirty work.
-
----
-
-## What It Does
-
-- **Fixes scale** -- Compares source resolution against timeline resolution, computes the right fit scale
-- **Strips Lumetri** -- XML path: removes the Lumetri blocks DaVinci ignores. DRT path: maps color params to DaVinci Color nodes
-- **Fixes paths** -- Converts all pathurl values to `file:///`
-- **Fills in gaps** -- Adds `<format>`, `<ntsc>`, `<sourcetrack>`, `<masterclipid>`, and whatever else DaVinci needs
-- **Two ways in** -- Accepts PR-exported XML, but recommend giving it the `.prproj` file directly (more data)
-- **Two ways out** -- FCP7 XML works anywhere, zero deps. DRT goes through the DaVinci API, keeps more data
+- **Dual entry** — Accepts PR-exported FCP7 XML (.xml) and native PR projects (.prproj). Use .prproj for most complete data.
+- **Dual output** — FCP7 XML with zero dependencies always available. DRT via DaVinci Scripting API preserves Lumetri grades, speed curves, and other data XML cannot carry.
+- **Scale auto-fix** — Detects source vs timeline resolution mismatch, computes and writes correct fit scale.
+- **Lumetri dual strategy** — XML path removes Lumetri blocks DaVinci ignores. DRT path maps color params to native Color Corrector nodes.
+- **Path normalization** — Converts `file://localhost/...` to `file:///...`.
+- **Element completion** — Auto-generates `<format>`, `<ntsc>`, `<sourcetrack>`, `<masterclipid>`, `<link>`, and other elements DaVinci requires.
+- **Multi-track support** — Video tracks, audio tracks, clip trimming (in/out), speed changes (PlaybackSpeed).
+- **Interactive TUI** — Windows (.bat) and macOS / Linux (.sh) menu-driven interface.
 
 ---
 
-## Why .prproj Beats XML Export
+## Requirements
 
-PR's FCP7 XML export is second-hand — PR makes a stripped-down copy that already lost data. `.prproj` is what PR saves natively (gzip-compressed XML), with Lumetri params, speed curves, transform keyframes intact.
-
-This tool reads `.prproj` directly and pulls the full timeline. **Got a .prproj? Drop it here. Don't export from PR first.**
-
----
-
-## What DRT Gets You
-
-FCP7 XML is an interchange format — it can only say what the spec allows. DaVinci Color nodes, full keyframes, optical flow speed changes — none of that fits in XML.
-
-DRT (DaVinci Resolve Timeline) is native to DaVinci. It does what XML can't: Lumetri params map straight to Color Corrector nodes. Scale/Fit stays precise. Speed algorithms pass through intact.
-
-**Requirement: DaVinci Resolve Studio must be running.**
-1. Open DaVinci Studio
-2. Toggle DRT on in this tool
-3. Tool imports the fixed XML via Scripting API
-4. Lumetri Color data gets applied
-5. You get a .drt
-
-Without DaVinci, XML still comes out fine. DRT is the bonus round.
+| Item | Requirement |
+|------|-------------|
+| Python | **3.8** or newer |
+| Operating System | Windows 10+, macOS 10.15+, Linux |
+| Dependencies | None (Python standard library only) |
+| DRT Output | DaVinci Resolve Studio (free version lacks Scripting API) |
 
 ---
 
@@ -69,7 +43,7 @@ Double-click `converter.bat` to launch the TUI.
 ```
 1. Double-click converter.bat
 2. Press 1 to select an input file (.xml or .prproj)
-3. Press 2 to set output directory (or press Enter to use the same directory)
+3. Press 2 to set output directory (four modes available)
 4. Press 3 to configure export options (XML / DRT / Report)
 5. Press 4 to start conversion
 ```
@@ -84,10 +58,10 @@ chmod +x converter.sh
 ### CLI (All Platforms)
 
 ```bash
-# PR XML -- fixed XML
+# PR XML — fixed output
 python pr2resolve.py "input.xml"
 
-# .prproj -- output XML directly (recommended)
+# .prproj — parse directly (recommended)
 python pr2resolve.py "project.prproj" -o ./output
 
 # .prproj with specific sequence
@@ -103,6 +77,15 @@ python pr2resolve.py "input.xml" --report
 python pr2resolve.py "input.xml" --diagnose-only
 ```
 
+### Import into DaVinci
+
+```
+DaVinci Resolve -> File -> Import Timeline -> Import AAF, EDL, XML...
+-> Select the generated .xml file
+
+DRT: File -> Import Timeline -> Import DRT...
+```
+
 ---
 
 ## How It Works
@@ -110,55 +93,54 @@ python pr2resolve.py "input.xml" --diagnose-only
 ```
 Input (.xml or .prproj)
     |
-    +-- XML -> ElementTree structured parse
-    +-- .prproj -> gzip decompress -> ObjectID graph walk
+    +-- .xml -> ElementTree structured parse
+    +-- .prproj -> gzip decompress -> ObjectID graph traversal
     |
     v
-Scan 23 issues -> Fix by severity -> Validate 23 checks
+Diagnostics — scans 21 known issues (C0-C6, M0-M7, N1-N7)
+    |
+    v
+Fix engine — auto-repairs by Critical -> Major -> Normal priority
+    |
+    v
+Validator — 23 FCP7 specification compliance checks
     |
     v
 Output:
-    +-- .xml   -- fixed FCP7 XML (always)
-    +-- .md    -- fix report (optional)
-    +-- .drt   -- DaVinci native timeline (optional, needs DaVinci running)
+    +-- output.xml  -- corrected FCP7 XML (always)
+    +-- output.md   -- fix report (optional)
+    +-- output.drt  -- DaVinci native timeline (optional, requires DaVinci running)
 ```
 
 ---
 
-## Fix Rules Reference
+## Fix Rules
 
 | Level | Rule | Description |
 |-------|------|-------------|
-| **C0** | version | `xmeml version="4"` -> `"5"` |
-| **C1-C2** | format | Fill missing video/audio `<format>` |
-| **C3-C4** | rate | Fill missing `<ntsc>` / `<timebase>` |
-| **C5** | pathurl | `file://localhost/...` -> `file:///...` |
-| **C6** | media order | Move video before audio |
-| **M0** | Lumetri | XML path: remove. DRT path: map to Color nodes |
-| **M1-M2** | clipid/track | Fill missing `<masterclipid>` / `<sourcetrack>` |
-| **M7** | Scale | Source resolution / timeline resolution = correct fit scale |
-| **N1-N7** | details | timecode / float precision / frame rate consistency |
-
----
-
-## Requirements
-
-| Item | Requirement |
-|------|-------------|
-| Python | 3.8 or newer |
-| Operating System | Windows 10+, macOS 10.15+, Linux |
-| Dependencies | None, Python stdlib only |
-| DRT | DaVinci Resolve Studio (free version lacks Scripting API) |
+| C0 | version | `xmeml version="4"` -> `"5"` |
+| C1-C2 | format | Fill missing video/audio `<format>` |
+| C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
+| C5 | pathurl | `file://localhost/...` -> `file:///...` |
+| C6 | media order | Move video before audio |
+| M0 | Lumetri | XML path: remove. DRT path: map to Color nodes |
+| M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
+| M4 | link | Auto-generate `<link>` for same-source clips |
+| M5 | file details | Fill missing samplecharacteristics in `<file>` |
+| M6 | element order | Sort clipitem children per FCP7 spec |
+| M7 | Scale | Source res / timeline res = fit scale |
+| N1-N7 | details | timecode / float precision / rate consistency / displayformat |
 
 ---
 
 ## Known Limitations
 
-1. **Text titles** -- PR generatoritems often show up blank in DaVinci. FCP7 XML limitation, can't fix.
-2. **Nested sequences** -- Often flattened or fail on import.
-3. **Moved media** -- XML uses absolute paths. Move files? Relink in DaVinci.
-4. **Double scaling** -- Uncheck "Use sizing information" when importing to avoid an extra scaling pass.
-5. **Free DaVinci = no DRT** -- Scripting API is Studio-only. XML works either way.
+1. **Text titles** — PR generatoritems often display as blank in DaVinci (FCP7 XML format limitation)
+2. **Nested sequences** — Often flattened or fail during FCP7 XML import
+3. **Media paths** — XML references absolute paths. Move media? Relink in DaVinci.
+4. **Double scaling** — Uncheck "Use sizing information" when importing to avoid extra scaling
+5. **Free DaVinci** — Scripting API is Studio-only; DRT unavailable. XML unaffected.
+6. **Lumetri mapping** — DRT path: basic params (Exposure, Contrast, Highlights, Shadows, Temperature, etc.) map to Color nodes. Compound effects (Vignette, Sharpen) are approximate.
 
 ---
 
@@ -166,30 +148,26 @@ Output:
 
 ### Q: "Python not found"
 
-Install Python 3.8+ and ensure it is added to system PATH.
+Install Python 3.8+ and ensure it is added to system PATH:
 - Windows: https://www.python.org/downloads/ -> check "Add Python to PATH"
 - macOS: `brew install python3`
 - Linux: `sudo apt install python3`
 
-### Q: Media offline after import into DaVinci
-
-XML references absolute paths. If media has moved, use DaVinci's Relink feature to locate it.
-
-### Q: Clips look wrong (wrong scale) after import
-
-The fixed XML from this tool should have already corrected the Scale values. If it still looks wrong, check DaVinci import settings -- set Image Scaling to "Center crop with no resizing".
-
 ### Q: Should I use .prproj or PR-exported XML
 
-**Use .prproj.** Unless your PR version doesn't support saving projects (it does -- .prproj is PR's save format), there's no reason to export XML first and then fix it. Give .prproj directly to this tool.
+**Use .prproj.** It is PR's native save format with full Lumetri params, speed curves, and keyframes. PR's built-in FCP7 XML export is a simplified copy that has already lost data. If you have the .prproj file, feed it directly.
 
-### Q: What is DRT and when should I use it
+### Q: What does DRT get me
 
-DRT does what XML cannot: Lumetri grading mapped to DaVinci Color nodes. If you did significant color work in PR, .prproj + DRT preserves the most data. But DRT requires DaVinci Resolve Studio running.
+DRT does what XML cannot — Lumetri params written directly to DaVinci Color nodes. Projects with heavy color work in PR benefit most from .prproj + DRT. Requires DaVinci Resolve Studio running.
 
-### Q: Can Lumetri color grades be perfectly restored
+### Q: Media offline after import
 
-FCP7 XML path: No -- Lumetri is a PR-proprietary effect and is removed from XML. DRT path: Basic parameters (Exposure, Contrast, Highlights, Shadows, Temperature, etc.) can be mapped to DaVinci Color nodes. Creative LUTs can be extracted as .cube files. Compound effects like Vignette and Sharpen are approximate at best.
+XML references absolute paths. After moving media, use DaVinci's Relink feature.
+
+### Q: Clips look wrong scale after import
+
+The fixed XML should have corrected Scale values. If still wrong, set DaVinci Image Scaling to "Center crop with no resizing".
 
 ---
 
@@ -211,10 +189,10 @@ FCP7 XML path: No -- Lumetri is a PR-proprietary effect and is removed from XML.
 ## Project Structure
 
 ```
-pr2drt/
-├── pr2resolve.py    # Core CLI tool (parse / diagnose / fix / validate / DRT)
+pr2resolve/
+├── pr2resolve.py          # Core CLI tool
 ├── converter.bat           # Windows TUI
-├── converter.sh            # macOS/Linux TUI
+├── converter.sh            # macOS / Linux TUI
 ├── tests/
 │   └── test_validator.py   # 18 unit tests
 ├── README.md               # Chinese documentation
