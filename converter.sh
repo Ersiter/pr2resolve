@@ -24,6 +24,7 @@ SEQ_NAME=""
 OPT_DRT="[OFF]"
 OPT_REPORT="[ON]"
 OPT_XML="[ON]"
+OPT_ALL_SEQ="[OFF]"
 
 # Find Python
 PYTHON_CMD=""
@@ -72,8 +73,10 @@ print_header() {
     xml_clr=$([ "$OPT_XML" = "[ON]" ] && echo "$GREEN" || echo "")
     drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
     rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
+    all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
     echo -e "  XML:     ${xml_clr}${OPT_XML}${NC}   FCP7 XML output"
     echo -e "  DRT:     ${drt_clr}${OPT_DRT}${NC}  DaVinci DRT output (needs Resolve Studio)"
+    echo -e "  All Seq: ${all_seq_clr}${OPT_ALL_SEQ}${NC}  Export all sequences (.prproj only)"
     echo -e "  Report:  ${rpt_clr}${OPT_REPORT}${NC}   Fix report (.md)"
     echo ""
     echo -e "  ${DIM}------------------------------------------------------------${NC}"
@@ -167,18 +170,21 @@ options_menu() {
         xml_clr=$([ "$OPT_XML" = "[ON]" ] && echo "$GREEN" || echo "")
         drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
         rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
+        all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
         echo -e "  ${BOLD}[1]${NC} FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
         echo -e "  ${BOLD}[2]${NC} DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
-        echo -e "  ${BOLD}[3]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
+        echo -e "  ${BOLD}[3]${NC} All sequences  ${all_seq_clr}${OPT_ALL_SEQ}${NC} (.prproj batch)"
+        echo -e "  ${BOLD}[4]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
         echo -e "  ${BOLD}[0]${NC} Back"
         echo ""
-        read -n 1 -r -p "  Select [1-3, 0]: " choice
+        read -n 1 -r -p "  Select [1-4, 0]: " choice
         echo ""
         choice="${choice%%$'\r'}"
         case "$choice" in
             1) if [ "$OPT_XML" = "[ON]" ]; then OPT_XML="[OFF]"; else OPT_XML="[ON]"; fi ;;
             2) if [ "$OPT_DRT" = "[ON]" ]; then OPT_DRT="[OFF]"; else OPT_DRT="[ON]"; fi ;;
-            3) if [ "$OPT_REPORT" = "[ON]" ]; then OPT_REPORT="[OFF]"; else OPT_REPORT="[ON]"; fi ;;
+            3) if [ "$OPT_ALL_SEQ" = "[ON]" ]; then OPT_ALL_SEQ="[OFF]"; else OPT_ALL_SEQ="[ON]"; fi ;;
+            4) if [ "$OPT_REPORT" = "[ON]" ]; then OPT_REPORT="[OFF]"; else OPT_REPORT="[ON]"; fi ;;
             0) return ;;
         esac
     done
@@ -210,6 +216,9 @@ run_pipeline() {
     fi
     if [ "$OPT_DRT" = "[ON]" ]; then
         cmd+=(--drt)
+    fi
+    if [ "$OPT_ALL_SEQ" = "[ON]" ]; then
+        cmd+=(--all-sequences)
     fi
 
     PYTHONIOENCODING=utf-8 "${cmd[@]}"
