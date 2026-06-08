@@ -2,7 +2,7 @@
 
 # prxml2fcp7xml
 
-Convert Premiere Pro project files into DaVinci Resolve-compatible FCP7 XML format. Optional DRT output for full color grading data preservation.
+Convert Premiere Pro timelines to DaVinci Resolve-ready FCP7 XML. Optional DRT export if you have Resolve Studio running.
 
 [**Chinese Version**](README.md)
 
