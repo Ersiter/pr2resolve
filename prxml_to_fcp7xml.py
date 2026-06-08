@@ -27,7 +27,7 @@ from xml.dom import minidom
 VERSION = "1.0.0"
 
 DEFAULT_FPS = 30.0
-MICROSECOND = 1_000_000
+
 
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
 
@@ -313,8 +313,11 @@ def _prproj_extract_lumetri(
     if chain is None:
         return params
 
-    # Find VideoFilterComponents in the chain
-    comps = chain.find("Components")
+    # Components are nested inside ComponentChain/Components
+    inner_cc = chain.find("ComponentChain")
+    if inner_cc is None:
+        return params
+    comps = inner_cc.find("Components")
     if comps is None:
         return params
 
@@ -359,6 +362,95 @@ def _prproj_extract_lumetri(
                     pass
 
     return params
+
+
+def _prproj_extract_all_lumetri(
+    prproj_root: ET.Element,
+    sequence_uid: str,
+) -> dict[str, dict[str, float]]:
+    """Extract Lumetri parameters for all clips in a sequence.
+
+    Walks the Sequence → TrackGroup → TrackItem → SubClip → ComponentChain
+    reference chain and calls _prproj_extract_lumetri on each clip's chain.
+
+    Args:
+        prproj_root: The <PremiereData> root element
+        sequence_uid: ObjectUID of the target sequence
+
+    Returns:
+        Dict mapping clip name → {param_name: value}
+    """
+    idx = _PrprojIndex.build(prproj_root)
+    lumetri_data: dict[str, dict[str, float]] = {}
+
+    seq_el = None
+    for s in prproj_root.findall("Sequence"):
+        if s.get("ObjectUID") == sequence_uid:
+            seq_el = s
+            break
+    if seq_el is None:
+        return lumetri_data
+
+    tg_section = seq_el.find("TrackGroups")
+    if tg_section is None:
+        return lumetri_data
+
+    for tg_pair in tg_section.findall("TrackGroup"):
+        second = tg_pair.find("Second")
+        if second is None:
+            continue
+        ref = second.get("ObjectRef")
+        tg_el = idx.resolve_ref(ref) if ref else None
+        if tg_el is None or tg_el.tag != "VideoTrackGroup":
+            continue
+
+        tracks_el = tg_el.find("TrackGroup/Tracks")
+        if tracks_el is None:
+            continue
+
+        for track_ref in tracks_el.findall("Track"):
+            uref = track_ref.get("ObjectURef")
+            track_el = idx.resolve_uref(uref) if uref else None
+            if track_el is None:
+                continue
+
+            ct = track_el.find("ClipTrack")
+            if ct is None:
+                continue
+            ti_section = ct.find(".//TrackItems")
+            if ti_section is None:
+                continue
+
+            for ti_ref in ti_section.findall("TrackItem"):
+                ref = ti_ref.get("ObjectRef")
+                ti_el = idx.resolve_ref(ref) if ref else None
+                if ti_el is None:
+                    continue
+
+                cti = ti_el.find("ClipTrackItem")
+                if cti is None:
+                    continue
+
+                # Get clip name from SubClip
+                subclip = cti.find("SubClip")
+                clip_name = "(unknown)"
+                if subclip is not None:
+                    sc_el = idx.resolve_ref(subclip.get("ObjectRef"))
+                    if sc_el is not None:
+                        clip_name = sc_el.findtext("Name", clip_name)
+
+                # Get ComponentChain → Lumetri params
+                co = cti.find("ComponentOwner")
+                if co is not None:
+                    comps = co.find("Components")
+                    if comps is not None:
+                        chain_ref = comps.get("ObjectRef")
+                        if chain_ref:
+                            params = _prproj_extract_lumetri(idx, chain_ref)
+                            if params:
+                                lumetri_data[clip_name] = params
+
+    return lumetri_data
 
 
 def _prproj_parse_sequence(
@@ -546,6 +638,7 @@ def _prproj_parse_sequence(
                         if e:
                             end = _prproj_ticks_to_frames(e, fps)
                     track_start = end
+                    total_frames = max(total_frames, end)
 
                     # SubClip → MasterClip + Clip data
                     subclip = cti.find("SubClip")
@@ -1261,7 +1354,6 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
         Number of fixes applied
     """
     fix_count = 0
-    issue_map = {(i.rule_id, i.message): i for i in issues}
 
     def _mark_fixed(rule_id: str, msg_substr: str) -> None:
         for issue in issues:
@@ -1302,7 +1394,7 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
                 ntsc_elem = ET.SubElement(rate_elem, "ntsc")
                 ntsc_elem.text = "TRUE"
                 fix_count += 1
-        _mark_fixed("C3", "<ntsc>")
+                _mark_fixed("C3", "<ntsc>")
 
     # C4: Add missing <timebase> to <rate> elements
     for rate_elem in root.iter("rate"):
@@ -1310,7 +1402,7 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
             tb = ET.SubElement(rate_elem, "timebase")
             tb.text = str(int(DEFAULT_FPS))
             fix_count += 1
-        _mark_fixed("C4", "<timebase>")
+            _mark_fixed("C4", "<timebase>")
 
     # C5: Fix pathurl format
     for pathurl_elem in root.iter("pathurl"):
@@ -1494,9 +1586,19 @@ def _create_video_format(root: ET.Element) -> ET.Element:
 
     rate = ET.SubElement(sc, "rate")
     tb = ET.SubElement(rate, "timebase")
-    tb.text = "30"
+    # Read actual sequence timebase, default to 30
+    seq_tb = "30"
+    seq_ntsc = "TRUE"
+    if seq is not None:
+        seq_rate = seq.find("rate")
+        if seq_rate is not None:
+            seq_tb = seq_rate.findtext("timebase", "30")
+            seq_ntsc_elem = seq_rate.find("ntsc")
+            if seq_ntsc_elem is not None:
+                seq_ntsc = seq_ntsc_elem.text or "TRUE"
+    tb.text = seq_tb
     ntsc = ET.SubElement(rate, "ntsc")
-    ntsc.text = "TRUE"
+    ntsc.text = seq_ntsc
 
     w_elem = ET.SubElement(sc, "width")
     w_elem.text = width
@@ -1581,20 +1683,33 @@ def _create_timecode(root: ET.Element) -> ET.Element:
     """
     tc = ET.Element("timecode")
 
+    # Read actual sequence timebase
+    seq = root.find("sequence")
+    seq_tb = "30"
+    seq_ntsc = "TRUE"
+    if seq is not None:
+        seq_rate = seq.find("rate")
+        if seq_rate is not None:
+            seq_tb = seq_rate.findtext("timebase", "30")
+            seq_ntsc_elem = seq_rate.find("ntsc")
+            if seq_ntsc_elem is not None:
+                seq_ntsc = seq_ntsc_elem.text or "TRUE"
+    is_ntsc_tc = seq_ntsc == "TRUE"
+
     rate = ET.SubElement(tc, "rate")
     tb = ET.SubElement(rate, "timebase")
-    tb.text = "30"
+    tb.text = seq_tb
     ntsc = ET.SubElement(rate, "ntsc")
-    ntsc.text = "TRUE"
+    ntsc.text = seq_ntsc
 
     string = ET.SubElement(tc, "string")
-    string.text = "00;00;00;00"
+    string.text = "00;00;00;00" if is_ntsc_tc else "00:00:00:00"
     frame = ET.SubElement(tc, "frame")
     frame.text = "0"
     source = ET.SubElement(tc, "source")
     source.text = "source"
     df = ET.SubElement(tc, "displayformat")
-    df.text = "DF"
+    df.text = "DF" if is_ntsc_tc else "NDF"
 
     return tc
 
@@ -2096,12 +2211,12 @@ def _drt_supplement_lumetri(
     """
     # Lumetri → DaVinci Color parameter mapping
     _LUMETRI_TO_DAVINCI: dict[str, str] = {
-        "曝光": "Gain",
+        "曝光": "Gain",        # Exposure → Gain wheel
         "对比度": "Contrast",
         "高光": "Highlights",
         "阴影": "Shadows",
-        "白色": "Whites",
-        "黑色": "Blacks",
+        "白色": "Gain",        # Whites → Gain (not "Whites")
+        "黑色": "Lift",        # Blacks → Lift (not "Blacks")
         "饱和度": "Saturation",
         "色温": "Temperature",
         "色彩": "Tint",
@@ -2261,10 +2376,16 @@ def _run_pipeline(
             print("  Conversion complete.")
             print()
 
+            # Extract Lumetri data for DRT output
+            lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
+            if lumetri_data:
+                print(f"  Lumetri params: {sum(len(v) for v in lumetri_data.values())} across {len(lumetri_data)} clips")
+
             # Update output path to .xml
             output_path = output_dir / f"{stem}.xml"
         else:
             root = load_xml(input_path)
+            lumetri_data = {}
             print(f"  Format: FCP7 XML")
     except Exception as e:
         print(f"  Error loading file: {e}")
@@ -2358,6 +2479,9 @@ def _run_pipeline(
                     print(f"  Importing {output_path.name} into Resolve...")
                     seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
                     if _drt_import_and_export(resolve, output_path, drt_path, seq_name_drt):
+                        # Supplement Lumetri Color nodes if data available
+                        if lumetri_data:
+                            _drt_supplement_lumetri(resolve, lumetri_data)
                         # DRT success → delete XML, show checkmark
                         try:
                             output_path.unlink()
