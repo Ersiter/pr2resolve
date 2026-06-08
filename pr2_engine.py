@@ -324,13 +324,30 @@ def _scan_major(root: ET.Element) -> list[Issue]:
                 f"clipitem[{ci.get('id', '?')}]",
             ))
 
-    # M3: Duration semantic check — check sequence duration vs clip durations
+    # M3: Sequence duration vs last clip end mismatch
     seq = root.find("sequence")
     if seq is not None:
-        seq_dur = seq.findtext("duration")
-        if seq_dur:
-            # This is informational — the actual fix is more complex
-            pass
+        seq_dur_text = seq.findtext("duration", "")
+        if seq_dur_text:
+            try:
+                seq_dur = int(seq_dur_text)
+            except ValueError:
+                seq_dur = 0
+            # Find last clip end across all tracks
+            last_end = 0
+            for clipitem in root.iter("clipitem"):
+                end_text = clipitem.findtext("end", "")
+                if end_text:
+                    try:
+                        last_end = max(last_end, int(end_text))
+                    except ValueError:
+                        pass
+            if last_end > 0 and last_end != seq_dur:
+                issues.append(Issue(
+                    MAJOR, "M3",
+                    f"Sequence duration ({seq_dur}) != last clip end ({last_end})",
+                    "sequence",
+                ))
 
     return issues
 
@@ -503,8 +520,10 @@ def _detect_scale_mismatch(
     if src_w == tl_w and src_h == tl_h:
         return None
 
-    # 7. Calculate correct fit scale (fit by width — PR default)
-    fit_scale = (tl_w / src_w) * 100.0
+    # 7. Fit by smaller dimension (PR "Scale to Frame Size" behavior)
+    #    Portrait source in landscape timeline? Fit by height.
+    #    Landscape source in portrait timeline? Fit by width.
+    fit_scale = min(tl_w / src_w, tl_h / src_h) * 100.0
 
     # Threshold: < 0.5% difference is float noise
     if abs(fit_scale - 100.0) < 0.5:
@@ -753,6 +772,25 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     if any(i.rule_id == "M6" for i in issues):
         _mark_fixed(issues, "M6", "order")
 
+    # M3: Fix sequence duration to match last clip end
+    if any(i.rule_id == "M3" for i in issues):
+        seq = root.find("sequence")
+        if seq is not None:
+            last_end = 0
+            for clipitem in root.iter("clipitem"):
+                end_text = clipitem.findtext("end", "")
+                if end_text:
+                    try:
+                        last_end = max(last_end, int(end_text))
+                    except ValueError:
+                        pass
+            if last_end > 0:
+                dur_elem = seq.find("duration")
+                if dur_elem is not None:
+                    dur_elem.text = str(last_end)
+                    fix_count += 1
+                    _mark_fixed(issues, "M3", "duration")
+
     # M7: Scale auto-fit
     seq_format = _get_sequence_format(root)
     if seq_format is not None:
@@ -835,6 +873,19 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
             fix_count += 1
     if any(i.rule_id == "N2" for i in issues):
         _mark_fixed(issues, "N2", "displayformat")
+
+    # N3: Fix -1 sentinel values in <in>/<out>
+    for clipitem in root.iter("clipitem"):
+        in_el = clipitem.find("in")
+        out_el = clipitem.find("out")
+        if in_el is not None and in_el.text == "-1":
+            in_el.text = "0"
+            fix_count += 1
+        if out_el is not None and out_el.text == "-1":
+            out_el.text = "0"
+            fix_count += 1
+    if any(i.rule_id == "N3" for i in issues):
+        _mark_fixed(issues, "N3", "-1")
 
     # N6: Fix near-zero float values
     for param in root.iter("parameter"):
@@ -1768,8 +1819,9 @@ def _prproj_parse_sequence(
     sequence.set("MZ.Sequence.PreviewFrameSizeWidth", str(w))
     sequence.set("MZ.Sequence.PreviewFrameSizeHeight", str(h))
 
-    # Sequence duration — sum of first video track clip durations
+    # Sequence duration — tracked across all tracks
     total_frames = 0
+    end = 0  # Safe default: no tracks -> duration 0
 
     dur_elem = ET.SubElement(sequence, "duration")
     rate_elem = ET.SubElement(sequence, "rate")
@@ -2167,6 +2219,7 @@ def _prproj_parse_sequence(
                         if a_e:
                             a_end = _prproj_ticks_to_frames(a_e, fps)
                     a_track_start = a_end
+                    total_frames = max(total_frames, a_end)
 
                     # SubClip → name, media path, InPoint/OutPoint
                     a_subclip = a_cti.find("SubClip")
@@ -2367,7 +2420,7 @@ def _try_import_resolve() -> Any:
     # Find install dir and set RESOLVE_SCRIPT_LIB for DaVinciResolveScript.py
     # (which hardcodes "C:\Program Files" on line 42)
     install_dir = _find_resolve_install_dir()
-    if install_dir:
+    if install_dir and "RESOLVE_SCRIPT_LIB" not in os.environ:
         dll_path = str(install_dir / "fusionscript.dll")
         if Path(dll_path).exists():
             os.environ["RESOLVE_SCRIPT_LIB"] = dll_path
