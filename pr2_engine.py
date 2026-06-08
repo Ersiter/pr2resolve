@@ -520,10 +520,18 @@ def _detect_scale_mismatch(
     if src_w == tl_w and src_h == tl_h:
         return None
 
+    # 6b. If source already fits within timeline, skip (no upscaling needed)
+    #     PR's "Scale to Frame Size" only downscales, never upscales.
+    if src_w <= tl_w and src_h <= tl_h:
+        return None
+
     # 7. Fit by smaller dimension (PR "Scale to Frame Size" behavior)
     #    Portrait source in landscape timeline? Fit by height.
     #    Landscape source in portrait timeline? Fit by width.
     fit_scale = min(tl_w / src_w, tl_h / src_h) * 100.0
+
+    # 7b. Never upscale past 100%
+    fit_scale = min(fit_scale, 100.0)
 
     # Threshold: < 0.5% difference is float noise
     if abs(fit_scale - 100.0) < 0.5:
@@ -882,7 +890,12 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
             in_el.text = "0"
             fix_count += 1
         if out_el is not None and out_el.text == "-1":
-            out_el.text = "0"
+            # -1 out means "end of media" — use clip duration
+            dur_text = clipitem.findtext("duration", "")
+            if dur_text:
+                out_el.text = dur_text
+            else:
+                out_el.text = "0"
             fix_count += 1
     if any(i.rule_id == "N3" for i in issues):
         _mark_fixed(issues, "N3", "-1")
