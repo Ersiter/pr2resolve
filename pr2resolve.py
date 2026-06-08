@@ -3024,22 +3024,12 @@ def _run_pipeline(
             print()
             choice = input("  > ").strip().lower()
             if choice == "a":
-                print("  Launching DaVinci Resolve...")
-                if _launch_resolve():
-                    print("  DaVinci is starting. This may take 10-30 seconds.")
-                    print("  After it finishes loading, it will automatically create a new project if none is open.")
+                resolve = _ensure_resolve_running(timeout=60)
+                if resolve is not None:
+                    if _try_drt(resolve):
+                        xml_written = False
                 else:
-                    print("  Could not auto-launch. Please start DaVinci manually.")
-                for attempt in range(1, 6):
-                    print(f"  Checking DaVinci... (attempt {attempt}/5)")
-                    time.sleep(3 if attempt <= 2 else 5)
-                    resolve = _check_resolve_running()
-                    if resolve is not None:
-                        if _try_drt(resolve):
-                            xml_written = False
-                        break
-                else:
-                    print("  ❕ DaVinci still not accessible. XML kept.")
+                    print("  DaVinci did not become available. XML kept.")
             elif choice == "r":
                 for attempt in range(1, 4):
                     print(f"  Checking DaVinci... (attempt {attempt}/3)")
