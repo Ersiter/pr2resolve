@@ -30,7 +30,9 @@ MINOR = "MINOR"
 
 def _is_ntsc(timebase: float) -> bool:
     """Check if a timebase value is an NTSC indicator (legacy fallback)."""
-    return timebase in [24, 30, 60]
+    # 24 is NOT an NTSC indicator — cinema 24.000fps uses timebase 24.
+    # Only 30 and 60 are common NTSC timebases.
+    return timebase in [30, 60]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

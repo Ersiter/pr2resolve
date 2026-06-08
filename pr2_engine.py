@@ -99,25 +99,7 @@ def _is_ntsc_fps(fps: float) -> bool:
     return any(abs(fps - rate) < FPS_TOLERANCE for rate in NTSC_RATES)
 
 
-def _is_ntsc_timebase(timebase: float) -> bool:
-    """Fallback: guess NTSC from integer timebase alone.
-
-    Only use this when actual fps is unavailable (e.g. PR FCP7 XML export
-    which only stores integer timebase like 24/30/60). Returns True for
-    24/30/60 but warns that this is ambiguous:
-    - 24 could be cinema (24.000) or NTSC (23.976)
-    - 30 could be web (30.000) or NTSC (29.97)
-    - 60 could be game (60.000) or NTSC (59.94)
-
-    Prefer _is_ntsc_fps when .prproj data is available.
-
-    Args:
-        timebase: The integer timebase value
-
-    Returns:
-        True if timebase is a common NTSC indicator
-    """
-    return timebase in [24, 30, 60]
+# _is_ntsc imported from pr2_constants — single source of truth
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -200,7 +182,7 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
             ))
         if not has_ntsc and has_timebase:
             tb_val = rate_elem.findtext("timebase")
-            if tb_val and _is_ntsc_timebase(float(tb_val)):
+            if tb_val and _is_ntsc(float(tb_val)):
                 issues.append(Issue(
                     CRITICAL, "C3",
                     "<rate> missing <ntsc> (NTSC timebase)",
@@ -596,7 +578,7 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     for rate_elem in root.iter("rate"):
         if rate_elem.find("ntsc") is None:
             tb = rate_elem.findtext("timebase")
-            if tb and _is_ntsc_timebase(float(tb)):
+            if tb and _is_ntsc(float(tb)):
                 ntsc_elem = ET.SubElement(rate_elem, "ntsc")
                 ntsc_elem.text = "TRUE"
                 fix_count += 1
@@ -1096,7 +1078,7 @@ def _validate(root: ET.Element) -> list[Issue]:
     # V12: Rate has ntsc (for NTSC rates)
     for rate_elem in root.iter("rate"):
         tb = rate_elem.findtext("timebase")
-        if tb and _is_ntsc_timebase(float(tb)) and rate_elem.find("ntsc") is None:
+        if tb and _is_ntsc(float(tb)) and rate_elem.find("ntsc") is None:
             issues.append(Issue(MAJOR, "V12", "NTSC rate missing <ntsc>", "rate"))
 
     # V13: All clipitems have masterclipid
@@ -1437,22 +1419,7 @@ class _PrprojIndex:
 # Parser Functions
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _is_ntsc_fps(fps: float) -> bool:
-    """Check if an actual fps value is an NTSC rate using tolerance matching.
-
-    PAL rates (25, 50) are excluded first to avoid false positives.
-
-    Args:
-        fps: Actual frames-per-second value (e.g. 29.97, 25.0, 30.0)
-
-    Returns:
-        True if fps matches an NTSC rate within FPS_TOLERANCE
-    """
-    for pal in PAL_RATES:
-        if abs(fps - pal) < FPS_TOLERANCE:
-            return False
-    return any(abs(fps - rate) < FPS_TOLERANCE for rate in NTSC_RATES)
-
+# _is_ntsc_fps imported above (single source of truth)
 
 def _prproj_adobe_timebase_to_fps(timebase: int) -> float:
     """Convert Adobe internal timebase to actual fps.
