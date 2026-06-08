@@ -15,7 +15,7 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Optional
 from xml.dom import minidom
 
@@ -668,9 +668,8 @@ def _prproj_parse_sequence(
                                         if not mfp:
                                             continue
                                         # Match by filename: Media's FilePath vs SubClip's Name
-                                        from pathlib import PureWindowsPath
-                                        media_filename = PureWindowsPath(mfp).name
-                                        subclip_name = sc_el.findtext("Name", "")
+                                        media_filename = PureWindowsPath(mfp).name.casefold()
+                                        subclip_name = sc_el.findtext("Name", "").casefold()
                                         if media_filename == subclip_name:
                                             media_path = mfp
                                             break
@@ -953,8 +952,7 @@ def _prproj_parse_sequence(
                                     mfp = media_el.findtext("FilePath")
                                     if not mfp:
                                         continue
-                                    from pathlib import PureWindowsPath
-                                    if PureWindowsPath(mfp).name == a_mc_name:
+                                    if PureWindowsPath(mfp).name.casefold() == a_mc_name.casefold():
                                         a_media_path = mfp
                                         break
 
@@ -1197,12 +1195,14 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
                 "<rate> missing <timebase>",
                 f"rate (parent context unavailable in iter)",
             ))
-        if not has_ntsc:
-            issues.append(Issue(
-                CRITICAL, "C3",
-                "<rate> missing <ntsc>",
-                f"rate (parent context unavailable in iter)",
-            ))
+        if not has_ntsc and has_timebase:
+            tb_val = rate_elem.findtext("timebase")
+            if tb_val and _is_ntsc_timebase(float(tb_val)):
+                issues.append(Issue(
+                    MAJOR, "C3",
+                    "<rate> missing <ntsc> (NTSC timebase)",
+                    f"rate (parent context unavailable in iter)",
+                ))
 
     # C5: pathurl format — should be file:///
     for pathurl_elem in root.iter("pathurl"):
