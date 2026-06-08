@@ -2,11 +2,11 @@
 setlocal enabledelayedexpansion
 
 :: ============================================================
-:: prxml2fcp7xml - Windows TUI Launcher
+:: pr2resolve - Windows TUI Launcher
 :: ============================================================
 
 set "VERSION=1.0.0"
-set "SCRIPT=%~dp0prxml_to_fcp7xml.py"
+set "SCRIPT=%~dp0pr2resolve.py"
 set "PYTHONIOENCODING=utf-8"
 
 :: State
@@ -29,7 +29,7 @@ if not defined PYTHON_CMD (
 
 :: Check script
 if not exist "%SCRIPT%" (
-    echo ERROR: prxml_to_fcp7xml.py not found in %~dp0
+    echo ERROR: pr2resolve.py not found in %~dp0
     pause
     exit /b 1
 )
@@ -38,7 +38,7 @@ if not exist "%SCRIPT%" (
 cls
 echo.
 echo  ============================================================
-echo   prxml2fcp7xml v%VERSION%  -  PR XML to FCP7 XML Fixer
+echo   pr2resolve v%VERSION%  -  PR XML to FCP7 XML Fixer
 echo  ============================================================
 echo.
 echo  ------------------------------------------------------------

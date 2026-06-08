@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""prxml2fcp7xml — Premiere Pro FCP7 XML fixer for DaVinci Resolve compatibility.
+"""pr2resolve - Premiere Pro to DaVinci Resolve timeline converter.
 
-Dual-entry (PR FCP7 XML / .prproj) → Unified Timeline Model → FCP7 XML output.
-
-Phase 1: FCP7 XML entry → Diagnostics → Fix → Validate → Output.
+Dual-entry (FCP7 XML / .prproj) -> Unified Timeline Model -> FCP7 XML / DRT output.
 """
 
 from __future__ import annotations
@@ -2192,7 +2190,7 @@ def _generate_report(
         f"# Fix Report: {input_path.name}",
         "",
         f"> Generated: {now}",
-        f"> Tool: prxml2fcp7xml v{VERSION}",
+        f"> Tool: pr2resolve v{VERSION}",
         "",
         "---",
         "",
@@ -2408,7 +2406,7 @@ def _drt_import_and_export(
         pm = resolve.GetProjectManager()
         project = pm.GetCurrentProject()
         if project is None:
-            project = pm.NewProject("prxml2fcp7xml_temp")
+            project = pm.NewProject("pr2resolve_temp")
 
         media_pool = project.GetMediaPool()
 
@@ -2507,18 +2505,22 @@ def _drt_supplement_lumetri(
                     continue
 
                 params = lumetri_data[clip_name]
-                color = clip.GetColor()
-
-                for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
-                    if pr_name not in params:
+                if not params:
+                    continue
+                try:
+                    color = clip.GetColor()
+                    if color is None:
                         continue
-                    val = params[pr_name]
-                    # DaVinci Color API: SetCurrentParameterByName
-                    try:
-                        color.SetCurrentParameterByName(da_name, val)
-                        updated += 1
-                    except Exception:
-                        pass
+                    for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
+                        if pr_name not in params:
+                            continue
+                        try:
+                            color.SetCurrentParameterByName(da_name, params[pr_name])
+                            updated += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
         print(f"  Lumetri data applied to {updated} parameters")
         return updated > 0
@@ -2535,8 +2537,8 @@ def _drt_supplement_lumetri(
 def _print_banner() -> None:
     """Print the tool banner."""
     print("=" * 56)
-    print(f"  prxml2fcp7xml v{VERSION}")
-    print(f"  Premiere Pro FCP7 XML Fixer for DaVinci Resolve")
+    print(f"  pr2resolve v{VERSION}")
+    print(f"  Premiere Pro to DaVinci Resolve Converter")
     print("=" * 56)
     print()
 
@@ -2793,7 +2795,7 @@ def _parse_args() -> argparse.Namespace:
         Parsed arguments namespace
     """
     parser = argparse.ArgumentParser(
-        prog="prxml2fcp7xml",
+        prog="pr2resolve",
         description="Fix Premiere Pro FCP7 XML for DaVinci Resolve compatibility.",
     )
     parser.add_argument(

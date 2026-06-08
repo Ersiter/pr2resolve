@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================
-# prxml2fcp7xml - macOS/Linux TUI Launcher
+# pr2resolve - macOS/Linux TUI Launcher
 # ============================================================
 
 VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="${SCRIPT_DIR}/prxml_to_fcp7xml.py"
+SCRIPT="${SCRIPT_DIR}/pr2resolve.py"
 
 # Colors
 RED='\033[0;31m'
@@ -40,7 +40,7 @@ fi
 
 # Check script
 if [ ! -f "$SCRIPT" ]; then
-    echo -e "${RED}ERROR: prxml_to_fcp7xml.py not found in ${SCRIPT_DIR}${NC}"
+    echo -e "${RED}ERROR: pr2resolve.py not found in ${SCRIPT_DIR}${NC}"
     exit 1
 fi
 
@@ -48,7 +48,7 @@ print_header() {
     clear
     echo ""
     echo -e "  ${PR_PURPLE}============================================================${NC}"
-    echo -e "  ${BOLD}${PR_PURPLE}  prxml2fcp7xml v${VERSION}  -  PR XML to FCP7 XML Fixer${NC}"
+    echo -e "  ${BOLD}${PR_PURPLE}  pr2resolve v${VERSION}  -  PR XML to FCP7 XML Fixer${NC}"
     echo -e "  ${PR_PURPLE}============================================================${NC}"
     echo ""
     echo -e "  ${DIM}------------------------------------------------------------${NC}"
