@@ -2528,14 +2528,14 @@ def _drt_batch_export(
 
     for i, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
         print(f"  [{i+1}/{len(xml_paths)}] {seq_name}")
-        # Strip <file> to prevent <MediaFilePath> DRT flash-crash
-        drt_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
+        # Smart media detection
+        drt_xml, is_skeleton = _strip_file_elements_for_drt(xml_path)
 
         timeline = media_pool.ImportTimelineFromFile(
             str(drt_xml),
-            {"timelineName": seq_name, "importSourceClips": False},
+            {"timelineName": seq_name, "importSourceClips": not is_skeleton},
         )
-        if needs_cleanup and drt_xml.exists():
+        if is_skeleton and drt_xml.exists() and drt_xml != xml_path:
             drt_xml.unlink(missing_ok=True)
 
         if timeline is None:
@@ -2620,16 +2620,15 @@ def _drp_export(
 
     media_pool = project.GetMediaPool()
 
-    # Import all timelines (strip <file> to prevent DRP flash-crash
-    # from offline media paths — same root cause as DRT crash 2833d85)
+    # Smart media detection for each sequence
     for xml_path, seq_name in zip(xml_paths, sequence_names):
-        stripped_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
+        drt_xml, is_skeleton = _strip_file_elements_for_drt(xml_path)
         timeline = media_pool.ImportTimelineFromFile(
-            str(stripped_xml),
-            {"timelineName": seq_name, "importSourceClips": False},
+            str(drt_xml),
+            {"timelineName": seq_name, "importSourceClips": not is_skeleton},
         )
-        if needs_cleanup and stripped_xml.exists():
-            stripped_xml.unlink(missing_ok=True)
+        if is_skeleton and drt_xml.exists() and drt_xml != xml_path:
+            drt_xml.unlink(missing_ok=True)
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
         else:
@@ -2678,22 +2677,40 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
 
 
 def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
-    """Create a temp XML copy with <file> elements stripped.
+    """Prepare XML for DRT/DRP import — strip <file> only if ALL media is offline.
 
-    Offline media paths in <file> get encoded into the DRT/DRP
-    as <MediaFilePath> entries that crash DaVinci on reimport.
+    If any media file referenced in the XML exists on disk, import with
+    full media (importSourceClips: True) so DaVinci can link them.
+    Only strip <file> elements when ALL media is offline — this prevents
+    the <MediaFilePath> flash-crash on foreign machines while preserving
+    real media on the author's machine.
 
     Args:
-        xml_path: Path to the original FCP7 XML file
+        xml_path: Path to the FCP7 XML file
 
     Returns:
-        (path_to_use, needs_cleanup) tuple. If files were stripped,
-        path is a temp file and needs_cleanup is True.
+        (path_to_use, needs_cleanup) tuple
     """
     try:
         tree = ET.parse(str(xml_path))
         if tree.find(".//file") is None:
             return (xml_path, False)
+
+        # Check if ANY media file exists locally
+        has_local_media = False
+        for pu in tree.iter("pathurl"):
+            url = pu.text or ""
+            if url.startswith("file:///"):
+                local_path = url[8:].replace("/", "\\")
+                if Path(local_path).exists():
+                    has_local_media = True
+                    break
+
+        if has_local_media:
+            # Media exists — do NOT strip, let DaVinci link it
+            return (xml_path, False)
+
+        # All offline — strip <file> to prevent DRT corruption
         stripped = copy.deepcopy(tree.getroot())
         for ci in stripped.iter("clipitem"):
             fi = ci.find("file")
@@ -2707,6 +2724,7 @@ def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
             '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
         )
         temp.write_text(content, encoding="utf-8")
+        print("  (all media offline — skeleton import)")
         return (temp, True)
     except Exception:
         return (xml_path, False)
@@ -2772,15 +2790,21 @@ def _drt_sandbox_export(
 
         media_pool = project.GetMediaPool()
 
-        # Strip <file> elements from temp XML copy to prevent
-        # <MediaFilePath> crash in DRT — see commit 2833d85
-        drt_import_xml, needs_cleanup = _strip_file_elements_for_drt(xml_path)
+        # Smart media detection: if local media exists, import with clips
+        drt_import_xml, is_skeleton = _strip_file_elements_for_drt(xml_path)
 
         timeline = media_pool.ImportTimelineFromFile(
             str(drt_import_xml),
-            {"timelineName": timeline_name, "importSourceClips": False},
+            {"timelineName": timeline_name, "importSourceClips": not is_skeleton},
         )
-        if needs_cleanup and drt_import_xml.exists():
+        if timeline is None and not is_skeleton:
+            # Fallback: full import failed → retry skeleton
+            timeline = media_pool.ImportTimelineFromFile(
+                str(drt_import_xml),
+                {"timelineName": timeline_name, "importSourceClips": False},
+            )
+
+        if is_skeleton and drt_import_xml.exists() and drt_import_xml != xml_path:
             drt_import_xml.unlink(missing_ok=True)
 
         if timeline is not None:
@@ -2850,25 +2874,39 @@ def _drt_sandbox_export(
 def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     """Ensure DaVinci Resolve is running and the Scripting API is available.
 
-    In headless mode (nogui=True, default), starts Resolve.exe -nogui
-    with no UI — faster startup (4s vs 14s), no save prompts, ideal for
-    headless DRT export. Falls back to existing GUI instance if running.
+    If a GUI instance is already running, reuses it (never launches a
+    second process). Otherwise starts headless (-nogui) by default.
 
     Args:
         timeout: Maximum seconds to wait for DaVinci to become ready
-        nogui: If True, use headless mode (default). If False, use GUI.
+        nogui: If True, use headless mode (default). Ignored if GUI
+               instance already running.
 
     Returns:
         The Resolve object if available, None otherwise
     """
     resolve = _check_resolve_running()
     if resolve is not None:
-        if nogui:
-            print("  DaVinci already running (reusing existing instance).")
         return resolve
 
-    mode = "headless" if nogui else ""
-    print(f"  Launching DaVinci Resolve{' (' + mode + ')' if mode else ''}...")
+    # Check if a GUI instance is already running but API not ready (cold start)
+    if _is_resolve_running():
+        print("  DaVinci GUI is starting up. Waiting for API...")
+        start = time.time()
+        while time.time() - start < timeout:
+            time.sleep(2)
+            elapsed = int(time.time() - start)
+            print(f"  Waiting for DaVinci API... ({elapsed}s)")
+            resolve = _check_resolve_running()
+            if resolve is not None:
+                print(f"  API ready after {elapsed}s.")
+                return resolve
+        print(f"  API did not become available within {timeout}s.")
+        return None
+
+    # No instance at all — launch one
+    mode = "headless" if nogui else "GUI"
+    print(f"  Launching DaVinci Resolve ({mode})...")
     install_dir = _find_resolve_install_dir()
     if not install_dir:
         print("  Could not find DaVinci installation.")

@@ -33,7 +33,7 @@ from pr2_engine import (
     _prproj_extract_all_lumetri,
     _check_resolve_running, _ensure_resolve_running,
     _drt_sandbox_export, _drt_supplement_lumetri,
-    _recycle,
+    _drt_batch_export, _recycle,
 )
 
 # ── Recycle utility (also lives in pr2_engine, re-export for convenience) ──
@@ -128,6 +128,43 @@ def _run_pipeline(
 
             print(f"  Sequence: {selected['name']} ({selected['width']}x{selected['height']}, {selected['clip_count']} clips)")
             print()
+
+            # ─ All-sequences batch mode ────────────────────────
+            if all_sequences and len(non_empty) > 1:
+                print(f"  Batch mode: exporting {len(non_empty)} non-empty sequences")
+                xml_paths: list[Path] = []
+                seq_names: list[str] = []
+                for s in non_empty:
+                    fcp = _prproj_parse_sequence(prproj_root, s["uid"], input_path)
+                    tmp_xml = output_dir / f"_pr2resolve_{s['name'][:20]}.xml"
+                    _write_fixed_xml(fcp, tmp_xml)
+                    xml_paths.append(tmp_xml)
+                    seq_names.append(s["name"])
+                    # Quick fix pass on each
+                    issues = _scan(fcp)
+                    _apply_fixes(fcp, issues)
+                    _write_fixed_xml(fcp, tmp_xml)
+                    print(f"    {s['name'][:30]}: {s['clip_count']} clips, {len(issues)} issues")
+
+                if drt:
+                    resolve = _ensure_resolve_running(timeout=60, nogui=not gui)
+                    if resolve:
+                        results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names)
+                        ok = sum(1 for r in results if r[0])
+                        print(f"  Batch DRT: {ok}/{len(results)} exported")
+                    else:
+                        print("  DRT skipped: DaVinci not available")
+
+                if report:
+                    _generate_report([], [], 0, input_path, output_path,
+                                     output_dir / f"{stem}_fix_report.md")
+
+                # Cleanup temp XMLs
+                for tmp in xml_paths:
+                    tmp.unlink(missing_ok=True)
+                return 0
+            # ─ End batch mode ──────────────────────────────────
+
             print("  Converting .prproj to FCP7 XML...")
             root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
             print("  Conversion complete.")
