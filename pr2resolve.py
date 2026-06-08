@@ -10,6 +10,7 @@ import argparse
 import copy
 import gzip
 import os
+import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
@@ -2511,24 +2512,47 @@ def _drt_sandbox_export(
 
         media_pool = project.GetMediaPool()
 
-        # Import with source clips first; fall back to skeleton import
+        # Strip <file> elements from a temp XML copy before DRT import.
+        # Offline media paths get encoded into the DRT's SeqContainer
+        # as <MediaFilePath> entries that crash DaVinci on reimport.
+        # Stripping them from a temp copy avoids corruption while
+        # keeping the user's output XML intact.
+        drt_import_xml = xml_path
+        temp_stripped = None
+        try:
+            tree = ET.parse(str(xml_path))
+            has_files = tree.find(".//file") is not None
+            if has_files:
+                stripped = copy.deepcopy(tree.getroot())
+                for ci in stripped.iter("clipitem"):
+                    fi = ci.find("file")
+                    if fi is not None:
+                        ci.remove(fi)
+                temp_stripped = xml_path.parent / f"_pr2resolve_stripped_{int(time.time())}.xml"
+                ET.ElementTree(stripped).write(
+                    str(temp_stripped), encoding="utf-8",
+                    xml_declaration=True
+                )
+                # Fix up DOCTYPE that ET strips
+                content = temp_stripped.read_text(encoding="utf-8")
+                content = content.replace(
+                    '<?xml version="1.0" encoding="utf-8"?>',
+                    '<?xml version="1.0" encoding="UTF-8"?>\n' + FCP7_DOCTYPE
+                )
+                temp_stripped.write_text(content, encoding="utf-8")
+                drt_import_xml = temp_stripped
+        except Exception:
+            pass  # fall back to original file
+
         timeline = media_pool.ImportTimelineFromFile(
-            str(xml_path),
-            {
-                "timelineName": timeline_name,
-                "importSourceClips": True,
-            },
+            str(drt_import_xml),
+            {"timelineName": timeline_name, "importSourceClips": False},
         )
-        if timeline is None:
-            timeline = media_pool.ImportTimelineFromFile(
-                str(xml_path),
-                {
-                    "timelineName": timeline_name,
-                    "importSourceClips": False,
-                },
-            )
-            if timeline is not None:
-                print("  (imported timeline structure only, media offline)")
+        if temp_stripped is not None and temp_stripped.exists():
+            temp_stripped.unlink(missing_ok=True)
+
+        if timeline is not None:
+            print("  (timeline structure imported, media to be relinked on target machine)")
 
         if timeline is None:
             print("  Error: Failed to import timeline from XML")
@@ -2586,35 +2610,63 @@ def _drt_sandbox_export(
         return False
 
 
-def _launch_resolve() -> bool:
-    """Attempt to launch DaVinci Resolve automatically.
+def _ensure_resolve_running(timeout: int = 60) -> Any:
+    """Ensure DaVinci Resolve is running and the Scripting API is available.
 
-    Finds the install directory via _find_resolve_install_dir and starts
-    Resolve.exe as a detached process. The user still needs to wait for
-    DaVinci to finish initializing before the API becomes available
-    (typically 10-30 seconds).
+    If DaVinci is not running, auto-launches it and polls until the API
+    becomes available (typically 10-30 seconds for a cold start).
+
+    Args:
+        timeout: Maximum seconds to wait for DaVinci to become ready
 
     Returns:
-        True if the process was started, False otherwise
+        The Resolve object if available, None otherwise
     """
+    # 1. Quick check: already running?
+    resolve = _check_resolve_running()
+    if resolve is not None:
+        return resolve
+
+    # 2. Auto-launch
+    print("  Launching DaVinci Resolve...")
     install_dir = _find_resolve_install_dir()
     if not install_dir:
-        return False
+        print("  Could not find DaVinci installation.")
+        return None
     exe = install_dir / "Resolve.exe"
     if not exe.exists():
-        return False
+        print(f"  Resolve.exe not found at: {exe}")
+        return None
     try:
-        import subprocess
         subprocess.Popen(
             [str(exe)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=0x00000008 if sys.platform == "win32" else 0,  # DETACHED_PROCESS
+            creationflags=0x00000008 if sys.platform == "win32" else 0,
         )
-        print(f"  Launched: {exe}")
-        return True
-    except Exception:
-        return False
+        print(f"  Started: {exe}")
+    except Exception as e:
+        print(f"  Failed to start: {e}")
+        return None
+
+    # 3. Poll until API available
+    import time
+    start = time.time()
+    poll_interval = 2
+    while time.time() - start < timeout:
+        time.sleep(poll_interval)
+        elapsed = int(time.time() - start)
+        print(f"  Waiting for DaVinci... ({elapsed}s)")
+        resolve = _check_resolve_running()
+        if resolve is not None:
+            print(f"  DaVinci ready after {elapsed}s.")
+            return resolve
+        # Increase poll interval after first few attempts
+        if elapsed > 15:
+            poll_interval = 5
+
+    print(f"  DaVinci did not start within {timeout}s.")
+    return None
 
 
 def _drt_supplement_lumetri(
