@@ -198,6 +198,13 @@ FCP7 XML path: No -- Lumetri is a PR-proprietary effect and is removed from XML.
 
 ---
 
+## References
+
+- [PRPROJ-READER](https://github.com/sergeiventurinov/PRPROJ-READER) — .prproj format reverse engineering
+- [prproj_downgrade](https://github.com/snorkem/prproj_downgrade) — .prproj version downgrade tool
+- [ppro-scripting.docsforadobe.dev](https://ppro-scripting.docsforadobe.dev) — Adobe official object model docs
+- [DaVinci Resolve Scripting API](https://resolvedevdoc.readthedocs.io/) — DaVinci Python API reference
+
 ## License
 
 [MIT License](LICENSE)
