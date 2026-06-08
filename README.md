@@ -12,7 +12,7 @@ Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT
 
 ## Table of Contents
 
-- [安装](#安装)
+- [准备工作](#准备工作)
 - [快速开始](#快速开始)
 - [这是什么](#这是什么)
 - [为什么需要它](#为什么需要它)
@@ -25,14 +25,17 @@ Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT
 
 ---
 
-## 安装
+## 准备工作
 
-```bash
-git clone <repo-url>
-cd pr2resolve
-```
+1. **安装 Python 3**（要求 3.8 及以上）  
+   - 从 [python.org](https://www.python.org/downloads/) 下载安装包  
+   - **关键**：安装时务必勾选 `Add Python to PATH`（添加到环境变量）  
+   - 若已安装但未加 PATH，可重新运行安装程序勾选修复
 
-依赖只有 Python 3.8+，不需要 pip install 任何东西。
+2. **验证安装**  
+   打开终端（cmd 或 bash），输入以下命令不报错即可：
+   ```bash
+   python --version
 
 ---
 
@@ -195,4 +198,4 @@ pr2resolve 读进去，把这些问题全修完，吐出来干净的 XML。
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+[MIT LICENSE](./LICENSE)
