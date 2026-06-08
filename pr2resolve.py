@@ -2273,34 +2273,47 @@ def _generate_report(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _recycle(path: Path) -> None:
-    """Move a file to the Windows recycle bin. Never permanently delete.
+    """Move a file to the system recycle bin / trash. Never permanently delete.
 
-    Uses Windows shell API via PowerShell. On non-Windows systems,
-    falls back to moving to a local trash directory.
+    Platform support:
+    - Windows: PowerShell shell API -> Recycle Bin
+    - macOS: ~/.Trash
+    - Linux: gio trash (GNOME/KDE) or ~/.local/share/Trash/files/ (XDG spec)
 
     Args:
         path: Path to the file to recycle
     """
+    import subprocess
     if not path.exists():
         return
     try:
         if sys.platform == "win32":
-            import subprocess
             subprocess.run([
                 "powershell", "-Command",
-                f"Add-Type -AssemblyName Microsoft.VisualBasic;"
+                "Add-Type -AssemblyName Microsoft.VisualBasic;"
                 f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
                 f"'{path}','OnlyErrorDialogs','SendToRecycleBin')"
             ], capture_output=True, timeout=10)
-        else:
-            # macOS/Linux: move to trash
-            import shutil
+        elif sys.platform == "darwin":
             trash = Path.home() / ".Trash"
             trash.mkdir(exist_ok=True)
-            shutil.move(str(path), str(trash / path.name))
+            path.rename(trash / path.name)
+        else:
+            # Linux: try gio first (GNOME/KDE), fall back to XDG Trash spec
+            result = subprocess.run(
+                ["gio", "trash", str(path)],
+                capture_output=True, timeout=10
+            )
+            if result.returncode != 0:
+                # XDG Trash spec fallback
+                trash_files = Path(os.environ.get(
+                    "XDG_DATA_HOME",
+                    str(Path.home() / ".local" / "share")
+                )) / "Trash" / "files"
+                trash_files.mkdir(parents=True, exist_ok=True)
+                path.rename(trash_files / path.name)
     except Exception:
-        # Silently ignore recycle failures — file may be locked
-        pass
+        pass  # best-effort, silently ignore failures
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
