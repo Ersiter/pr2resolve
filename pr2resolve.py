@@ -3024,6 +3024,11 @@ def _run_pipeline(
             print()
             choice = input("  > ").strip().lower()
             if choice == "a":
+                print("  Launching DaVinci Resolve...")
+                print("  DaVinci is starting. This may take 10-30 seconds.")
+                print("  After it finishes loading, it will automatically create")
+                print("  a new project if none is open.")
+                print()
                 resolve = _ensure_resolve_running(timeout=60)
                 if resolve is not None:
                     if _try_drt(resolve):
