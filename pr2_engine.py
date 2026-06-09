@@ -189,13 +189,13 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
                     f"rate (parent context unavailable in iter)",
                 ))
 
-    # C5: pathurl format — should be file:///
+    # C5: pathurl format — accept file:/// or file://localhost/
     for pathurl_elem in root.iter("pathurl"):
         url = pathurl_elem.text or ""
-        if url and not url.startswith("file:///"):
+        if url and not url.startswith("file:///") and not url.startswith("file://localhost/"):
             issues.append(Issue(
                 CRITICAL, "C5",
-                f'pathurl "{url[:60]}..." is not file:/// format',
+                f'pathurl "{url[:60]}..." is not a valid file URI',
                 "file/pathurl",
             ))
 
@@ -636,16 +636,19 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
             fix_count += 1
             _mark_fixed(issues, "C4", "<timebase>")
 
-    # C5: Fix pathurl format
+    # C5: Fix pathurl format — normalize cross-OS variants to PR-compatible format
     for pathurl_elem in root.iter("pathurl"):
         url = pathurl_elem.text or ""
-        if url and not url.startswith("file:///"):
-            if url.startswith("file://localhost/"):
-                pathurl_elem.text = "file:///" + url[len("file://localhost/"):]
-                fix_count += 1
-            elif url.startswith("file://"):
-                pathurl_elem.text = "file:///" + url[len("file://"):]
-                fix_count += 1
+        # Already correct: file://localhost/ (PR format) or file:/// (standard)
+        if url.startswith("file://localhost/") or url.startswith("file:///"):
+            continue
+        if url.startswith("file://"):
+            # Bare file:// → insert localhost/
+            pathurl_elem.text = "file://localhost/" + url[len("file://"):]
+            fix_count += 1
+        elif not url.startswith("file://"):
+            pathurl_elem.text = "file://localhost/" + url
+            fix_count += 1
     if any(i.rule_id == "C5" for i in issues):
         _mark_fixed(issues, "C5", "pathurl")
 
@@ -1204,11 +1207,11 @@ def _validate(root: ET.Element) -> list[Issue]:
         if ci.find("sourcetrack") is None:
             issues.append(Issue(MINOR, "V14", f"clipitem missing <sourcetrack>", ci.get("id", "?")))
 
-    # V15: pathurl uses file:/// format
+    # V15: pathurl uses file:/// or file://localhost/ format
     for pu in root.iter("pathurl"):
         url = pu.text or ""
-        if url and not url.startswith("file:///"):
-            issues.append(Issue(MAJOR, "V15", f"pathurl not file:/// format", "pathurl"))
+        if url and not url.startswith("file:///") and not url.startswith("file://localhost/"):
+            issues.append(Issue(MAJOR, "V15", f"pathurl not a file URI", "pathurl"))
 
     # V16: No Lumetri effects remain
     for eff in root.iter("effect"):
@@ -1292,6 +1295,38 @@ def _make_output_name(seq_name: str, add_suffix: bool = True, suffix: str | None
     if add_suffix:
         return f"{safe}{suffix}.xml"
     return f"{safe}.xml"
+
+
+def _to_fcp7_pathurl(filepath: str) -> str:
+    """Convert a Windows path to FCP7 XML pathurl format.
+
+    Mimics Premiere Pro's own FCP7 XML export:
+      file://localhost/E%3a/path/to/file.mov
+
+    Python's Path.as_uri() produces file:///E:/path which DaVinci
+    sometimes fails to resolve for non-ASCII paths on Windows.
+
+    Args:
+        filepath: Absolute Windows path (e.g. ``E:\\HW\\...``)
+
+    Returns:
+        FCP7-compatible file://localhost/ URI (lowercase hex encoding)
+    """
+    from urllib.parse import quote
+    import re
+    # Convert backslashes to forward slashes
+    path = filepath.replace("\\", "/")
+    # Encode drive letter colon: E:/ -> E%3a/
+    if len(path) >= 2 and path[1] == ":":
+        path = path[0] + "%3a" + path[2:]
+    # URL-encode non-ASCII chars, then lowercase only the %XX sequences
+    encoded = quote(path, safe="/%")
+    # Lowercase hex in percent-encoded sequences (PR convention)
+    encoded = re.sub(r'%[0-9A-Fa-f]{2}', lambda m: m.group(0).lower(), encoded)
+    # Drive letter encoding uppercase (PR style)
+    if encoded.startswith("e%3a"):
+        encoded = "E%3a" + encoded[4:]
+    return f"file://localhost/{encoded}"
 
 
 def _write_fixed_xml(root: ET.Element, output_path: Path) -> None:
@@ -1451,7 +1486,7 @@ def _root_cause_hint(issue: Issue) -> str:
         "C2": "PR omits audio <format> element in some export modes",
         "C3": "PR exports integer timebase without <ntsc> flag for NTSC rates",
         "C4": "Malformed or missing <timebase> in rate element",
-        "C5": "PR on Windows writes file://localhost/ instead of file:///",
+        "C5": "Pathurl uses file:/// or file://localhost/ (both accepted for DaVinci compat)",
         "C6": "PR exports audio section before video in <media>",
         "M0": "Lumetri is a PR-only effect; DaVinci has no equivalent plugin",
         "M1": "PR does not output FCP7-native <masterclipid>",
@@ -2448,10 +2483,10 @@ def _prproj_parse_sequence(
                     fn.text = mc_name
                     if media_path:
                         pu = ET.SubElement(file_el, "pathurl")
-                        pu.text = Path(media_path).as_uri()
+                        pu.text = _to_fcp7_pathurl(media_path)
                     else:
                         pu = ET.SubElement(file_el, "pathurl")
-                        pu.text = f"file:///{mc_name}"
+                        pu.text = f"file://localhost/{mc_name}"
 
                     # File rate (source media timebase — from actual media)
                     src_timebase = int(round(source_tc.media_fps))
@@ -2695,10 +2730,10 @@ def _prproj_parse_sequence(
                     a_fn.text = a_mc_name
                     if a_media_path:
                         a_pu = ET.SubElement(a_file, "pathurl")
-                        a_pu.text = Path(a_media_path).as_uri()
+                        a_pu.text = _to_fcp7_pathurl(a_media_path)
                     else:
                         a_pu = ET.SubElement(a_file, "pathurl")
-                        a_pu.text = f"file:///{a_mc_name}"
+                        a_pu.text = f"file://localhost/{a_mc_name}"
 
                     # Source rate, duration, timecode (matching video pattern)
                     a_src_timebase = int(round(a_source_tc.media_fps))
@@ -3215,9 +3250,14 @@ def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
 
         # Check if ANY media file exists locally
         has_local_media = False
+        from urllib.parse import unquote
         for pu in tree.iter("pathurl"):
             url = pu.text or ""
-            if url.startswith("file:///"):
+            if url.startswith("file://localhost/"):
+                local_path = unquote(url[len("file://localhost/"):]).replace("/", "\\")
+                if Path(local_path).exists():
+                    has_local_media = True
+            elif url.startswith("file:///"):
                 local_path = url[8:].replace("/", "\\")
                 if Path(local_path).exists():
                     has_local_media = True
