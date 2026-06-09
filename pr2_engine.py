@@ -353,7 +353,7 @@ def _scan_major(root: ET.Element) -> list[Issue]:
 
 
 def _scan_minor(root: ET.Element) -> list[Issue]:
-    """Scan for MINOR issues (N1-N7).
+    """Scan for MINOR issues (N1-N8).
 
     Args:
         root: The <xmeml> root element
@@ -457,6 +457,23 @@ def _scan_minor(root: ET.Element) -> list[Issue]:
                     ))
             except ValueError:
                 pass
+
+    # N8: Zero file timecode on clips with local media (likely mismatch)
+    # When file timecode is 00:00:00:00 but the actual media file has
+    # embedded timecode (e.g. DJI drone footage at 13:01:15:00),
+    # DaVinci Resolve warns about timecode mismatch on import.
+    for file_elem in root.iter("file"):
+        tc = file_elem.find("timecode")
+        if tc is not None:
+            tc_str = tc.findtext("string", "")
+            pu = file_elem.findtext("pathurl", "")
+            if tc_str in ("00:00:00:00", "00;00;00;00") and pu and pu.startswith("file:///"):
+                issues.append(Issue(
+                    MINOR, "N8",
+                    f"Zero file timecode may mismatch source media timecode; "
+                    f"consider re-generating from .prproj with source TC detection",
+                    f"file[id={file_elem.get('id', '?')}]",
+                ))
 
     return issues
 
@@ -1409,6 +1426,7 @@ def _root_cause_hint(issue: Issue) -> str:
         "N5": "Mixed frame rate timeline has multiple timebase values",
         "N6": "Floating-point arithmetic produces near-zero values (e.g. 2.18e-10)",
         "N7": "Disabled/locked tracks are preserved for creator intent fidelity",
+        "N8": "Zero file timecode may mismatch embedded media timecode (DaVinci import warning)",
     }
     return hints.get(issue.rule_id, "See description")
 
@@ -1537,6 +1555,231 @@ def _prproj_ticks_to_frames(ticks_str: str, fps: float) -> int:
     ppro_ticks_per_sec = 254016000000
     seconds = ticks / ppro_ticks_per_sec
     return int(round(seconds * fps))
+
+
+def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bool) -> str:
+    """Convert absolute frame count to timecode string at given frame rate.
+
+    Uses non-drop-frame (NDF) calculation. For fractional NTSC rates
+    (23.976, 29.97, 59.94), NDF is the standard FCP7 XML convention.
+
+    Args:
+        total_frames: Absolute frame number (0-based)
+        fps: Actual frames per second (e.g. 59.94)
+        is_ntsc: Use ';' separator for NTSC, ':' for integer rates
+
+    Returns:
+        Timecode string like '13:01:15:00' or '00;00;00;00'
+    """
+    display_fps = int(round(fps))
+    if display_fps <= 0:
+        display_fps = 30
+    hours = total_frames // (3600 * display_fps)
+    remainder = total_frames % (3600 * display_fps)
+    minutes = remainder // (60 * display_fps)
+    remainder = remainder % (60 * display_fps)
+    seconds = remainder // display_fps
+    frames = remainder % display_fps
+    sep = ";" if is_ntsc else ":"
+    return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
+
+
+@dataclass
+class _SourceTCInfo:
+    """Extracted source media timecode and frame rate info."""
+    media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
+    is_ntsc: bool = False                  # whether source rate is NTSC
+    timecode_frame: int = 0                # timecode start in source-rate frames
+    timecode_string: str = "00:00:00:00"   # formatted TC string
+    full_duration_frames: int = 0          # full file duration in source-rate frames
+    resolved: bool = False                 # True if real TC data was found
+
+
+def _prproj_extract_source_tc_info(
+    mc_el: ET.Element,
+    idx: _PrprojIndex,
+) -> _SourceTCInfo:
+    """Extract source media timecode and frame rate from a MasterClip element.
+
+    Follows the MasterClip → LoggingInfo → ClipLoggingInfo reference chain
+    in the .prproj object graph to read:
+      - MediaFrameRate: Adobe internal timebase → actual fps
+      - MediaInPoint:   pproTicks → source start timecode
+      - MediaOutPoint:  pproTicks → compute full file duration
+
+    Args:
+        mc_el: The resolved MasterClip element
+        idx: The prproj index for resolving ObjectRefs
+
+    Returns:
+        _SourceTCInfo with extracted values or defaults (resolved=False)
+    """
+    info = _SourceTCInfo()
+
+    # Follow LoggingInfo → ClipLoggingInfo
+    li = mc_el.find("LoggingInfo")
+    if li is None:
+        return info
+    li_ref = li.get("ObjectRef")
+    if not li_ref:
+        return info
+    cli = idx.resolve_ref(li_ref)
+    if cli is None:
+        return info
+
+    # Extract MediaFrameRate (Adobe internal timebase → actual fps)
+    mfr_text = cli.findtext("MediaFrameRate")
+    if mfr_text and mfr_text.strip():
+        try:
+            mfr_ticks = int(mfr_text)
+            # Skip sentinel values (max int64 = generated/nested sequences)
+            if 0 < mfr_ticks < 9_000_000_000_000_000_000:
+                info.media_fps = _prproj_adobe_timebase_to_fps(mfr_ticks)
+        except (ValueError, TypeError):
+            pass
+    info.is_ntsc = _is_ntsc_fps(info.media_fps)
+
+    # Extract MediaInPoint (pproTicks → timecode)
+    mip_text = cli.findtext("MediaInPoint")
+    if mip_text and mip_text.strip():
+        try:
+            mip_ticks = int(mip_text)
+            if mip_ticks > 0:
+                info.timecode_frame = _prproj_ticks_to_frames(
+                    str(mip_ticks), info.media_fps
+                )
+                info.timecode_string = _prproj_frames_to_timecode_string(
+                    info.timecode_frame, info.media_fps, info.is_ntsc
+                )
+                info.resolved = True
+        except (ValueError, TypeError):
+            pass
+
+    # Extract full file duration from MediaOutPoint - MediaInPoint
+    mop_text = cli.findtext("MediaOutPoint")
+    if mop_text and mip_text and mip_text.strip():
+        try:
+            mop_ticks = int(mop_text)
+            mip_ticks = int(mip_text)
+            if mop_ticks > mip_ticks:
+                info.full_duration_frames = _prproj_ticks_to_frames(
+                    str(mop_ticks - mip_ticks), info.media_fps
+                )
+        except (ValueError, TypeError):
+            pass
+
+    return info
+
+
+def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
+    """Read source timecode and frame rate from a media file using ffprobe.
+
+    Tries three approaches in order:
+    1. stream=timecode (professional cameras write this)
+    2. format_tags=timecode (DJI MOV wrapper)
+    3. format_tags=creation_time → time-of-day TC (DJI MP4)
+
+    Also reads r_frame_rate for actual source FPS and duration for
+    full file length. All errors/timeouts are silently caught — the
+    caller checks info.resolved to decide whether to use the result.
+
+    Args:
+        filepath: Absolute path to the media file
+
+    Returns:
+        _SourceTCInfo with ffprobe-extracted values, or defaults on failure
+    """
+    info = _SourceTCInfo()
+    try:
+        # 1. Try stream-level timecode first
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=timecode",
+             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            capture_output=True, text=True, timeout=15
+        )
+        tc_str = result.stdout.strip()
+        if tc_str and result.returncode == 0:
+            info.timecode_string = tc_str
+            info.resolved = True
+
+        # 2. Get frame rate
+        result2 = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            capture_output=True, text=True, timeout=15
+        )
+        fps_str = result2.stdout.strip()
+        if fps_str and "/" in fps_str:
+            num, den = fps_str.split("/", 1)
+            if int(den) > 0:
+                info.media_fps = round(int(num) / int(den), 3)
+        elif fps_str:
+            try:
+                info.media_fps = float(fps_str)
+            except ValueError:
+                pass
+        info.is_ntsc = _is_ntsc_fps(info.media_fps)
+
+        # 3. If stream timecode not found, try format tags
+        if not info.resolved:
+            result3 = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries",
+                 "format_tags=timecode",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                capture_output=True, text=True, timeout=15
+            )
+            tc_str2 = result3.stdout.strip()
+            if tc_str2:
+                info.timecode_string = tc_str2
+                info.resolved = True
+
+        # 4. Last resort: use creation_time as time-of-day TC
+        if not info.resolved:
+            result4 = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries",
+                 "format_tags=creation_time",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                capture_output=True, text=True, timeout=15
+            )
+            ct = result4.stdout.strip()
+            if ct:
+                # Parse ISO 8601 creation time → timecode string
+                # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
+                try:
+                    dt_str = ct.replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(dt_str)
+                    display_fps = int(round(info.media_fps)) or 30
+                    tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
+                    tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
+                    sep = ";" if info.is_ntsc else ":"
+                    info.timecode_string = (
+                        f"{dt.hour:02d}{sep}{dt.minute:02d}{sep}"
+                        f"{dt.second:02d}{sep}{tc_frames:02d}"
+                    )
+                    info.resolved = True
+                except (ValueError, IndexError):
+                    pass
+
+        # 5. Get duration
+        result5 = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "stream=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            capture_output=True, text=True, timeout=15
+        )
+        dur_str = result5.stdout.strip()
+        if dur_str:
+            try:
+                dur_secs = float(dur_str)
+                info.full_duration_frames = int(round(dur_secs * info.media_fps))
+            except ValueError:
+                pass
+
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # ffprobe not installed, or file inaccessible
+        pass
+
+    return info
 
 
 def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str, Any]]:
@@ -1949,6 +2192,7 @@ def _prproj_parse_sequence(
                     out_point = 0
                     playback_speed = 100
                     media_path = ""
+                    source_tc = _SourceTCInfo()
                     src_w, src_h = w, h  # default to timeline
 
                     if subclip is not None:
@@ -1974,6 +2218,13 @@ def _prproj_parse_sequence(
                                         if media_filename == subclip_name:
                                             media_path = mfp
                                             break
+
+                                    # Extract source timecode from ClipLoggingInfo
+                                    source_tc = _prproj_extract_source_tc_info(mc_el, idx)
+                                    if not source_tc.resolved and media_path:
+                                        local = Path(media_path)
+                                        if local.exists():
+                                            source_tc = _ffprobe_read_timecode(str(local))
 
                             # Clip → InPoint/OutPoint/PlaybackSpeed
                             clip_ref_el = sc_el.find("Clip")
@@ -2097,32 +2348,37 @@ def _prproj_parse_sequence(
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file:///{mc_name}"
 
-                    # File rate (source media timebase)
+                    # File rate (source media timebase — from actual media)
+                    src_timebase = int(round(source_tc.media_fps))
+                    src_is_ntsc = source_tc.is_ntsc
                     f_rate = ET.SubElement(file_el, "rate")
                     fr_tb = ET.SubElement(f_rate, "timebase")
-                    fr_tb.text = str(timebase)
-                    if is_ntsc:
+                    fr_tb.text = str(src_timebase)
+                    if src_is_ntsc:
                         fr_ntsc = ET.SubElement(f_rate, "ntsc")
                         fr_ntsc.text = "TRUE"
 
-                    # File duration
+                    # File duration (full source duration if available)
                     fd = ET.SubElement(file_el, "duration")
-                    fd.text = str(out_point - in_point if out_point > in_point else end - start)
+                    if source_tc.full_duration_frames > 0:
+                        fd.text = str(source_tc.full_duration_frames)
+                    else:
+                        fd.text = str(out_point - in_point if out_point > in_point else end - start)
 
-                    # File timecode
+                    # File timecode (actual source timecode — no longer hardcoded zero)
                     f_tc = ET.SubElement(file_el, "timecode")
                     ftc_rate = ET.SubElement(f_tc, "rate")
                     ftc_tb = ET.SubElement(ftc_rate, "timebase")
-                    ftc_tb.text = str(timebase)
-                    if is_ntsc:
+                    ftc_tb.text = str(src_timebase)
+                    if src_is_ntsc:
                         ftc_ntsc = ET.SubElement(ftc_rate, "ntsc")
                         ftc_ntsc.text = "TRUE"
                     ftc_str = ET.SubElement(f_tc, "string")
-                    ftc_str.text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+                    ftc_str.text = source_tc.timecode_string
                     ftc_frame = ET.SubElement(f_tc, "frame")
-                    ftc_frame.text = "0"
+                    ftc_frame.text = str(source_tc.timecode_frame)
                     ftc_df = ET.SubElement(f_tc, "displayformat")
-                    ftc_df.text = "DF" if is_ntsc else "NDF"
+                    ftc_df.text = "DF" if src_is_ntsc else "NDF"
 
                     # Media details (full structure matching PR FCP7 XML)
                     media_el = ET.SubElement(file_el, "media")
@@ -2238,6 +2494,7 @@ def _prproj_parse_sequence(
                     a_subclip = a_cti.find("SubClip")
                     a_mc_name = "(unknown audio)"
                     a_media_path = ""
+                    a_source_tc = _SourceTCInfo()
                     a_in = 0
                     a_out = 0
 
@@ -2247,9 +2504,14 @@ def _prproj_parse_sequence(
                         if a_sc_el is not None:
                             a_mc_name = a_sc_el.findtext("Name", a_mc_name)
 
-                            # Media path via filename match
+                            # Media path via filename match + source TC
                             a_mc_uref_el = a_sc_el.find("MasterClip")
                             if a_mc_uref_el is not None:
+                                a_mc_uref = a_mc_uref_el.get("ObjectURef")
+                                a_mc_el = idx.resolve_uref(a_mc_uref) if a_mc_uref else None
+                                if a_mc_el is not None:
+                                    # Extract source timecode from ClipLoggingInfo
+                                    a_source_tc = _prproj_extract_source_tc_info(a_mc_el, idx)
                                 for media_el in prproj_root.findall("Media"):
                                     mfp = media_el.findtext("FilePath")
                                     if not mfp:
@@ -2257,6 +2519,11 @@ def _prproj_parse_sequence(
                                     if Path(mfp.replace("\\", "/")).name.lower() == a_mc_name.lower():
                                         a_media_path = mfp
                                         break
+                                # ffprobe fallback for audio source TC
+                                if not a_source_tc.resolved and a_media_path:
+                                    local = Path(a_media_path)
+                                    if local.exists():
+                                        a_source_tc = _ffprobe_read_timecode(str(local))
 
                             # Clip → InPoint/OutPoint
                             a_clip_ref_el = a_sc_el.find("Clip")
@@ -2316,6 +2583,37 @@ def _prproj_parse_sequence(
                     else:
                         a_pu = ET.SubElement(a_file, "pathurl")
                         a_pu.text = f"file:///{a_mc_name}"
+
+                    # Source rate, duration, timecode (matching video pattern)
+                    a_src_timebase = int(round(a_source_tc.media_fps))
+                    a_src_is_ntsc = a_source_tc.is_ntsc
+
+                    a_f_rate = ET.SubElement(a_file, "rate")
+                    a_fr_tb = ET.SubElement(a_f_rate, "timebase")
+                    a_fr_tb.text = str(a_src_timebase)
+                    if a_src_is_ntsc:
+                        a_fr_ntsc = ET.SubElement(a_f_rate, "ntsc")
+                        a_fr_ntsc.text = "TRUE"
+
+                    a_fd = ET.SubElement(a_file, "duration")
+                    if a_source_tc.full_duration_frames > 0:
+                        a_fd.text = str(a_source_tc.full_duration_frames)
+                    else:
+                        a_fd.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
+
+                    a_f_tc = ET.SubElement(a_file, "timecode")
+                    a_ftc_rate = ET.SubElement(a_f_tc, "rate")
+                    a_ftc_tb = ET.SubElement(a_ftc_rate, "timebase")
+                    a_ftc_tb.text = str(a_src_timebase)
+                    if a_src_is_ntsc:
+                        a_ftc_ntsc = ET.SubElement(a_ftc_rate, "ntsc")
+                        a_ftc_ntsc.text = "TRUE"
+                    a_ftc_str = ET.SubElement(a_f_tc, "string")
+                    a_ftc_str.text = a_source_tc.timecode_string
+                    a_ftc_frame = ET.SubElement(a_f_tc, "frame")
+                    a_ftc_frame.text = str(a_source_tc.timecode_frame)
+                    a_ftc_df = ET.SubElement(a_f_tc, "displayformat")
+                    a_ftc_df.text = "DF" if a_src_is_ntsc else "NDF"
 
                     # Sourcetrack (audio)
                     a_st_el = ET.SubElement(a_ci, "sourcetrack")
