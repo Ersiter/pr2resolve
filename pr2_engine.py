@@ -2873,6 +2873,35 @@ def _is_resolve_running() -> bool:
         return False
 
 
+# ── Process lifecycle tracking ───────────────────────────────────────────
+_resolve_process: Optional[subprocess.Popen[Any]] = None
+"""The Popen handle for a Resolve process WE launched (None if reused)."""
+
+
+def _shutdown_resolve() -> None:
+    """Terminate a Resolve headless process that we launched.
+
+    Safe to call when no process was launched (no-op).
+    Only kills processes we started — never touches user's GUI instance.
+    """
+    global _resolve_process
+    if _resolve_process is not None:
+        try:
+            pid = _resolve_process.pid
+            print(f"  Shutting down DaVinci Resolve (PID {pid})...")
+            _resolve_process.terminate()
+            try:
+                _resolve_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                _resolve_process.kill()
+                _resolve_process.wait(timeout=5)
+            print(f"  DaVinci Resolve stopped.")
+        except Exception as e:
+            print(f"  Note: DaVinci process cleanup failed ({e}) — may need manual kill.")
+        finally:
+            _resolve_process = None
+
+
 def _try_import_resolve() -> Any:
     """Attempt to import the DaVinciResolveScript module.
 
@@ -3379,11 +3408,11 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
         cmd = [str(exe)]
         if nogui:
             cmd.append("-nogui")
-        subprocess.Popen(
+        _resolve_process = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x00000008 if sys.platform == "win32" else 0,
         )
-        print(f"  Started: {exe}" + (" -nogui" if nogui else ""))
+        print(f"  Started: {exe}" + (" -nogui" if nogui else "") + f" (PID {_resolve_process.pid})")
     except Exception as e:
         print(f"  Failed to start: {e}")
         return None

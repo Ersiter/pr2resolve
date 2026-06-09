@@ -35,6 +35,7 @@ from pr2_engine import (
     _check_resolve_running, _ensure_resolve_running,
     _drt_sandbox_export, _drt_supplement_lumetri,
     _drt_batch_export, _drp_export, _recycle,
+    _shutdown_resolve,
 )
 
 # ── Recycle utility (also lives in pr2_engine, re-export for convenience) ──
@@ -383,6 +384,7 @@ def _run_pipeline(
                 if drt:
                     for tmp in xml_paths:
                         tmp.unlink(missing_ok=True)
+                _shutdown_resolve()
                 return 0
             # ─ End batch mode ──────────────────────────────────
 
@@ -542,6 +544,11 @@ def _run_pipeline(
         print(f"  Done. Output: {drt_path.name}")
     else:
         print(f"  Done. {fix_count} fixes (no file written).")
+
+    # Clean up headless Resolve if we launched it
+    if drt or drp_path:
+        _shutdown_resolve()
+
     return 0
 
 
