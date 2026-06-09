@@ -19,6 +19,7 @@ from typing import Any, Optional
 # ── Constants + data models (single source of truth) ──────────────
 from pr2_constants import (
     VERSION, DEFAULT_FPS, NTSC_RATES, PAL_RATES, FPS_TOLERANCE,
+    OUTPUT_SUFFIX,
     FCP7_VERSION, FCP7_DOCTYPE, CRITICAL, MAJOR, MINOR,
     FCP7_CLIPIITEM_ORDER, ScaleIssue, Issue,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
@@ -28,7 +29,7 @@ from pr2_constants import (
 # ── Engine (consolidated: diagnostics + fix + validate + output + prproj + drt) ─
 from pr2_engine import (
     _scan, _apply_fixes, _validate,
-    _write_fixed_xml, _generate_report,
+    _write_fixed_xml, _generate_report, _make_output_name,
     _PrprojIndex, _prproj_parse_sequence, _prproj_list_sequences,
     _prproj_extract_all_lumetri,
     _check_resolve_running, _ensure_resolve_running,
@@ -80,6 +81,7 @@ def _run_pipeline(
     all_sequences: bool = False,
     nogui: bool = False,
     gui: bool = False,
+    no_suffix: bool = False,
 ) -> int:
     """Run the full fix pipeline on an input file."""
     _print_banner()
@@ -89,8 +91,7 @@ def _run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stem = input_path.stem
-    output_path = output_dir / f"{stem}_fixed{input_path.suffix}"
-    report_path = output_dir / f"{stem}_fix_report.md"
+    # output_path / report_path deferred — computed from sequence name after parsing
     backup_path = input_path.with_suffix(input_path.suffix + ".bak")
 
     # Load
@@ -136,7 +137,7 @@ def _run_pipeline(
                 seq_names: list[str] = []
                 for s in non_empty:
                     fcp = _prproj_parse_sequence(prproj_root, s["uid"], input_path)
-                    tmp_xml = output_dir / f"_pr2resolve_{s['name'][:20]}.xml"
+                    tmp_xml = output_dir / _make_output_name(s["name"], add_suffix=not no_suffix)
                     _write_fixed_xml(fcp, tmp_xml)
                     xml_paths.append(tmp_xml)
                     seq_names.append(s["name"])
@@ -173,8 +174,6 @@ def _run_pipeline(
             lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
             if lumetri_data:
                 print(f"  Lumetri params: {sum(len(v) for v in lumetri_data.values())} across {len(lumetri_data)} clips")
-
-            output_path = output_dir / f"{stem}.xml"
         else:
             root = load_xml(input_path)
             lumetri_data = {}
@@ -187,6 +186,11 @@ def _run_pipeline(
     seq_name = seq.findtext("name", "(unnamed)") if seq is not None else "(no sequence)"
     print(f"  Sequence: {seq_name}")
     print()
+
+    # Build output filename from sequence name
+    output_name = _make_output_name(seq_name, add_suffix=not no_suffix)
+    output_path = output_dir / output_name
+    report_path = output_dir / f"{Path(output_name).stem}_fix_report.md"
 
     # Diagnose
     print("  Scanning for issues...")
@@ -232,7 +236,7 @@ def _run_pipeline(
     xml_written = output_path.exists()
     if drt:
         print()
-        drt_path = output_dir / f"{stem}.drt"
+        drt_path = output_dir / f"{Path(output_name).stem}.drt"
         print("  DRT output requested. Checking DaVinci Resolve...")
 
         def _try_drt(resolve_obj: Any) -> bool:
@@ -324,6 +328,8 @@ def _parse_args() -> argparse.Namespace:
                         help="Use GUI DaVinci mode (required for DRP)")
     parser.add_argument("--sequence", type=str, default=None, help="Sequence name (.prproj)")
     parser.add_argument("--diagnose-only", action="store_true", help="Diagnose only, no fixes")
+    parser.add_argument("--no-suffix", action="store_true", dest="no_suffix",
+                        help=f"Omit '{OUTPUT_SUFFIX}' suffix from output filename")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     return parser.parse_args()
 
@@ -349,6 +355,7 @@ def main() -> int:
         all_sequences=args.all_sequences,
         nogui=args.nogui,
         gui=args.gui,
+        no_suffix=args.no_suffix,
     )
 
 

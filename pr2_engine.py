@@ -1253,6 +1253,32 @@ def _validate(root: ET.Element) -> list[Issue]:
 # Output — XML Writer & Report Generator
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _make_output_name(seq_name: str, add_suffix: bool = True, suffix: str | None = None) -> str:
+    """Build output filename from sequence name.
+
+    Sanitizes the sequence name for filesystem safety and appends the
+    configured suffix (default: OUTPUT_SUFFIX from pr2_constants).
+
+    Args:
+        seq_name: The timeline/sequence name from the project
+        add_suffix: Whether to append the configured suffix
+        suffix: Custom suffix override (defaults to OUTPUT_SUFFIX)
+
+    Returns:
+        Safe filename with .xml extension, e.g. '序列 01_pr2resolve.xml'
+    """
+    if suffix is None:
+        from pr2_constants import OUTPUT_SUFFIX
+        suffix = OUTPUT_SUFFIX
+    # Replace filesystem-unsafe characters
+    safe = seq_name.replace("/", "_").replace("\\", "_").replace(":", "_") \
+                   .replace("*", "_").replace("?", "_").replace("\"", "_") \
+                   .replace("<", "_").replace(">", "_").replace("|", "_")
+    if add_suffix:
+        return f"{safe}{suffix}.xml"
+    return f"{safe}.xml"
+
+
 def _write_fixed_xml(root: ET.Element, output_path: Path) -> None:
     """Write the fixed XML to disk with DOCTYPE declaration.
 

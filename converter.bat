@@ -17,6 +17,7 @@ set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[ON]"
 set "OPT_XML=[ON]"
 set "OPT_ALL_SEQ=[OFF]"
+set "OPT_SUFFIX=[ON]"
 
 :: Find Python
 set "PYTHON_CMD="
@@ -62,6 +63,7 @@ echo.
 echo  XML:     !OPT_XML!   FCP7 XML output
 echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
 echo  All Seq: !OPT_ALL_SEQ!  Export all sequences (.prproj only^)
+echo  Suffix:  !OPT_SUFFIX!   _pr2resolve name tag
 echo  Report:  !OPT_REPORT!   Fix report (.md^)
 echo.
 echo  ------------------------------------------------------------
@@ -161,10 +163,12 @@ echo  [1] FCP7 XML       !OPT_XML!
 echo  [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio^)
 echo  [3] All sequences  !OPT_ALL_SEQ!  (.prproj batch^)
 echo  [4] Fix report     !OPT_REPORT!
+echo  [5] Name suffix    !OPT_SUFFIX!  _pr2resolve tag
 echo  [0] Back
 echo.
-choice /c 12340 /n /m "  Select [1-4, 0]: "
-if errorlevel 5 goto MENU
+choice /c 123450 /n /m "  Select [1-5, 0]: "
+if errorlevel 6 goto MENU
+if errorlevel 5 goto _TOG_SUFFIX
 if errorlevel 4 goto _TOG_REPORT
 if errorlevel 3 goto _TOG_ALLSEQ
 if errorlevel 2 goto _TOG_DRT
@@ -175,6 +179,9 @@ if "!OPT_ALL_SEQ!"=="[ON]" (set "OPT_ALL_SEQ=[OFF]") else (set "OPT_ALL_SEQ=[ON]
 goto OPTIONS
 :_TOG_REPORT
 if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+goto OPTIONS
+:_TOG_SUFFIX
+if "!OPT_SUFFIX!"=="[ON]" (set "OPT_SUFFIX=[OFF]") else (set "OPT_SUFFIX=[ON]")
 goto OPTIONS
 :_TOG_DRT
 if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
@@ -196,6 +203,7 @@ if defined SEQ_NAME set "CMD=!CMD! --sequence "!SEQ_NAME!""
 if "!OPT_REPORT!"=="[ON]" set "CMD=!CMD! --report"
 if "!OPT_DRT!"=="[ON]" set "CMD=!CMD! --drt"
 if "!OPT_ALL_SEQ!"=="[ON]" set "CMD=!CMD! --all-sequences"
+if "!OPT_SUFFIX!"=="[OFF]" set "CMD=!CMD! --no-suffix"
 !CMD!
 echo.
 pause
