@@ -782,9 +782,9 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
 
     # M6: Reorder clipitem children per FCP7 spec
     _order_tags = [
-        "masterclipid", "name", "enabled", "duration", "rate", "start", "end",
+        "name", "masterclipid", "duration", "rate", "start", "end",
         "in", "out", "alphatype", "pixelaspectratio", "anamorphic", "file",
-        "sourcetrack", "filter", "logginginfo", "colorinfo", "labels", "link",
+        "sourcetrack", "link", "filter", "logginginfo", "colorinfo", "labels",
         "comments", "itemhistory",
     ]
     _order_map = {tag: i for i, tag in enumerate(_order_tags)}
@@ -2239,12 +2239,12 @@ def _prproj_parse_sequence(
     video_section = ET.SubElement(media, "video")
     audio_section = ET.SubElement(media, "audio")
 
-    # Audio format
-    ET.SubElement(audio_section, "numOutputChannels").text = "2"
-    a_fmt = ET.SubElement(audio_section, "format")
-    a_fsc = ET.SubElement(a_fmt, "samplecharacteristics")
-    ET.SubElement(a_fsc, "depth").text = "16"
-    ET.SubElement(a_fsc, "samplerate").text = "48000"
+    # Audio format (FCP7 spec: format/samplecharacteristics with samplerate + size + channelcount)
+    afmt = ET.SubElement(audio_section, "format")
+    afmt_sc = ET.SubElement(afmt, "samplecharacteristics")
+    ET.SubElement(afmt_sc, "samplerate").text = "48000"
+    ET.SubElement(afmt_sc, "size").text = "16-bit"
+    ET.SubElement(afmt_sc, "channelcount").text = "2"
 
     # Video format
     vfmt = ET.SubElement(video_section, "format")
@@ -2259,15 +2259,10 @@ def _prproj_parse_sequence(
     vh = ET.SubElement(vsc, "height")
     vh.text = str(h)
 
-    # Audio format
-    afmt = ET.SubElement(audio_section, "format")
-    asc = ET.SubElement(afmt, "samplecharacteristics")
-    asr = ET.SubElement(asc, "samplerate")
-    asr.text = "48000"
-
     # Parse video tracks
     file_counter = [1]
     mc_counter = [1]
+    mc_map: dict[str, str] = {}  # name → masterclipid for A/V sharing
 
     def _next_file_id() -> str:
         fid = f"file-{file_counter[0]}"
@@ -2441,17 +2436,22 @@ def _prproj_parse_sequence(
                     clipitem = ET.SubElement(fcp_track, "clipitem")
                     clipitem.set("id", f"clipitem-{file_counter[0]}")
 
-                    mcid = ET.SubElement(clipitem, "masterclipid")
-                    mcid.text = _next_mc_id()
+                    # FCP7 spec order: name → masterclipid
+                    ET.SubElement(clipitem, "name").text = mc_name
 
-                    nm = ET.SubElement(clipitem, "name")
-                    nm.text = mc_name
+                    mc_id = mc_map.get(mc_name) or _next_mc_id()
+                    mc_map.setdefault(mc_name, mc_id)
+                    ET.SubElement(clipitem, "masterclipid").text = mc_id
 
                     en = ET.SubElement(clipitem, "enabled")
                     en.text = "TRUE"
 
                     dur = ET.SubElement(clipitem, "duration")
-                    dur.text = str(out_point - in_point if out_point > in_point else end - start)
+                    # FCP7 spec: clipitem duration = source media total, not trimmed clip
+                    if source_tc.full_duration_frames > 0:
+                        dur.text = str(source_tc.full_duration_frames)
+                    else:
+                        dur.text = str(out_point - in_point if out_point > in_point else end - start)
 
                     ci_rate = ET.SubElement(clipitem, "rate")
                     ci_tb = ET.SubElement(ci_rate, "timebase")
@@ -2528,9 +2528,8 @@ def _prproj_parse_sequence(
                     vsc_rate = ET.SubElement(vsc, "rate")
                     vsc_tb = ET.SubElement(vsc_rate, "timebase")
                     vsc_tb.text = str(timebase)
-                    if is_ntsc:
-                        vsc_ntsc = ET.SubElement(vsc_rate, "ntsc")
-                        vsc_ntsc.text = "TRUE"
+                    vsc_ntsc = ET.SubElement(vsc_rate, "ntsc")
+                    vsc_ntsc.text = "TRUE" if is_ntsc else "FALSE"
                     # Resolution
                     vsc_w = ET.SubElement(vsc, "width")
                     vsc_w.text = str(src_w)
@@ -2545,20 +2544,17 @@ def _prproj_parse_sequence(
                     vsc_cd = ET.SubElement(vsc, "colordepth")
                     vsc_cd.text = "24"
 
-                    # Audio
+                    # Audio (FCP7 spec: channelcount sibling of samplecharacteristics)
                     ael = ET.SubElement(media_el, "audio")
+                    ET.SubElement(ael, "channelcount").text = "2"
                     asc = ET.SubElement(ael, "samplecharacteristics")
-                    asr = ET.SubElement(asc, "samplerate")
-                    asr.text = "48000"
-                    ach = ET.SubElement(asc, "channelcount")
-                    ach.text = "2"
+                    ET.SubElement(asc, "samplerate").text = "48000"
+                    ET.SubElement(asc, "size").text = "16-bit"
 
                     # Sourcetrack
                     sourcetrack = ET.SubElement(clipitem, "sourcetrack")
-                    stype = ET.SubElement(sourcetrack, "mediatype")
-                    stype.text = "video"
-                    stt = ET.SubElement(sourcetrack, "tracktype")
-                    stt.text = "Video"
+                    ET.SubElement(sourcetrack, "mediatype").text = "video"
+                    ET.SubElement(sourcetrack, "trackindex").text = "1"
 
                     # logginginfo (FCP7 standard block)
                     log_info = ET.SubElement(clipitem, "logginginfo")
@@ -2695,17 +2691,20 @@ def _prproj_parse_sequence(
                     a_ci = ET.SubElement(fcp_a_track, "clipitem")
                     a_ci.set("id", f"clipitem-{file_counter[0]}")
 
-                    a_mcid = ET.SubElement(a_ci, "masterclipid")
-                    a_mcid.text = _next_mc_id()
+                    ET.SubElement(a_ci, "name").text = a_mc_name
 
-                    a_nm = ET.SubElement(a_ci, "name")
-                    a_nm.text = a_mc_name
+                    a_mc_id = mc_map.get(a_mc_name) or _next_mc_id()
+                    mc_map.setdefault(a_mc_name, a_mc_id)
+                    ET.SubElement(a_ci, "masterclipid").text = a_mc_id
 
                     a_en = ET.SubElement(a_ci, "enabled")
                     a_en.text = "TRUE"
 
                     a_dur = ET.SubElement(a_ci, "duration")
-                    a_dur.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
+                    if a_source_tc.full_duration_frames > 0:
+                        a_dur.text = str(a_source_tc.full_duration_frames)
+                    else:
+                        a_dur.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
 
                     a_rate = ET.SubElement(a_ci, "rate")
                     a_rt = ET.SubElement(a_rate, "timebase")
@@ -2766,10 +2765,8 @@ def _prproj_parse_sequence(
 
                     # Sourcetrack (audio)
                     a_st_el = ET.SubElement(a_ci, "sourcetrack")
-                    a_stype = ET.SubElement(a_st_el, "mediatype")
-                    a_stype.text = "audio"
-                    a_stt = ET.SubElement(a_st_el, "tracktype")
-                    a_stt.text = "Stereo"
+                    ET.SubElement(a_st_el, "mediatype").text = "audio"
+                    ET.SubElement(a_st_el, "trackindex").text = "1"
 
                     # logginginfo
                     a_log_info = ET.SubElement(a_ci, "logginginfo")
@@ -2784,56 +2781,66 @@ def _prproj_parse_sequence(
                     a_labels = ET.SubElement(a_ci, "labels")
                     ET.SubElement(a_labels, "label2").text = "Audio"
 
-    # ── Second pass: link elements (A/V sync) ────────────────────────
-    # Build name → video clipitem index for cross-referencing
-    _vid_refs: dict[str, list[tuple[str, int, int]]] = {}  # name → [(clipitem_id, track_idx, clip_idx)]
+    # ── Second pass: link elements (A/V sync, FCP7 group semantics) ────
+    # FCP7 spec: ALL clipitems sharing the same source media form a
+    # "link group". Every member has the EXACT SAME set of <link> elements,
+    # including self-links (video→itself, audio→itself).
+    #
+    # Strategy: build one link set per unique source name, apply to all.
+
+    # Collect all clipitems by source name
+    _groups: dict[str, list[tuple[str, str, int, int]]] = {}
+    # name → [(clipitem_id, mediatype, track_idx, clip_idx)]
     for vt_idx, v_track in enumerate(video_section.findall("track"), 1):
         for vc_idx, v_ci in enumerate(v_track.findall("clipitem"), 1):
             v_name = v_ci.findtext("name", "")
             if v_name:
-                _vid_refs.setdefault(v_name, []).append(
-                    (v_ci.get("id", ""), vt_idx, vc_idx)
+                _groups.setdefault(v_name, []).append(
+                    (v_ci.get("id", ""), "video", vt_idx, vc_idx)
                 )
-
-    # Add link elements: audio → video (FCP7 convention)
     for at_idx, a_track in enumerate(audio_section.findall("track"), 1):
         for ac_idx, a_ci in enumerate(a_track.findall("clipitem"), 1):
             a_name = a_ci.findtext("name", "")
-            if not a_name or a_name not in _vid_refs:
-                continue
-            for v_id, vt_idx, vc_idx in _vid_refs[a_name]:
-                # Skip if link already exists (dedup)
-                existing = a_ci.findall(f"link/[linkclipref='{v_id}']")
-                if existing:
-                    continue
-                link = ET.SubElement(a_ci, "link")
-                ET.SubElement(link, "linkclipref").text = v_id
-                ET.SubElement(link, "mediatype").text = "video"
-                ET.SubElement(link, "trackindex").text = str(vt_idx)
-                ET.SubElement(link, "clipindex").text = str(vc_idx)
-                ET.SubElement(link, "groupindex").text = "1"
+            if a_name:
+                _groups.setdefault(a_name, []).append(
+                    (a_ci.get("id", ""), "audio", at_idx, ac_idx)
+                )
 
-    # Add link elements: video → audio (reciprocal)
-    for vt_idx, v_track in enumerate(video_section.findall("track"), 1):
-        for vc_idx, v_ci in enumerate(v_track.findall("clipitem"), 1):
-            v_name = v_ci.findtext("name", "")
-            if not v_name:
+    # Build link elements per group and apply identically to all members
+    for name, members in _groups.items():
+        if len(members) < 2:
+            continue  # lone clipitem, no linking needed
+        # Build the link set once
+        links: list[ET.Element] = []
+        for ref_id, mtype, t_idx, c_idx in members:
+            link = ET.Element("link")
+            ET.SubElement(link, "linkclipref").text = ref_id
+            ET.SubElement(link, "mediatype").text = mtype
+            ET.SubElement(link, "trackindex").text = str(t_idx)
+            ET.SubElement(link, "clipindex").text = str(c_idx)
+            ET.SubElement(link, "groupindex").text = "1"
+            links.append(link)
+
+        # Apply identical set to each member clipitem
+        for ci_id, *_ in members:
+            ci = video_section.find(f".//clipitem[@id='{ci_id}']")
+            if ci is None:
+                ci = audio_section.find(f".//clipitem[@id='{ci_id}']")
+            if ci is None:
                 continue
-            for at_idx, a_track in enumerate(audio_section.findall("track"), 1):
-                for ac_idx, a_ci in enumerate(a_track.findall("clipitem"), 1):
-                    a_name = a_ci.findtext("name", "")
-                    if a_name != v_name:
-                        continue
-                    a_id = a_ci.get("id", "")
-                    existing = v_ci.findall(f"link/[linkclipref='{a_id}']")
-                    if existing:
-                        continue
-                    link = ET.SubElement(v_ci, "link")
-                    ET.SubElement(link, "linkclipref").text = a_id
-                    ET.SubElement(link, "mediatype").text = "audio"
-                    ET.SubElement(link, "trackindex").text = str(at_idx)
-                    ET.SubElement(link, "clipindex").text = str(ac_idx)
-                    ET.SubElement(link, "groupindex").text = "1"
+            # Remove any existing link elements
+            for old in ci.findall("link"):
+                ci.remove(old)
+            # Insert after sourcetrack (spec order: sourcetrack → link → filter)
+            st_idx = None
+            for i, child in enumerate(ci):
+                if child.tag == "sourcetrack":
+                    st_idx = i + 1
+                    break
+            for link in links:
+                ci.insert(st_idx, link)
+                if st_idx is not None:
+                    st_idx += 1
 
     # Set total duration
     dur_elem.text = str(total_frames if total_frames > 0 else end)
