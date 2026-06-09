@@ -16,6 +16,9 @@ set "SEQ_NAME="
 set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[ON]"
 set "OPT_XML=[ON]"
+set "OPT_MODE=[AUTO]"
+set "OPT_SUFFIX=[ON]"
+set "OPT_DRP=[OFF]"
 
 :: Find Python
 set "PYTHON_CMD="
@@ -60,6 +63,9 @@ if defined SEQ_NAME (
 echo.
 echo  XML:     !OPT_XML!   FCP7 XML output
 echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
+echo  DRP:     !OPT_DRP!  DaVinci DRP project export (needs Resolve GUI^)
+echo  Mode:    !OPT_MODE!  Sequence: AUTO=smart / ALL=batch / MAN=choose
+echo  Suffix:  !OPT_SUFFIX!   _pr2resolve name tag
 echo  Report:  !OPT_REPORT!   Fix report (.md^)
 echo.
 echo  ------------------------------------------------------------
@@ -157,17 +163,32 @@ echo  ============================================================
 echo.
 echo  [1] FCP7 XML       !OPT_XML!
 echo  [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio^)
-echo  [3] Fix report     !OPT_REPORT!
+echo  [3] Export Mode    !OPT_MODE!  AUTO/ALL/MAN (.prproj^)
+echo  [4] Fix report     !OPT_REPORT!
+echo  [5] Name suffix    !OPT_SUFFIX!  _pr2resolve tag
+echo  [6] DRP project    !OPT_DRP!  (needs Resolve GUI + Studio^)
 echo  [0] Back
 echo.
-choice /c 1230 /n /m "  Select [1-3, 0]: "
-if errorlevel 4 goto MENU
-if errorlevel 3 goto _TOG_REPORT
+choice /c 1234560 /n /m "  Select [1-6, 0]: "
+if errorlevel 7 goto MENU
+if errorlevel 6 goto _TOG_DRP
+if errorlevel 5 goto _TOG_SUFFIX
+if errorlevel 4 goto _TOG_REPORT
+if errorlevel 3 goto _TOG_MODE
 if errorlevel 2 goto _TOG_DRT
 if "!OPT_XML!"=="[ON]" (set "OPT_XML=[OFF]") else (set "OPT_XML=[ON]")
 goto OPTIONS
+:_TOG_MODE
+if "!OPT_MODE!"=="[AUTO]" (set "OPT_MODE=[ALL]") else if "!OPT_MODE!"=="[ALL]" (set "OPT_MODE=[MAN]") else (set "OPT_MODE=[AUTO]")
+goto OPTIONS
 :_TOG_REPORT
 if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
+goto OPTIONS
+:_TOG_SUFFIX
+if "!OPT_SUFFIX!"=="[ON]" (set "OPT_SUFFIX=[OFF]") else (set "OPT_SUFFIX=[ON]")
+goto OPTIONS
+:_TOG_DRP
+if "!OPT_DRP!"=="[ON]" (set "OPT_DRP=[OFF]") else (set "OPT_DRP=[ON]")
 goto OPTIONS
 :_TOG_DRT
 if "!OPT_DRT!"=="[ON]" (set "OPT_DRT=[OFF]") else (set "OPT_DRT=[ON]")
@@ -188,6 +209,12 @@ if defined OUTPUT_DIR set "CMD=!CMD! -o "!OUTPUT_DIR!""
 if defined SEQ_NAME set "CMD=!CMD! --sequence "!SEQ_NAME!""
 if "!OPT_REPORT!"=="[ON]" set "CMD=!CMD! --report"
 if "!OPT_DRT!"=="[ON]" set "CMD=!CMD! --drt"
+if "!OPT_MODE!"=="[ALL]" set "CMD=!CMD! --all-sequences"
+if "!OPT_SUFFIX!"=="[OFF]" set "CMD=!CMD! --no-suffix"
+if "!OPT_XML!"=="[OFF]" set "CMD=!CMD! --no-xml"
+if "!OPT_DRP!"=="[ON]" (
+    if defined OUTPUT_DIR (set "CMD=!CMD! --drp "!OUTPUT_DIR!\%~n1.drp"") else (set "CMD=!CMD! --drp "%~dpn1.drp"")
+)
 !CMD!
 echo.
 pause

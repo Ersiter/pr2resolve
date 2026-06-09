@@ -1,21 +1,26 @@
 <div align="center">
 
-# pr2resolve
+# .PRPROJ-.DRT Converter
 
-Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT。
+Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT。
 
-[**English**](README_EN.md)
+[**README in English**](README_EN.md)
 
 </div>
 
 ---
 
-## Table of Contents
+<!-- omit from toc -->
+## 目录
 
-- [准备工作](#准备工作)
+- [使用前准备工作](#使用前准备工作)
 - [快速开始](#快速开始)
-- [这是什么](#这是什么)
-- [为什么需要它](#为什么需要它)
+  - [Windows](#windows)
+  - [macOS / Linux](#macos--linux)
+  - [TUI内操作](#tui内操作)
+  - [CLI](#cli)
+- [俺の主要功能](#俺の主要功能)
+- [俺の起源](#俺の起源)
 - [CLI 参数](#cli-参数)
 - [工作原理](#工作原理)
 - [修正规则](#修正规则)
@@ -25,7 +30,7 @@ Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT
 
 ---
 
-## 准备工作
+## 使用前准备工作
 
 1. **安装 Python 3**（要求 3.8 及以上）  
    - 从 [python.org](https://www.python.org/downloads/) 下载安装包  
@@ -36,27 +41,34 @@ Premiere Pro 到 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT
    打开终端（cmd 或 bash），输入以下命令不报错即可：
    ```bash
    python --version
+   ```
 
 ---
 
 ## 快速开始
 
+下载[最新版本源码压缩包]()，解压。
+
 ### Windows
 
 双击 `converter.bat`。
-
-```
-[1] 选择输入文件 (.xml 或 .prproj)
-[2] 设置输出目录
-[3] 配置选项 (XML / DRT / Report)
-[4] 开始转换
-```
 
 ### macOS / Linux
 
 ```bash
 chmod +x converter.sh
 ./converter.sh
+```
+
+
+### TUI内操作
+
+```bash
+输入相应数字选择功能：
+[1] 选择输入文件 (.xml 或 .prproj)
+[2] 设置输出目录
+[3] 配置选项 (XML / DRT / Report)
+[4] 开始转换
 ```
 
 ### CLI
@@ -89,9 +101,9 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 ---
 
-## 这是什么
+## 俺の主要功能
 
-pr2resolve 读入 PR 的时间线数据，吐出达芬奇能直接用的文件。
+**pr2resolve 读入 PR 的时间线数据，输出达芬奇能直接用的文件。（或者直接在达芬奇打开）**
 
 两种输入都能吃：
 - PR 导出的 FCP7 XML (.xml)
@@ -103,21 +115,31 @@ pr2resolve 读入 PR 的时间线数据，吐出达芬奇能直接用的文件�
 
 ---
 
-## 为什么需要它
+## 俺の起源
 
-PR 导出 FCP7 XML 给达芬奇用，是出了名的坑。
+**源自我的实际回批PR的糟糕体验还有网络大家都在吐槽的数据问题，PR 导出 FCP7 XML 给达芬奇用是出了名的一言难尽。经过调查发现：**
 
-**Scale 值全是 100%。** PR 里缩放好的画面，XML 里写的是 Scale=100%。到那边素材比屏幕还大，一个一个手动算修正值。
+- **Scale 值全是 100%。**
 
-**Lumetri 调色没了。** XML 里你的调色是一坨 base64 编码。达芬奇不认识，直接跳过。几个小时白调。
+    PR 里缩放好的画面，XML 里写的是 Scale=100%。到那边素材比屏幕还大，一个一个手动算修正值。
 
-**路径格式不认，素材全离线。** PR 导出 `file://localhost/C%3a/Users/...`，达芬奇不认这个格式。只能一个文件一个文件 relink。
+- **Lumetri 调色无法转换。**
 
-pr2resolve 读进去，把这些问题全修完，吐出来干净的 XML。
+    XML 里你的调色是一坨 base64 编码。达芬奇不认识，直接跳过，还会导致达芬奇崩溃（实测能打开，但涉及更改时间线的事会直接无响应，可能是出错导致IO进程堆积而崩溃。）
 
-**为什么推荐用 .prproj 而不是导出 XML？** PR 自带的 XML 导出是二次加工过的——PR 先生成一份删减版 XML，你拿到的数据已经缺了一批。.prproj 是 PR 自己保存的工程文件（gzip 压的 XML），Lumetri 参数、变速曲线、关键帧全在里面。直接给 .prproj 就行，没必要先导出 XML 再修。
+- **不认路径格式，素材离线。**
 
-**DRT 是什么时候用的？** 在 PR 做了大量调色，不想在达芬奇重调一遍。DRT 走达芬奇的 Scripting API，把 Lumetri 参数直接写进 Color Corrector 节点。需要达芬奇 Studio 开着。
+    PR 导出 `file://localhost/C%3a/Users/...`，达芬奇不认这个格式。只能 relink。
+
+**pr2resolve 读进去，把这些问题全修完，输出干净的 FCP7 XML 。**
+
+- **为什么推荐用 .prproj 而不是导出 XML？**
+
+    PR 自带的 XML 导出是二次加工过的——PR 先生成一份删减版 XML，拿到的数据已经失真。.prproj 是 PR 自己保存的工程文件（gzip 压的 XML），Lumetri 参数、变速曲线、关键帧全在里面。直接给 .prproj 就行，没必要先导出 XML 再修。
+
+- **DRT 是什么时候用的？**
+
+    在 PR 做了大量调色，不想在达芬奇重调一遍。DRT 走达芬奇的 Scripting API，把 Lumetri 参数直接写进 Color Corrector 节点。需要达芬奇 Studio 开着。
 
 ---
 

@@ -17,14 +17,23 @@ from typing import Optional
 
 VERSION = "1.0.0"
 DEFAULT_FPS = 30.0
+MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
 PAL_RATES: list[float] = [25.0, 50.0]
 FPS_TOLERANCE: float = 0.01
+OUTPUT_SUFFIX = "_pr2resolve"
 FCP7_VERSION = "5"
 FCP7_DOCTYPE = '<!DOCTYPE xmeml>'
 CRITICAL = "CRITICAL"
 MAJOR = "MAJOR"
 MINOR = "MINOR"
+
+
+def _is_ntsc(timebase: float) -> bool:
+    """Check if a timebase value is an NTSC indicator (legacy fallback)."""
+    # 24 is NOT an NTSC indicator — cinema 24.000fps uses timebase 24.
+    # Only 30 and 60 are common NTSC timebases.
+    return timebase in [30, 60]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -60,6 +69,9 @@ FCP7_CLIPIITEM_ORDER: list[str] = [
     "sourcetrack", "filter", "logginginfo", "colorinfo", "labels", "link",
     "comments", "itemhistory",
 ]
+
+# Derived lookup for clipitem child ordering
+_ORDER_MAP: dict[str, int] = {tag: i for i, tag in enumerate(FCP7_CLIPIITEM_ORDER)}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
