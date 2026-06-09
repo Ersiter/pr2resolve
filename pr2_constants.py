@@ -64,9 +64,9 @@ class Issue:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 FCP7_CLIPIITEM_ORDER: list[str] = [
-    "masterclipid", "name", "enabled", "duration", "rate", "start", "end",
+    "name", "masterclipid", "duration", "rate", "start", "end",
     "in", "out", "alphatype", "pixelaspectratio", "anamorphic", "file",
-    "sourcetrack", "filter", "logginginfo", "colorinfo", "labels", "link",
+    "sourcetrack", "link", "filter", "logginginfo", "colorinfo", "labels",
     "comments", "itemhistory",
 ]
 
