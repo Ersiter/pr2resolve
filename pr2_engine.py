@@ -858,16 +858,30 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
 
     # ── MINOR fixes ─────────────────────────────────────────────────────────
 
-    # N1: Add missing sequence timecode
-    if seq is not None and seq.find("timecode") is None:
-        tc = _create_timecode(root)
-        # Insert after <name> or <rate> if present
+    # N1: Add missing or normalize non-zero sequence timecode
+    tc_in = seq.find("timecode") if seq is not None else None
+    if seq is not None and tc_in is None:
+        tc_n = _create_timecode(root)
         name_idx = _find_child_index(seq, "name")
         if name_idx >= 0:
-            seq.insert(name_idx + 1, tc)
+            seq.insert(name_idx + 1, tc_n)
         else:
-            seq.insert(0, tc)
+            seq.insert(0, tc_n)
         fix_count += 1
+    elif tc_in is not None:
+        s = tc_in.findtext("string", "")
+        f = tc_in.findtext("frame", "0")
+        if s not in ("00:00:00:00", "00;00;00;00") or f != "0":
+            si = tc_in.find("string")
+            fi = tc_in.find("frame")
+            if si is not None:
+                nt = tc_in.find("rate/ntsc") is not None and tc_in.findtext("rate/ntsc", "") == "TRUE"
+                si.text = "00;00;00;00" if nt else "00:00:00:00"
+            if fi is not None:
+                fi.text = "0"
+            if tc_in.get("source") != "source":
+                tc_in.set("source", "source")
+            fix_count += 1
     if any(i.rule_id == "N1" for i in issues):
         _mark_fixed(issues, "N1", "timecode")
 
@@ -1055,6 +1069,7 @@ def _create_timecode(root: ET.Element) -> ET.Element:
         A <timecode> Element
     """
     tc = ET.Element("timecode")
+    tc.set("source", "source")
 
     # Read actual sequence timebase
     seq = root.find("sequence")
@@ -2164,6 +2179,7 @@ def _prproj_parse_sequence(
 
     # Timecode
     tc = ET.SubElement(sequence, "timecode")
+    tc.set("source", "source")  # FCP7 convention: tells importer this is timeline start TC
     tc_rate = ET.SubElement(tc, "rate")
     tc_tb = ET.SubElement(tc_rate, "timebase")
     tc_tb.text = str(timebase)
@@ -3032,6 +3048,13 @@ def _drt_batch_export(
             results.append((False, None))
             continue
 
+        # Force timeline start timecode to 00:00:00:00
+        # (DaVinci defaults to 01:00:00:00 regardless of XML sequence timecode)
+        try:
+            timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+        except Exception:
+            pass  # best-effort, silently ignore API limitations
+
         drt_path = output_dir / f"{seq_name}_resolve.drt"
         if timeline.Export(str(drt_path), resolve.EXPORT_DRT):
             print(f"    DRT: {drt_path.name}")
@@ -3120,6 +3143,11 @@ def _drp_export(
             drt_xml.unlink(missing_ok=True)
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
+            # Force start timecode to 00:00:00:00
+            try:
+                timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+            except Exception:
+                pass
         else:
             print(f"  Timeline import FAILED: {seq_name}")
 
@@ -3308,6 +3336,12 @@ def _drt_sandbox_export(
             return False
 
         print(f"  Timeline imported: {timeline.GetName()}")
+
+        # Force timeline start timecode to 00:00:00:00
+        try:
+            timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+        except Exception:
+            pass
 
         # Export DRT
         export_result = timeline.Export(
