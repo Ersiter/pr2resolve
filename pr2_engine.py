@@ -2644,6 +2644,7 @@ def _prproj_parse_sequence(
                     # SubClip → name, InPoint/OutPoint
                     a_subclip = a_cti.find("SubClip")
                     a_mc_name = "(unknown audio)"
+                    a_media_path = ""
                     a_in = 0
                     a_out = 0
 
@@ -2652,6 +2653,15 @@ def _prproj_parse_sequence(
                         a_sc_el = idx.resolve_ref(a_sc_ref) if a_sc_ref else None
                         if a_sc_el is not None:
                             a_mc_name = a_sc_el.findtext("Name", a_mc_name)
+
+                            # Media path via filename match
+                            for media_el in prproj_root.findall("Media"):
+                                mfp = media_el.findtext("FilePath")
+                                if not mfp:
+                                    continue
+                                if Path(mfp.replace("\\", "/")).name.lower() == a_mc_name.lower():
+                                    a_media_path = mfp
+                                    break
 
                             # Clip → InPoint/OutPoint
                             a_clip_ref_el = a_sc_el.find("Clip")
@@ -2670,6 +2680,7 @@ def _prproj_parse_sequence(
                     # Build audio clipitem
                     a_ci = ET.SubElement(fcp_a_track, "clipitem")
                     a_ci.set("id", f"clipitem-{file_counter[0]}")
+                    file_counter[0] += 1
 
                     ET.SubElement(a_ci, "name").text = a_mc_name
 
@@ -2704,11 +2715,37 @@ def _prproj_parse_sequence(
                         a_file = ET.SubElement(a_ci, "file")
                         a_file.set("id", a_vid_fid)
                     else:
-                        # Standalone audio (no matching video clip) — minimal file
+                        # Standalone audio (no matching video clip)
                         a_fid = _next_file_id()
                         a_file = ET.SubElement(a_ci, "file")
                         a_file.set("id", a_fid)
                         ET.SubElement(a_file, "name").text = a_mc_name
+                        if a_media_path:
+                            ET.SubElement(a_file, "pathurl").text = _to_fcp7_pathurl(a_media_path)
+                        else:
+                            ET.SubElement(a_file, "pathurl").text = f"file://localhost/{a_mc_name}"
+                        # Rate
+                        a_fr = ET.SubElement(a_file, "rate")
+                        ET.SubElement(a_fr, "timebase").text = str(timebase)
+                        ET.SubElement(a_fr, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+                        # Duration
+                        dur_val = a_out - a_in if a_out > a_in else a_end - a_start
+                        ET.SubElement(a_file, "duration").text = str(dur_val)
+                        # Timecode
+                        a_ftc = ET.SubElement(a_file, "timecode")
+                        a_ftcr = ET.SubElement(a_ftc, "rate")
+                        ET.SubElement(a_ftcr, "timebase").text = str(timebase)
+                        ET.SubElement(a_ftcr, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+                        ET.SubElement(a_ftc, "string").text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+                        ET.SubElement(a_ftc, "frame").text = "0"
+                        ET.SubElement(a_ftc, "displayformat").text = "DF" if is_ntsc else "NDF"
+                        # Media — audio only (no video)
+                        a_media = ET.SubElement(a_file, "media")
+                        a_audio_el = ET.SubElement(a_media, "audio")
+                        a_asc = ET.SubElement(a_audio_el, "samplecharacteristics")
+                        ET.SubElement(a_asc, "samplerate").text = "48000"
+                        ET.SubElement(a_asc, "depth").text = "16"
+                        ET.SubElement(a_audio_el, "channelcount").text = "2"
 
                     # Sourcetrack (audio)
                     a_st_el = ET.SubElement(a_ci, "sourcetrack")
