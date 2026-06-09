@@ -1243,16 +1243,15 @@ def _validate(root: ET.Element) -> list[Issue]:
     if seq.find("name") is None:
         issues.append(Issue(MINOR, "V21", "Sequence missing <name>", "sequence"))
 
-    # V22: No duplicate file ids (audio stereo pairs sharing file-id is valid)
+    # V22: No excessive duplicate file ids (1 video + up to 2 audio refs = max 3)
     file_ids: dict[str, int] = {}
     for f in root.iter("file"):
         fid = f.get("id")
         if fid:
             file_ids[fid] = file_ids.get(fid, 0) + 1
     for fid, count in file_ids.items():
-        if count > 2:
+        if count > 3:
             issues.append(Issue(MAJOR, "V22", f"Duplicate file id: {fid} ({count}x)", "file"))
-        # count == 2 is expected for stereo audio pairs
 
     # V23: Clipitem element order (check first few)
     for ci in list(root.iter("clipitem"))[:5]:
@@ -2263,6 +2262,7 @@ def _prproj_parse_sequence(
     file_counter = [1]
     mc_counter = [1]
     mc_map: dict[str, str] = {}  # name → masterclipid for A/V sharing
+    file_id_map: dict[str, str] = {}  # name → file-id for audio→video cross-reference
 
     def _next_file_id() -> str:
         fid = f"file-{file_counter[0]}"
@@ -2447,11 +2447,8 @@ def _prproj_parse_sequence(
                     en.text = "TRUE"
 
                     dur = ET.SubElement(clipitem, "duration")
-                    # FCP7 spec: clipitem duration = source media total, not trimmed clip
-                    if source_tc.full_duration_frames > 0:
-                        dur.text = str(source_tc.full_duration_frames)
-                    else:
-                        dur.text = str(out_point - in_point if out_point > in_point else end - start)
+                    # Use trimmed clip length (end-start = out-in), matching PR export behavior
+                    dur.text = str(out_point - in_point if out_point > in_point else end - start)
 
                     ci_rate = ET.SubElement(clipitem, "rate")
                     ci_tb = ET.SubElement(ci_rate, "timebase")
@@ -2487,6 +2484,9 @@ def _prproj_parse_sequence(
                     else:
                         pu = ET.SubElement(file_el, "pathurl")
                         pu.text = f"file://localhost/{mc_name}"
+
+                    # Record file-id for audio cross-reference
+                    file_id_map.setdefault(mc_name, fid)
 
                     # File rate (source media timebase — from actual media)
                     src_timebase = int(round(source_tc.media_fps))
@@ -2527,9 +2527,9 @@ def _prproj_parse_sequence(
                     # rate
                     vsc_rate = ET.SubElement(vsc, "rate")
                     vsc_tb = ET.SubElement(vsc_rate, "timebase")
-                    vsc_tb.text = str(timebase)
+                    vsc_tb.text = str(src_timebase)
                     vsc_ntsc = ET.SubElement(vsc_rate, "ntsc")
-                    vsc_ntsc.text = "TRUE" if is_ntsc else "FALSE"
+                    vsc_ntsc.text = "TRUE" if src_is_ntsc else "FALSE"
                     # Resolution
                     vsc_w = ET.SubElement(vsc, "width")
                     vsc_w.text = str(src_w)
@@ -2638,11 +2638,9 @@ def _prproj_parse_sequence(
                     a_track_start = a_end
                     total_frames = max(total_frames, a_end)
 
-                    # SubClip → name, media path, InPoint/OutPoint
+                    # SubClip → name, InPoint/OutPoint
                     a_subclip = a_cti.find("SubClip")
                     a_mc_name = "(unknown audio)"
-                    a_media_path = ""
-                    a_source_tc = _SourceTCInfo()
                     a_in = 0
                     a_out = 0
 
@@ -2651,27 +2649,6 @@ def _prproj_parse_sequence(
                         a_sc_el = idx.resolve_ref(a_sc_ref) if a_sc_ref else None
                         if a_sc_el is not None:
                             a_mc_name = a_sc_el.findtext("Name", a_mc_name)
-
-                            # Media path via filename match + source TC
-                            a_mc_uref_el = a_sc_el.find("MasterClip")
-                            if a_mc_uref_el is not None:
-                                a_mc_uref = a_mc_uref_el.get("ObjectURef")
-                                a_mc_el = idx.resolve_uref(a_mc_uref) if a_mc_uref else None
-                                if a_mc_el is not None:
-                                    # Extract source timecode from ClipLoggingInfo
-                                    a_source_tc = _prproj_extract_source_tc_info(a_mc_el, idx)
-                                for media_el in prproj_root.findall("Media"):
-                                    mfp = media_el.findtext("FilePath")
-                                    if not mfp:
-                                        continue
-                                    if Path(mfp.replace("\\", "/")).name.lower() == a_mc_name.lower():
-                                        a_media_path = mfp
-                                        break
-                                # ffprobe fallback for audio source TC
-                                if not a_source_tc.resolved and a_media_path:
-                                    local = Path(a_media_path)
-                                    if local.exists():
-                                        a_source_tc = _ffprobe_read_timecode(str(local))
 
                             # Clip → InPoint/OutPoint
                             a_clip_ref_el = a_sc_el.find("Clip")
@@ -2701,10 +2678,7 @@ def _prproj_parse_sequence(
                     a_en.text = "TRUE"
 
                     a_dur = ET.SubElement(a_ci, "duration")
-                    if a_source_tc.full_duration_frames > 0:
-                        a_dur.text = str(a_source_tc.full_duration_frames)
-                    else:
-                        a_dur.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
+                    a_dur.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
 
                     a_rate = ET.SubElement(a_ci, "rate")
                     a_rt = ET.SubElement(a_rate, "timebase")
@@ -2721,47 +2695,17 @@ def _prproj_parse_sequence(
                     a_out_el = ET.SubElement(a_ci, "out")
                     a_out_el.text = str(a_out)
 
-                    # File element
-                    a_fid = _next_file_id()
-                    a_file = ET.SubElement(a_ci, "file")
-                    a_file.set("id", a_fid)
-                    a_fn = ET.SubElement(a_file, "name")
-                    a_fn.text = a_mc_name
-                    if a_media_path:
-                        a_pu = ET.SubElement(a_file, "pathurl")
-                        a_pu.text = _to_fcp7_pathurl(a_media_path)
+                    # File element — reference video's file-id, NOT a duplicate definition
+                    a_vid_fid = file_id_map.get(a_mc_name)
+                    if a_vid_fid:
+                        a_file = ET.SubElement(a_ci, "file")
+                        a_file.set("id", a_vid_fid)
                     else:
-                        a_pu = ET.SubElement(a_file, "pathurl")
-                        a_pu.text = f"file://localhost/{a_mc_name}"
-
-                    # Source rate, duration, timecode (matching video pattern)
-                    a_src_timebase = int(round(a_source_tc.media_fps))
-                    a_src_is_ntsc = a_source_tc.is_ntsc
-
-                    a_f_rate = ET.SubElement(a_file, "rate")
-                    a_fr_tb = ET.SubElement(a_f_rate, "timebase")
-                    a_fr_tb.text = str(a_src_timebase)
-                    a_fr_ntsc = ET.SubElement(a_f_rate, "ntsc")
-                    a_fr_ntsc.text = "TRUE" if a_src_is_ntsc else "FALSE"
-
-                    a_fd = ET.SubElement(a_file, "duration")
-                    if a_source_tc.full_duration_frames > 0:
-                        a_fd.text = str(a_source_tc.full_duration_frames)
-                    else:
-                        a_fd.text = str(a_out - a_in if a_out > a_in else a_end - a_start)
-
-                    a_f_tc = ET.SubElement(a_file, "timecode")
-                    a_ftc_rate = ET.SubElement(a_f_tc, "rate")
-                    a_ftc_tb = ET.SubElement(a_ftc_rate, "timebase")
-                    a_ftc_tb.text = str(a_src_timebase)
-                    a_ftc_ntsc = ET.SubElement(a_ftc_rate, "ntsc")
-                    a_ftc_ntsc.text = "TRUE" if a_src_is_ntsc else "FALSE"
-                    a_ftc_str = ET.SubElement(a_f_tc, "string")
-                    a_ftc_str.text = a_source_tc.timecode_string
-                    a_ftc_frame = ET.SubElement(a_f_tc, "frame")
-                    a_ftc_frame.text = str(a_source_tc.timecode_frame)
-                    a_ftc_df = ET.SubElement(a_f_tc, "displayformat")
-                    a_ftc_df.text = "DF" if a_src_is_ntsc else "NDF"
+                        # Standalone audio (no matching video clip) — minimal file
+                        a_fid = _next_file_id()
+                        a_file = ET.SubElement(a_ci, "file")
+                        a_file.set("id", a_fid)
+                        ET.SubElement(a_file, "name").text = a_mc_name
 
                     # Sourcetrack (audio)
                     a_st_el = ET.SubElement(a_ci, "sourcetrack")
