@@ -767,6 +767,11 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
             media_el = file_elem.find("media")
             if media_el is None:
                 media_el = ET.SubElement(file_elem, "media")
+            # M5: add video samplecharacteristics only if this file isn't audio-only
+            # Audio-only files (WAV/MP3/FLAC) have <media><audio> but no video track
+            if media_el.find("audio") is not None and media_el.find("video") is None:
+                # Standalone audio — skip video samplecharacteristics injection
+                continue
             video_el = media_el.find("video")
             if video_el is None:
                 video_el = ET.SubElement(media_el, "video")
@@ -1297,32 +1302,22 @@ def _make_output_name(seq_name: str, add_suffix: bool = True, suffix: str | None
 def _to_fcp7_pathurl(filepath: str) -> str:
     """Convert a Windows path to FCP7 XML pathurl format.
 
-    Mimics Premiere Pro's own FCP7 XML export:
-      file://localhost/E%3a/path/to/file.mov
-
-    Python's Path.as_uri() produces file:///E:/path which DaVinci
-    sometimes fails to resolve for non-ASCII paths on Windows.
+    Matches DaVinci Resolve's own XML export format:
+      file://localhost/E:/path/to/file.mov
 
     Args:
         filepath: Absolute Windows path (e.g. ``E:\\HW\\...``)
 
     Returns:
-        FCP7-compatible file://localhost/ URI (lowercase hex encoding)
+        DaVinci-compatible file://localhost/ URI
     """
     from urllib.parse import quote
-    import re
-    # Convert backslashes to forward slashes
     path = filepath.replace("\\", "/")
-    # Encode drive letter colon: E:/ -> E%3a/
-    if len(path) >= 2 and path[1] == ":":
-        path = path[0] + "%3a" + path[2:]
-    # URL-encode non-ASCII chars, then lowercase only the %XX sequences
-    encoded = quote(path, safe="/%")
-    # Lowercase hex in percent-encoded sequences (PR convention)
-    encoded = re.sub(r'%[0-9A-Fa-f]{2}', lambda m: m.group(0).lower(), encoded)
-    # Drive letter encoding uppercase (PR style)
-    if encoded.startswith("e%3a"):
-        encoded = "E%3a" + encoded[4:]
+    # DaVinci uses plain drive letter (E:/ not E%3a/), uppercase percent encoding
+    import re
+    encoded = quote(path, safe="/:")  # preserve / and :
+    # Uppercase only percent-encoded hex sequences (DC convention: %E8 not %e8)
+    encoded = re.sub(r'%[0-9a-f]{2}', lambda m: m.group(0).upper(), encoded)
     return f"file://localhost/{encoded}"
 
 
@@ -2765,6 +2760,14 @@ def _prproj_parse_sequence(
                     a_labels = ET.SubElement(a_ci, "labels")
                     ET.SubElement(a_labels, "label2").text = "Audio"
 
+    # ── Track-level enabled/locked (DC convention) ─────────────────────
+    for track in video_section.findall("track"):
+        ET.SubElement(track, "enabled").text = "TRUE"
+        ET.SubElement(track, "locked").text = "FALSE"
+    for track in audio_section.findall("track"):
+        ET.SubElement(track, "enabled").text = "TRUE"
+        ET.SubElement(track, "locked").text = "FALSE"
+
     # ── Audio section metadata (deferred until tracks built) ───────────
     # Insert before track elements: numOutputChannels → format → outputs
     noc = ET.Element("numOutputChannels")
@@ -2787,57 +2790,35 @@ def _prproj_parse_sequence(
         ET.SubElement(group, "depth").text = "16"
     audio_section.insert(2, outputs)
 
-    # ── Second pass: link elements (A/V sync, FCP7 group semantics) ────
-    # FCP7 spec: ALL clipitems sharing the same source media form a
-    # "link group". Every member has the EXACT SAME set of <link> elements,
-    # including self-links (video→itself, audio→itself).
-    #
-    # Strategy: build one link set per unique source name, apply to all.
-
-    # Collect all clipitems by source name
-    _groups: dict[str, list[tuple[str, str, int, int]]] = {}
-    # name → [(clipitem_id, mediatype, track_idx, clip_idx)]
-    for vt_idx, v_track in enumerate(video_section.findall("track"), 1):
-        for vc_idx, v_ci in enumerate(v_track.findall("clipitem"), 1):
+    # ── Second pass: link elements (DC convention: linkclipref only) ────
+    _groups: dict[str, list[str]] = {}
+    for v_track in video_section.findall("track"):
+        for v_ci in v_track.findall("clipitem"):
             v_name = v_ci.findtext("name", "")
             if v_name:
-                _groups.setdefault(v_name, []).append(
-                    (v_ci.get("id", ""), "video", vt_idx, vc_idx)
-                )
-    for at_idx, a_track in enumerate(audio_section.findall("track"), 1):
-        for ac_idx, a_ci in enumerate(a_track.findall("clipitem"), 1):
+                _groups.setdefault(v_name, []).append(v_ci.get("id", ""))
+    for a_track in audio_section.findall("track"):
+        for a_ci in a_track.findall("clipitem"):
             a_name = a_ci.findtext("name", "")
             if a_name:
-                _groups.setdefault(a_name, []).append(
-                    (a_ci.get("id", ""), "audio", at_idx, ac_idx)
-                )
+                _groups.setdefault(a_name, []).append(a_ci.get("id", ""))
 
-    # Build link elements per group and apply identically to all members
-    for name, members in _groups.items():
-        if len(members) < 2:
-            continue  # lone clipitem, no linking needed
-        # Build the link set once
+    for name, ids in _groups.items():
+        if len(ids) < 2:
+            continue
         links: list[ET.Element] = []
-        for ref_id, mtype, t_idx, c_idx in members:
+        for ref_id in ids:
             link = ET.Element("link")
             ET.SubElement(link, "linkclipref").text = ref_id
-            ET.SubElement(link, "mediatype").text = mtype
-            ET.SubElement(link, "trackindex").text = str(t_idx)
-            ET.SubElement(link, "clipindex").text = str(c_idx)
-            ET.SubElement(link, "groupindex").text = "1"
             links.append(link)
-
-        # Apply identical set to each member clipitem
-        for ci_id, *_ in members:
+        for ci_id in ids:
             ci = video_section.find(f".//clipitem[@id='{ci_id}']")
             if ci is None:
                 ci = audio_section.find(f".//clipitem[@id='{ci_id}']")
             if ci is None:
                 continue
-            # Remove any existing link elements
             for old in ci.findall("link"):
                 ci.remove(old)
-            # Insert after sourcetrack (spec order: sourcetrack → link → filter)
             st_idx = None
             for i, child in enumerate(ci):
                 if child.tag == "sourcetrack":
