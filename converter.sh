@@ -229,6 +229,9 @@ run_pipeline() {
     if [ "$OPT_SUFFIX" = "[OFF]" ]; then
         cmd+=(--no-suffix)
     fi
+    if [ "$OPT_XML" = "[OFF]" ]; then
+        cmd+=(--no-xml)
+    fi
 
     PYTHONIOENCODING=utf-8 "${cmd[@]}"
 

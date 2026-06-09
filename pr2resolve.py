@@ -82,6 +82,7 @@ def _run_pipeline(
     nogui: bool = False,
     gui: bool = False,
     no_suffix: bool = False,
+    no_xml: bool = False,
 ) -> int:
     """Run the full fix pipeline on an input file."""
     _print_banner()
@@ -223,17 +224,19 @@ def _run_pipeline(
         print("  All 23 validation checks passed.")
     print()
 
-    # Write output
-    print(f"  Writing: {output_path}")
-    _write_fixed_xml(root, output_path)
+    # Write output — skip when --no-xml (DRT still needs the file for import)
+    xml_written = False
+    if not no_xml or drt:
+        print(f"  Writing: {output_path}")
+        _write_fixed_xml(root, output_path)
+        xml_written = output_path.exists()
 
     # Report
-    if report:
+    if report and not no_xml:
         _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path, root)
         print(f"  Report: {report_path}")
 
     # DRT output
-    xml_written = output_path.exists()
     if drt:
         print()
         drt_path = output_dir / f"{Path(output_name).stem}.drt"
@@ -305,6 +308,8 @@ def _run_pipeline(
         print(f"  Done. {fix_count} fixes applied to {output_path.name}")
     elif drt:
         print(f"  Done. Output: {drt_path.name}")
+    else:
+        print(f"  Done. {fix_count} fixes (no file written).")
     return 0
 
 
@@ -330,6 +335,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--diagnose-only", action="store_true", help="Diagnose only, no fixes")
     parser.add_argument("--no-suffix", action="store_true", dest="no_suffix",
                         help=f"Omit '{OUTPUT_SUFFIX}' suffix from output filename")
+    parser.add_argument("--no-xml", action="store_true", dest="no_xml",
+                        help="Skip FCP7 XML output (diagnose only, or use with --drt)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     return parser.parse_args()
 
@@ -356,6 +363,7 @@ def main() -> int:
         nogui=args.nogui,
         gui=args.gui,
         no_suffix=args.no_suffix,
+        no_xml=args.no_xml,
     )
 
 

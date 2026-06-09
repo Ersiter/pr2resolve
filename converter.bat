@@ -204,6 +204,7 @@ if "!OPT_REPORT!"=="[ON]" set "CMD=!CMD! --report"
 if "!OPT_DRT!"=="[ON]" set "CMD=!CMD! --drt"
 if "!OPT_ALL_SEQ!"=="[ON]" set "CMD=!CMD! --all-sequences"
 if "!OPT_SUFFIX!"=="[OFF]" set "CMD=!CMD! --no-suffix"
+if "!OPT_XML!"=="[OFF]" set "CMD=!CMD! --no-xml"
 !CMD!
 echo.
 pause
