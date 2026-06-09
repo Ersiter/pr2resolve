@@ -25,7 +25,9 @@ OPT_DRT="[OFF]"
 OPT_REPORT="[ON]"
 OPT_XML="[ON]"
 OPT_ALL_SEQ="[OFF]"
+OPT_MODE="[AUTO]"
 OPT_SUFFIX="[ON]"
+OPT_DRP="[OFF]"
 
 # Find Python
 PYTHON_CMD=""
@@ -76,9 +78,12 @@ print_header() {
     rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
     all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
     suffix_clr=$([ "$OPT_SUFFIX" = "[ON]" ] && echo "$GREEN" || echo "")
+    drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || echo "")
+    mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
     echo -e "  XML:     ${xml_clr}${OPT_XML}${NC}   FCP7 XML output"
     echo -e "  DRT:     ${drt_clr}${OPT_DRT}${NC}  DaVinci DRT output (needs Resolve Studio)"
-    echo -e "  All Seq: ${all_seq_clr}${OPT_ALL_SEQ}${NC}  Export all sequences (.prproj only)"
+    echo -e "  DRP:     ${drp_clr}${OPT_DRP}${NC}  DaVinci DRP project export (needs Resolve GUI)"
+    echo -e "  Mode:    ${mode_clr}${OPT_MODE}${NC} Sequence: AUTO/ALL/MAN"
     echo -e "  Suffix:  ${suffix_clr}${OPT_SUFFIX}${NC}   _pr2resolve name tag"
     echo -e "  Report:  ${rpt_clr}${OPT_REPORT}${NC}   Fix report (.md)"
     echo ""
@@ -175,22 +180,30 @@ options_menu() {
         rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
         all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
         suffix_clr=$([ "$OPT_SUFFIX" = "[ON]" ] && echo "$GREEN" || echo "")
+        drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || echo "")
+        mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
         echo -e "  ${BOLD}[1]${NC} FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
         echo -e "  ${BOLD}[2]${NC} DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
-        echo -e "  ${BOLD}[3]${NC} All sequences  ${all_seq_clr}${OPT_ALL_SEQ}${NC} (.prproj batch)"
+        echo -e "  ${BOLD}[3]${NC} Export Mode    ${mode_clr}${OPT_MODE}${NC}  (AUTO/ALL/MAN)"
         echo -e "  ${BOLD}[4]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
         echo -e "  ${BOLD}[5]${NC} Name suffix    ${suffix_clr}${OPT_SUFFIX}${NC}  _pr2resolve tag"
+        echo -e "  ${BOLD}[6]${NC} DRP project    ${drp_clr}${OPT_DRP}${NC}  (needs Resolve GUI + Studio)"
         echo -e "  ${BOLD}[0]${NC} Back"
         echo ""
-        read -n 1 -r -p "  Select [1-5, 0]: " choice
+        read -n 1 -r -p "  Select [1-6, 0]: " choice
         echo ""
         choice="${choice%%$'\r'}"
         case "$choice" in
             1) if [ "$OPT_XML" = "[ON]" ]; then OPT_XML="[OFF]"; else OPT_XML="[ON]"; fi ;;
             2) if [ "$OPT_DRT" = "[ON]" ]; then OPT_DRT="[OFF]"; else OPT_DRT="[ON]"; fi ;;
-            3) if [ "$OPT_ALL_SEQ" = "[ON]" ]; then OPT_ALL_SEQ="[OFF]"; else OPT_ALL_SEQ="[ON]"; fi ;;
+            3) case "$OPT_MODE" in
+                   "[AUTO]") OPT_MODE="[ALL]" ;;
+                   "[ALL]") OPT_MODE="[MAN]" ;;
+                   "[MAN]") OPT_MODE="[AUTO]" ;;
+               esac ;;
             4) if [ "$OPT_REPORT" = "[ON]" ]; then OPT_REPORT="[OFF]"; else OPT_REPORT="[ON]"; fi ;;
             5) if [ "$OPT_SUFFIX" = "[ON]" ]; then OPT_SUFFIX="[OFF]"; else OPT_SUFFIX="[ON]"; fi ;;
+            6) if [ "$OPT_DRP" = "[ON]" ]; then OPT_DRP="[OFF]"; else OPT_DRP="[ON]"; fi ;;
             0) return ;;
         esac
     done
@@ -223,7 +236,7 @@ run_pipeline() {
     if [ "$OPT_DRT" = "[ON]" ]; then
         cmd+=(--drt)
     fi
-    if [ "$OPT_ALL_SEQ" = "[ON]" ]; then
+    if [ "$OPT_MODE" = "[ALL]" ]; then
         cmd+=(--all-sequences)
     fi
     if [ "$OPT_SUFFIX" = "[OFF]" ]; then
@@ -231,6 +244,14 @@ run_pipeline() {
     fi
     if [ "$OPT_XML" = "[OFF]" ]; then
         cmd+=(--no-xml)
+    fi
+    if [ "$OPT_DRP" = "[ON]" ]; then
+        input_stem="$(basename "$INPUT_FILE" | sed 's/\.[^.]*$//')"
+        if [ -n "$OUTPUT_DIR" ]; then
+            cmd+=(--drp "$OUTPUT_DIR/$input_stem.drp")
+        else
+            cmd+=(--drp "$(dirname "$INPUT_FILE")/$input_stem.drp")
+        fi
     fi
 
     PYTHONIOENCODING=utf-8 "${cmd[@]}"

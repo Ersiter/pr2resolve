@@ -1464,6 +1464,7 @@ def _root_cause_hint(issue: Issue) -> str:
 
 # Adobe timebase conversion constant
 _ADOBE_TIMEBASE_CONSTANT = 10594584000
+_NTSC_FILM_RATE = 24000.0 / 1001.0  # 23.976023976… exact NTSC film rate
 
 # Lumetri parameter name mapping (Chinese → English)
 _LUMETRI_PARAM_MAP: dict[str, str] = {
@@ -1557,7 +1558,7 @@ def _prproj_adobe_timebase_to_fps(timebase: int) -> float:
     """
     if timebase <= 0:
         return DEFAULT_FPS
-    fps = round((_ADOBE_TIMEBASE_CONSTANT * 23.976) / timebase, 3)
+    fps = round((_ADOBE_TIMEBASE_CONSTANT * _NTSC_FILM_RATE) / timebase, 6)
     return fps if fps > 0 else DEFAULT_FPS
 
 
@@ -1581,6 +1582,52 @@ def _prproj_ticks_to_frames(ticks_str: str, fps: float) -> int:
     ppro_ticks_per_sec = 254016000000
     seconds = ticks / ppro_ticks_per_sec
     return int(round(seconds * fps))
+
+
+def _prproj_get_source_resolution(
+    prproj_root: ET.Element,
+    mc_name: str,
+    idx: _PrprojIndex,
+) -> tuple[int, int]:
+    """Extract source media resolution from .prproj VideoStream metadata.
+
+    Walks: Media(filename) → VideoStream[ObjectRef]
+           → root-level VideoStream[ObjectID] → FrameRect
+
+    Args:
+        prproj_root: The <PremiereData> root element
+        mc_name: Media file basename to match
+        idx: The prproj index for resolving ObjectRefs
+
+    Returns:
+        (width, height) from FrameRect, or (0, 0) on failure
+    """
+    mc_lower = mc_name.lower()
+    for media_el in prproj_root.findall("Media"):
+        fp = media_el.findtext("FilePath", "")
+        if not fp:
+            continue
+        if Path(fp.replace("\\", "/")).name.lower() != mc_lower:
+            continue
+        vs_el = media_el.find("VideoStream")
+        if vs_el is None:
+            continue
+        vs_ref = vs_el.get("ObjectRef")
+        if not vs_ref:
+            continue
+        resolved = idx.resolve_ref(vs_ref)
+        if resolved is None:
+            continue
+        frame_rect = resolved.findtext("FrameRect", "")
+        if frame_rect:
+            parts = frame_rect.split(",")
+            if len(parts) == 4:
+                w = int(parts[2])
+                h = int(parts[3])
+                if w > 0 and h > 0:
+                    return (w, h)
+        break
+    return (0, 0)
 
 
 def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bool) -> str:
@@ -2109,9 +2156,8 @@ def _prproj_parse_sequence(
     rate_elem = ET.SubElement(sequence, "rate")
     tb_elem = ET.SubElement(rate_elem, "timebase")
     tb_elem.text = str(timebase)
-    if is_ntsc:
-        ntsc_elem = ET.SubElement(rate_elem, "ntsc")
-        ntsc_elem.text = "TRUE"
+    ntsc_elem = ET.SubElement(rate_elem, "ntsc")
+    ntsc_elem.text = "TRUE" if is_ntsc else "FALSE"
 
     name_elem = ET.SubElement(sequence, "name")
     name_elem.text = seq_name
@@ -2121,9 +2167,8 @@ def _prproj_parse_sequence(
     tc_rate = ET.SubElement(tc, "rate")
     tc_tb = ET.SubElement(tc_rate, "timebase")
     tc_tb.text = str(timebase)
-    if is_ntsc:
-        tc_ntsc = ET.SubElement(tc_rate, "ntsc")
-        tc_ntsc.text = "TRUE"
+    tc_ntsc = ET.SubElement(tc_rate, "ntsc")
+    tc_ntsc.text = "TRUE" if is_ntsc else "FALSE"
     tc_str = ET.SubElement(tc, "string")
     tc_str.text = "00;00;00;00" if is_ntsc else "00:00:00:00"
     tc_frame = ET.SubElement(tc, "frame")
@@ -2131,9 +2176,24 @@ def _prproj_parse_sequence(
     tc_df = ET.SubElement(tc, "displayformat")
     tc_df.text = "DF" if is_ntsc else "NDF"
 
+    # Sequence UUID (from .prproj ObjectUID)
+    seq_uuid = ET.SubElement(sequence, "uuid")
+    seq_uuid.text = sequence_uid
+
+    # Sequence labels
+    seq_labels = ET.SubElement(sequence, "labels")
+    ET.SubElement(seq_labels, "label2").text = "Sequence"
+
     media = ET.SubElement(sequence, "media")
     video_section = ET.SubElement(media, "video")
     audio_section = ET.SubElement(media, "audio")
+
+    # Audio format
+    ET.SubElement(audio_section, "numOutputChannels").text = "2"
+    a_fmt = ET.SubElement(audio_section, "format")
+    a_fsc = ET.SubElement(a_fmt, "samplecharacteristics")
+    ET.SubElement(a_fsc, "depth").text = "16"
+    ET.SubElement(a_fsc, "samplerate").text = "48000"
 
     # Video format
     vfmt = ET.SubElement(video_section, "format")
@@ -2141,9 +2201,8 @@ def _prproj_parse_sequence(
     vrate = ET.SubElement(vsc, "rate")
     vtb = ET.SubElement(vrate, "timebase")
     vtb.text = str(timebase)
-    if is_ntsc:
-        vntsc = ET.SubElement(vrate, "ntsc")
-        vntsc.text = "TRUE"
+    vntsc = ET.SubElement(vrate, "ntsc")
+    vntsc.text = "TRUE" if is_ntsc else "FALSE"
     vw = ET.SubElement(vsc, "width")
     vw.text = str(w)
     vh = ET.SubElement(vsc, "height")
@@ -2252,6 +2311,11 @@ def _prproj_parse_sequence(
                                         if local.exists():
                                             source_tc = _ffprobe_read_timecode(str(local))
 
+                                    # Extract source resolution from VideoStream metadata
+                                    src_r = _prproj_get_source_resolution(prproj_root, mc_name, idx)
+                                    if src_r[0] > 0 and src_r[1] > 0:
+                                        src_w, src_h = src_r
+
                             # Clip → InPoint/OutPoint/PlaybackSpeed
                             clip_ref_el = sc_el.find("Clip")
                             if clip_ref_el is not None:
@@ -2341,9 +2405,8 @@ def _prproj_parse_sequence(
                     ci_rate = ET.SubElement(clipitem, "rate")
                     ci_tb = ET.SubElement(ci_rate, "timebase")
                     ci_tb.text = str(timebase)
-                    if is_ntsc:
-                        ci_ntsc = ET.SubElement(ci_rate, "ntsc")
-                        ci_ntsc.text = "TRUE"
+                    ci_ntsc = ET.SubElement(ci_rate, "ntsc")
+                    ci_ntsc.text = "TRUE" if is_ntsc else "FALSE"
 
                     st_el = ET.SubElement(clipitem, "start")
                     st_el.text = str(start)
@@ -2380,9 +2443,8 @@ def _prproj_parse_sequence(
                     f_rate = ET.SubElement(file_el, "rate")
                     fr_tb = ET.SubElement(f_rate, "timebase")
                     fr_tb.text = str(src_timebase)
-                    if src_is_ntsc:
-                        fr_ntsc = ET.SubElement(f_rate, "ntsc")
-                        fr_ntsc.text = "TRUE"
+                    fr_ntsc = ET.SubElement(f_rate, "ntsc")
+                    fr_ntsc.text = "TRUE" if src_is_ntsc else "FALSE"
 
                     # File duration (full source duration if available)
                     fd = ET.SubElement(file_el, "duration")
@@ -2396,9 +2458,8 @@ def _prproj_parse_sequence(
                     ftc_rate = ET.SubElement(f_tc, "rate")
                     ftc_tb = ET.SubElement(ftc_rate, "timebase")
                     ftc_tb.text = str(src_timebase)
-                    if src_is_ntsc:
-                        ftc_ntsc = ET.SubElement(ftc_rate, "ntsc")
-                        ftc_ntsc.text = "TRUE"
+                    ftc_ntsc = ET.SubElement(ftc_rate, "ntsc")
+                    ftc_ntsc.text = "TRUE" if src_is_ntsc else "FALSE"
                     ftc_str = ET.SubElement(f_tc, "string")
                     ftc_str.text = source_tc.timecode_string
                     ftc_frame = ET.SubElement(f_tc, "frame")
@@ -2448,6 +2509,19 @@ def _prproj_parse_sequence(
                     stt = ET.SubElement(sourcetrack, "tracktype")
                     stt.text = "Video"
 
+                    # logginginfo (FCP7 standard block)
+                    log_info = ET.SubElement(clipitem, "logginginfo")
+                    for tag in ("description", "scene", "shottake", "lognote",
+                                "good", "originalvideofilename", "originalaudiofilename"):
+                        ET.SubElement(log_info, tag).text = ""
+                    # colorinfo
+                    col_info = ET.SubElement(clipitem, "colorinfo")
+                    for tag in ("lut", "lut1", "asc_sop", "asc_sat", "lut2"):
+                        ET.SubElement(col_info, tag).text = ""
+                    # labels
+                    labels_el = ET.SubElement(clipitem, "labels")
+                    ET.SubElement(labels_el, "label2").text = "Video"
+
                     # Basic effect (transform) if non-default
                     if has_motion and (abs(scale_val - 100.0) > 0.01 or abs(rotation_val) > 0.01):
                         filt = ET.SubElement(clipitem, "filter")
@@ -2484,6 +2558,7 @@ def _prproj_parse_sequence(
                     continue
 
                 fcp_a_track = ET.SubElement(audio_section, "track")
+                fcp_a_track.set("premiereTrackType", "Stereo")
                 a_ct = a_track_el.find("ClipTrack")
                 if a_ct is None:
                     continue
@@ -2584,9 +2659,8 @@ def _prproj_parse_sequence(
                     a_rate = ET.SubElement(a_ci, "rate")
                     a_rt = ET.SubElement(a_rate, "timebase")
                     a_rt.text = str(timebase)
-                    if is_ntsc:
-                        a_rn = ET.SubElement(a_rate, "ntsc")
-                        a_rn.text = "TRUE"
+                    a_rn = ET.SubElement(a_rate, "ntsc")
+                    a_rn.text = "TRUE" if is_ntsc else "FALSE"
 
                     a_st = ET.SubElement(a_ci, "start")
                     a_st.text = str(a_start)
@@ -2617,9 +2691,8 @@ def _prproj_parse_sequence(
                     a_f_rate = ET.SubElement(a_file, "rate")
                     a_fr_tb = ET.SubElement(a_f_rate, "timebase")
                     a_fr_tb.text = str(a_src_timebase)
-                    if a_src_is_ntsc:
-                        a_fr_ntsc = ET.SubElement(a_f_rate, "ntsc")
-                        a_fr_ntsc.text = "TRUE"
+                    a_fr_ntsc = ET.SubElement(a_f_rate, "ntsc")
+                    a_fr_ntsc.text = "TRUE" if a_src_is_ntsc else "FALSE"
 
                     a_fd = ET.SubElement(a_file, "duration")
                     if a_source_tc.full_duration_frames > 0:
@@ -2631,9 +2704,8 @@ def _prproj_parse_sequence(
                     a_ftc_rate = ET.SubElement(a_f_tc, "rate")
                     a_ftc_tb = ET.SubElement(a_ftc_rate, "timebase")
                     a_ftc_tb.text = str(a_src_timebase)
-                    if a_src_is_ntsc:
-                        a_ftc_ntsc = ET.SubElement(a_ftc_rate, "ntsc")
-                        a_ftc_ntsc.text = "TRUE"
+                    a_ftc_ntsc = ET.SubElement(a_ftc_rate, "ntsc")
+                    a_ftc_ntsc.text = "TRUE" if a_src_is_ntsc else "FALSE"
                     a_ftc_str = ET.SubElement(a_f_tc, "string")
                     a_ftc_str.text = a_source_tc.timecode_string
                     a_ftc_frame = ET.SubElement(a_f_tc, "frame")
@@ -2647,6 +2719,70 @@ def _prproj_parse_sequence(
                     a_stype.text = "audio"
                     a_stt = ET.SubElement(a_st_el, "tracktype")
                     a_stt.text = "Stereo"
+
+                    # logginginfo
+                    a_log_info = ET.SubElement(a_ci, "logginginfo")
+                    for tag in ("description", "scene", "shottake", "lognote",
+                                "good", "originalvideofilename", "originalaudiofilename"):
+                        ET.SubElement(a_log_info, tag).text = ""
+                    # colorinfo
+                    a_col_info = ET.SubElement(a_ci, "colorinfo")
+                    for tag in ("lut", "lut1", "asc_sop", "asc_sat", "lut2"):
+                        ET.SubElement(a_col_info, tag).text = ""
+                    # labels
+                    a_labels = ET.SubElement(a_ci, "labels")
+                    ET.SubElement(a_labels, "label2").text = "Audio"
+
+    # ── Second pass: link elements (A/V sync) ────────────────────────
+    # Build name → video clipitem index for cross-referencing
+    _vid_refs: dict[str, list[tuple[str, int, int]]] = {}  # name → [(clipitem_id, track_idx, clip_idx)]
+    for vt_idx, v_track in enumerate(video_section.findall("track"), 1):
+        for vc_idx, v_ci in enumerate(v_track.findall("clipitem"), 1):
+            v_name = v_ci.findtext("name", "")
+            if v_name:
+                _vid_refs.setdefault(v_name, []).append(
+                    (v_ci.get("id", ""), vt_idx, vc_idx)
+                )
+
+    # Add link elements: audio → video (FCP7 convention)
+    for at_idx, a_track in enumerate(audio_section.findall("track"), 1):
+        for ac_idx, a_ci in enumerate(a_track.findall("clipitem"), 1):
+            a_name = a_ci.findtext("name", "")
+            if not a_name or a_name not in _vid_refs:
+                continue
+            for v_id, vt_idx, vc_idx in _vid_refs[a_name]:
+                # Skip if link already exists (dedup)
+                existing = a_ci.findall(f"link/[linkclipref='{v_id}']")
+                if existing:
+                    continue
+                link = ET.SubElement(a_ci, "link")
+                ET.SubElement(link, "linkclipref").text = v_id
+                ET.SubElement(link, "mediatype").text = "video"
+                ET.SubElement(link, "trackindex").text = str(vt_idx)
+                ET.SubElement(link, "clipindex").text = str(vc_idx)
+                ET.SubElement(link, "groupindex").text = "1"
+
+    # Add link elements: video → audio (reciprocal)
+    for vt_idx, v_track in enumerate(video_section.findall("track"), 1):
+        for vc_idx, v_ci in enumerate(v_track.findall("clipitem"), 1):
+            v_name = v_ci.findtext("name", "")
+            if not v_name:
+                continue
+            for at_idx, a_track in enumerate(audio_section.findall("track"), 1):
+                for ac_idx, a_ci in enumerate(a_track.findall("clipitem"), 1):
+                    a_name = a_ci.findtext("name", "")
+                    if a_name != v_name:
+                        continue
+                    a_id = a_ci.get("id", "")
+                    existing = v_ci.findall(f"link/[linkclipref='{a_id}']")
+                    if existing:
+                        continue
+                    link = ET.SubElement(v_ci, "link")
+                    ET.SubElement(link, "linkclipref").text = a_id
+                    ET.SubElement(link, "mediatype").text = "audio"
+                    ET.SubElement(link, "trackindex").text = str(at_idx)
+                    ET.SubElement(link, "clipindex").text = str(ac_idx)
+                    ET.SubElement(link, "groupindex").text = "1"
 
     # Set total duration
     dur_elem.text = str(total_frames if total_frames > 0 else end)
