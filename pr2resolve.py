@@ -10,7 +10,6 @@ Constants and data models live in pr2_constants.py.
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -274,6 +273,27 @@ def _print_issues(issues: list[Issue]) -> None:
         print()
 
 
+def _next_available_path(path: Path) -> Path:
+    """Return a non-existing path by appending -1, -2, … if needed.
+
+    Args:
+        path: Desired output path
+
+    Returns:
+        Original path if free, otherwise first available {stem}-N{suffix}
+    """
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    n = 1
+    while True:
+        candidate = path.parent / f"{stem}-{n}{suffix}"
+        if not candidate.exists():
+            return candidate
+        n += 1
+
+
 def _run_pipeline(
     input_path: Path,
     output_dir: Optional[Path] = None,
@@ -282,6 +302,7 @@ def _run_pipeline(
     sequence_name: Optional[str] = None,
     drt: bool = False,
     drp_path: Optional[Path] = None,
+    drp_gui: Optional[Path] = None,
     all_sequences: bool = False,
     nogui: bool = False,
     gui: bool = False,
@@ -296,8 +317,16 @@ def _run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stem = input_path.stem
+    # Auto-compute DRP path when --drp or --drp-gui passed without explicit path (TUI mode)
+    if drp_path is True:
+        drp_path = output_dir / f"{stem}.drp"
+    if drp_gui is True:
+        drp_gui = output_dir / f"{stem}.drp"
+    if drp_path is not None:
+        drp_path = _next_available_path(drp_path)
+    if drp_gui is not None:
+        drp_gui = _next_available_path(drp_gui)
     # output_path / report_path deferred — computed from sequence name after parsing
-    backup_path = input_path.with_suffix(input_path.suffix + ".bak")
 
     # Load
     print(f"  Loading: {input_path}")
@@ -359,32 +388,46 @@ def _run_pipeline(
                         _generate_report(issues, _validate(fcp), len([i for i in issues if i.fixed]),
                                          input_path, tmp_xml, rpt_path, fcp)
 
+                ran_drp = False
+                ran_drt = False
+
+                # DRP background first (nogui, auto-cleanup)
+                if drp_path:
+                    print(f"  DRP export (background): {drp_path}")
+                    resolve = _ensure_resolve_running(timeout=60, nogui=True)
+                    if resolve:
+                        _drp_export(resolve, xml_paths, drp_path, stem, seq_names, gui=False)
+                        ran_drp = True
+                    else:
+                        print("  DRP skipped: DaVinci not available")
+
+                # DRP interactive (GUI, keeps project open)
+                if drp_gui:
+                    print(f"  DRP export (interactive): {drp_gui}")
+                    resolve = _ensure_resolve_running(timeout=60, nogui=False)
+                    if resolve:
+                        _drp_export(resolve, xml_paths, drp_gui, stem, seq_names, gui=True)
+                        ran_drp = True
+                    else:
+                        print("  DRP skipped: DaVinci not available")
+
+                # DRT second (can reuse GUI instance for sandbox)
                 if drt:
-                    resolve = _ensure_resolve_running(timeout=60, nogui=not gui)
+                    resolve = _ensure_resolve_running(timeout=60, nogui=False)
                     if resolve:
                         results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names)
                         ok = sum(1 for r in results if r[0])
                         print(f"  Batch DRT: {ok}/{len(results)} exported")
+                        ran_drt = True
                     else:
                         print("  DRT skipped: DaVinci not available")
 
-                # DRP export (batch mode)
-                if drp_path:
-                    print(f"  DRP export: {drp_path}")
-                    if nogui:
-                        print("  (DRP requires GUI — auto-enabling)")
-                        nogui = False
-                    resolve = _ensure_resolve_running(timeout=60, nogui=False)
-                    if resolve:
-                        _drp_export(resolve, xml_paths, drp_path, stem, seq_names)
-                    else:
-                        print("  DRP skipped: DaVinci not available")
-
-                # Cleanup temp XMLs only when DRT consumed them
-                if drt:
-                    for tmp in xml_paths:
-                        tmp.unlink(missing_ok=True)
-                _shutdown_resolve()
+                # Cleanup temp XMLs
+                for tmp in xml_paths:
+                    tmp.unlink(missing_ok=True)
+                # Only shutdown if we ran headless (GUI stays open for DRP)
+                if not ran_drp:
+                    _shutdown_resolve()
                 return 0
             # ─ End batch mode ──────────────────────────────────
 
@@ -423,10 +466,13 @@ def _run_pipeline(
         print(f"  Diagnose-only mode. {len(scan_issues)} issues found.")
         return 0
 
-    # Backup original
-    if not backup_path.exists():
-        shutil.copy2(str(input_path), str(backup_path))
-        print(f"  Backup: {backup_path.name}")
+    # Backup only when output would overwrite the input file
+    if output_path.resolve() == input_path.resolve():
+        backup_path = input_path.with_suffix(input_path.suffix + ".bak")
+        if not backup_path.exists():
+            import shutil
+            shutil.copy2(str(input_path), str(backup_path))
+            print(f"  Backup: {backup_path.name}")
 
     # Fix
     print("  Applying fixes...")
@@ -445,9 +491,10 @@ def _run_pipeline(
         print("  All 23 validation checks passed.")
     print()
 
-    # Write output — skip when --no-xml (DRT still needs the file for import)
+    # Write intermediate XML — always needed for DRP/DRT (DaVinci imports from file)
     xml_written = False
-    if not no_xml or drt:
+    needs_intermediate = drt or drp_path or drp_gui
+    if not no_xml or needs_intermediate:
         print(f"  Writing: {output_path}")
         _write_fixed_xml(root, output_path)
         xml_written = output_path.exists()
@@ -457,23 +504,33 @@ def _run_pipeline(
         _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path, root)
         print(f"  Report: {report_path}")
 
-    # DRP output (single-sequence mode)
+    # DRP background — first (nogui, auto-cleanup after export)
+    ran_drp = False
     if drp_path:
         print()
-        print(f"  DRP export: {drp_path}")
-        if nogui:
-            print("  (DRP requires GUI — auto-enabling)")
-            nogui = False
-        resolve_drp = _ensure_resolve_running(timeout=60, nogui=False)
+        print(f"  DRP export (background): {drp_path}")
+        resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
         if resolve_drp:
-            _drp_export(resolve_drp, [output_path], drp_path, stem, [seq_name])
+            _drp_export(resolve_drp, [output_path], drp_path, stem, [seq_name], gui=False)
+            ran_drp = True
         else:
             print("  DRP skipped: DaVinci not available")
 
-    # DRT output
+    # DRP interactive — GUI mode, keeps project open for user
+    if drp_gui:
+        print()
+        print(f"  DRP export (interactive): {drp_gui}")
+        resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
+        if resolve_gui:
+            _drp_export(resolve_gui, [output_path], drp_gui, stem, [seq_name], gui=True)
+            ran_drp = True
+        else:
+            print("  DRP skipped: DaVinci not available")
+
+    # DRT output — second (can reuse GUI instance opened by DRP)
     if drt:
         print()
-        drt_path = output_dir / f"{Path(output_name).stem}.drt"
+        drt_path = _next_available_path(output_dir / f"{Path(output_name).stem}.drt")
         print("  DRT output requested. Checking DaVinci Resolve...")
 
         def _try_drt(resolve_obj: Any) -> bool:
@@ -545,8 +602,13 @@ def _run_pipeline(
     else:
         print(f"  Done. {fix_count} fixes (no file written).")
 
-    # Clean up headless Resolve if we launched it
-    if drt or drp_path:
+    # Clean up intermediate XML when user disabled XML output (DRP/DRT already consumed it)
+    if no_xml and needs_intermediate and output_path.exists():
+        _recycle(output_path)
+        print(f"  (intermediate XML moved to recycle bin)")
+
+    # Clean up: only kill headless (GUI stays open for DRP)
+    if not ran_drp:
         _shutdown_resolve()
 
     return 0
@@ -562,8 +624,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output directory")
     parser.add_argument("--report", action="store_true", help="Generate fix report (.md)")
     parser.add_argument("--drt", action="store_true", help="Generate DRT via DaVinci Scripting API")
-    parser.add_argument("--drp", type=Path, default=None,
-                        help="Generate DRP project package to specified path")
+    parser.add_argument("--drp", nargs="?", const=True, type=Path, default=None,
+                        help="DRP background export (no GUI interaction)")
+    parser.add_argument("--drp-gui", nargs="?", const=True, type=Path, default=None,
+                        dest="drp_gui",
+                        help="DRP interactive export (keeps project open in DaVinci GUI)")
     parser.add_argument("--all-sequences", action="store_true",
                         help="Export all non-empty sequences (.prproj)")
     parser.add_argument("--nogui", action="store_true", dest="nogui",
@@ -598,6 +663,7 @@ def main() -> int:
         sequence_name=args.sequence,
         drt=args.drt,
         drp_path=args.drp,
+        drp_gui=args.drp_gui,
         all_sequences=args.all_sequences,
         nogui=args.nogui,
         gui=args.gui,

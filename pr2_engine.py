@@ -47,32 +47,38 @@ def _recycle(path: Path) -> None:
         return
     try:
         if sys.platform == "win32":
-            subprocess.run([
-                "powershell", "-Command",
-                "Add-Type -AssemblyName Microsoft.VisualBasic;"
-                f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
-                f"'{path}','OnlyErrorDialogs','SendToRecycleBin')"
-            ], capture_output=True, timeout=10)
+            backup_dir = Path.home() / "Desktop" / "Recycle_Bin_Backup"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            result = subprocess.run([
+                "powershell", "-NoProfile", "-Command",
+                f"Move-Item -LiteralPath '{path}' -Destination '{backup_dir}' -Force",
+            ], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                # Fallback: try Microsoft.VisualBasic
+                subprocess.run([
+                    "powershell", "-NoProfile", "-Command",
+                    "Add-Type -AssemblyName Microsoft.VisualBasic;"
+                    f"[Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile("
+                    f"'{path}','OnlyErrorDialogs','SendToRecycleBin')",
+                ], capture_output=True, text=True, timeout=10)
         elif sys.platform == "darwin":
             trash = Path.home() / ".Trash"
             trash.mkdir(exist_ok=True)
             path.rename(trash / path.name)
         else:
-            # Linux: try gio first (GNOME/KDE), fall back to XDG Trash spec
             result = subprocess.run(
                 ["gio", "trash", str(path)],
                 capture_output=True, timeout=10
             )
             if result.returncode != 0:
-                # XDG Trash spec fallback
                 trash_files = Path(os.environ.get(
                     "XDG_DATA_HOME",
                     str(Path.home() / ".local" / "share")
                 )) / "Trash" / "files"
                 trash_files.mkdir(parents=True, exist_ok=True)
                 path.rename(trash_files / path.name)
-    except Exception:
-        pass  # best-effort, silently ignore failures
+    except Exception as e:
+        print(f"  Warning: could not recycle {path.name}: {e}")
 
 # ─── From pr2_diagnostics.py ─────────────────────────────────────────────
 
@@ -146,25 +152,8 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
             "/xmeml/@version",
         ))
 
-    # C1: Missing <format> under video
-    seq = root.find("sequence")
-    if seq is not None:
-        vformat = seq.find("media/video/format")
-        if vformat is None:
-            issues.append(Issue(
-                CRITICAL, "C1",
-                "Missing <format> under sequence/media/video",
-                "sequence/media/video",
-            ))
-
-        # C2: Missing <format> under audio
-        aformat = seq.find("media/audio/format")
-        if aformat is None:
-            issues.append(Issue(
-                CRITICAL, "C2",
-                "Missing <format> under sequence/media/audio",
-                "sequence/media/audio",
-            ))
+    # C1: DISABLED — DC format: no <format> in video section
+    # C2: DISABLED — DC format: no <format> in audio section
 
     # C3, C4: Rate issues — check all <rate> elements
     for rate_elem in root.iter("rate"):
@@ -245,16 +234,10 @@ def _scan_major(root: ET.Element) -> list[Issue]:
         # M2: DISABLED — DC format: video clipitems don't have sourcetrack
         # Audio clipitems already have sourcetrack from the rewrite
 
-        # M5: <file> missing media details
+        # M5: DISABLED — DC format: audio clipitems use self-closing <file> refs
+        # (was: detect missing media/video/samplecharacteristics in <file>)
+
         file_elem = clipitem.find("file")
-        if file_elem is not None:
-            sc = file_elem.find("media/video/samplecharacteristics")
-            if sc is None:
-                issues.append(Issue(
-                    MAJOR, "M5",
-                    "<file> missing media/video/samplecharacteristics",
-                    location,
-                ))
 
         # M0: Lumetri filter present (XML path — should be removed)
         for filt in clipitem.findall("filter"):
@@ -298,21 +281,8 @@ def _scan_major(root: ET.Element) -> list[Issue]:
                 ))
 
     # M6: Clipitem child element order
-    _order_ref = [
-        "masterclipid", "name", "enabled", "duration", "rate", "start", "end",
-        "in", "out", "alphatype", "pixelaspectratio", "anamorphic", "file",
-        "sourcetrack", "filter", "logginginfo", "colorinfo", "labels", "link",
-    ]
-    _order_map = {t: i for i, t in enumerate(_order_ref)}
-    for ci in list(root.iter("clipitem")):
-        ci_tags = [c.tag for c in ci if c.tag in _order_map]
-        sorted_tags = sorted(ci_tags, key=lambda t: _order_map.get(t, 999))
-        if ci_tags != sorted_tags:
-            issues.append(Issue(
-                MAJOR, "M6",
-                f"clipitem[{ci.get('id', '?')}] children not in FCP7 order",
-                f"clipitem[{ci.get('id', '?')}]",
-            ))
+    # M6: DISABLED — DC format child order is stable from parser
+    # (was: detect clipitem children not in FCP7 order)
 
     # M3: Sequence duration vs last clip end mismatch
     seq = root.find("sequence")
@@ -590,23 +560,14 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
         fix_count += 1
         _mark_fixed(issues, "C0", "version")
 
-    # C1: Insert missing video format
-    seq = root.find("sequence")
-    if seq is not None:
-        video = seq.find("media/video")
-        if video is not None and video.find("format") is None:
-            fmt = _create_video_format(root)
-            video.insert(0, fmt)
-            fix_count += 1
-            _mark_fixed(issues, "C1", "video")
+    # C1: DISABLED — DC format: no <format> in video
+    if any(i.rule_id == "C1" for i in issues):
+        _mark_fixed(issues, "C1", "video")
+    # C2: DISABLED — DC format: no <format> in audio
+    if any(i.rule_id == "C2" for i in issues):
+        _mark_fixed(issues, "C2", "audio")
 
-        # C2: Insert missing audio format
-        audio = seq.find("media/audio")
-        if audio is not None and audio.find("format") is None:
-            fmt = _create_audio_format()
-            audio.insert(0, fmt)
-            fix_count += 1
-            _mark_fixed(issues, "C2", "audio")
+    seq = root.find("sequence")
 
     # C3: Add missing <ntsc> to <rate> elements
     for rate_elem in root.iter("rate"):
@@ -713,33 +674,8 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     if any(i.rule_id == "M4" for i in issues):
         _mark_fixed(issues, "M4", "link")
 
-    # M5: Fill missing file/media/samplecharacteristics
-    sfmt = _get_sequence_format(root)
-    for ci in root.iter("clipitem"):
-        file_elem = ci.find("file")
-        if file_elem is None:
-            continue
-        if file_elem.find("media/video/samplecharacteristics") is not None:
-            continue
-        if sfmt is not None:
-            media_el = file_elem.find("media")
-            if media_el is None:
-                media_el = ET.SubElement(file_elem, "media")
-            # M5: add video samplecharacteristics only if this file isn't audio-only
-            # Audio-only files (WAV/MP3/FLAC) have <media><audio> but no video track
-            if media_el.find("audio") is not None and media_el.find("video") is None:
-                # Standalone audio — skip video samplecharacteristics injection
-                continue
-            video_el = media_el.find("video")
-            if video_el is None:
-                video_el = ET.SubElement(media_el, "video")
-            sc = ET.SubElement(video_el, "samplecharacteristics")
-            # Copy from sequence format
-            seq_sc = sfmt.find("samplecharacteristics")
-            if seq_sc is not None:
-                for child in seq_sc:
-                    sc.append(copy.deepcopy(child))
-            fix_count += 1
+    # M5: DISABLED — DC format: audio clipitems use self-closing <file> refs
+    # Self-closing <file id="..."/> in audio clipitems is correct — DO NOT inject SC
     if any(i.rule_id == "M5" for i in issues):
         _mark_fixed(issues, "M5", "samplecharacteristics")
 
@@ -1108,13 +1044,8 @@ def _validate(root: ET.Element) -> list[Issue]:
     if audio is None:
         issues.append(Issue(MAJOR, "V6", "Missing <audio> in media", "media"))
 
-    # V7: Video format exists
-    if video is not None and video.find("format") is None:
-        issues.append(Issue(CRITICAL, "V7", "Missing <format> in video", "media/video"))
-
-    # V8: Audio format exists
-    if audio is not None and audio.find("format") is None:
-        issues.append(Issue(MAJOR, "V8", "Missing <format> in audio", "media/audio"))
+    # V7: DISABLED — DC format: no <format> in video
+    # V8: DISABLED — DC format: no <format> in audio
 
     # V9: Video format has samplecharacteristics
     if video is not None:
@@ -2036,7 +1967,8 @@ def _prproj_extract_all_lumetri(
                 subclip = cti.find("SubClip")
                 clip_name = "(unknown)"
                 if subclip is not None:
-                    sc_el = idx.resolve_ref(subclip.get("ObjectRef"))
+                    sc_ref = subclip.get("ObjectRef")
+                    sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
                     if sc_el is not None:
                         clip_name = sc_el.findtext("Name", clip_name)
 
@@ -2145,18 +2077,18 @@ def _prproj_parse_sequence(
     audio_section = ET.SubElement(media, "audio")
 
     # ─── Shared state ────────────────────────────────────────────────
-    _ci_counter = [0]
-    _fi_counter = [0]
+    _id_counter = [0]  # single global counter — DC uses unique IDs per-name
     _file_ids: dict[str, str] = {}  # media_name → file-id
     _link_groups: dict[str, list[tuple[str, str, int, int]]] = {}  # name → [(ci_id, mediatype, t_idx, c_idx)]
 
     def _next_ci_id(name: str) -> str:
-        _ci_counter[0] += 1
-        return f"{name} {_ci_counter[0]}"
+        cid = f"{name} {_id_counter[0]}"
+        _id_counter[0] += 1
+        return cid
 
     def _next_fi_id(name: str) -> str:
-        _fi_counter[0] += 1
-        fid = f"{name} {_fi_counter[0]}"
+        fid = f"{name} {_id_counter[0]}"
+        _id_counter[0] += 1
         return fid
 
     # ─── Helper: extract clip data from .prproj chain ────────────────
@@ -2211,7 +2143,8 @@ def _prproj_parse_sequence(
                             src_w, src_h = sr
                 clip_ref_el = sc_el.find("Clip")
                 if clip_ref_el is not None:
-                    clip_el = idx.resolve_ref(clip_ref_el.get("ObjectRef"))
+                    clip_ref = clip_ref_el.get("ObjectRef")
+                    clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
                     if clip_el is not None:
                         inner = clip_el.find("Clip")
                         if inner is not None:
@@ -2429,6 +2362,27 @@ def _prproj_parse_sequence(
         ET.SubElement(param, "valuemin").text = "-1"
         ET.SubElement(param, "valuemax").text = "1"
 
+    # ─── Helper: build DC-format transition ─────────────────────────
+    def _build_transition(start_frame: int, end_frame: int) -> ET.Element:
+        """Build a DC-format Cross Dissolve transition item."""
+        ti = ET.Element("transitionitem")
+        tr = ET.SubElement(ti, "rate")
+        ET.SubElement(tr, "timebase").text = str(timebase)
+        ET.SubElement(tr, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(ti, "start").text = str(start_frame)
+        ET.SubElement(ti, "end").text = str(end_frame)
+        ET.SubElement(ti, "alignment").text = "center"
+        eff = ET.SubElement(ti, "effect")
+        for tag, val in [
+            ("name", "Cross Dissolve"), ("effectid", "Cross Dissolve"),
+            ("effecttype", "transition"), ("mediatype", "video"),
+            ("effectcategory", "Dissolve"),
+        ]:
+            ET.SubElement(eff, tag).text = val
+        for tag, val in [("startratio", "0"), ("endratio", "1"), ("reverse", "FALSE")]:
+            ET.SubElement(eff, tag).text = val
+        return ti
+
     # ═══════════════════════════════════════════════════════════════════
     # PASS 1: Video tracks
     # ═══════════════════════════════════════════════════════════════════
@@ -2440,15 +2394,19 @@ def _prproj_parse_sequence(
                 track_el = idx.resolve_uref(uref) if uref else None
                 if track_el is None:
                     continue
-                fcp_track = ET.SubElement(video_section, "track")
                 ct = track_el.find("ClipTrack")
                 if ct is None:
                     continue
                 ti_section = ct.find(".//TrackItems")
                 if ti_section is None:
                     continue
+                # Only create track if it has items (DC: no empty tracks)
+                track_items = ti_section.findall("TrackItem")
+                if not track_items:
+                    continue
+                fcp_track = ET.SubElement(video_section, "track")
                 track_start = 0
-                for vc_idx, ti_ref in enumerate(ti_section.findall("TrackItem"), 1):
+                for vc_idx, ti_ref in enumerate(track_items, 1):
                     ti_el = idx.resolve_ref(ti_ref.get("ObjectRef", ""))
                     if ti_el is None:
                         continue
@@ -2483,6 +2441,22 @@ def _prproj_parse_sequence(
                     _add_video_filters(ci, clip_dur, scale, rot, speed)
                     ET.SubElement(ci, "comments")
 
+                # Insert transitions between adjacent clips on this track
+                clipitems_in_track = fcp_track.findall("clipitem")
+                if len(clipitems_in_track) >= 2:
+                    overlap = timebase  # 1 second default transition
+                    for j in range(len(clipitems_in_track) - 1):
+                        ci_a = clipitems_in_track[j]
+                        ci_b = clipitems_in_track[j + 1]
+                        end_a = int(ci_a.findtext("end", "0"))
+                        # Transition overlaps: last N frames of A, first N frames of B
+                        trans_start = max(0, end_a - overlap)
+                        trans_end = end_a + overlap
+                        tr = _build_transition(trans_start, trans_end)
+                        # Insert at position of ci_b (before it in the track)
+                        insert_idx = list(fcp_track).index(ci_b)
+                        fcp_track.insert(insert_idx, tr)
+
                 ET.SubElement(fcp_track, "enabled").text = "TRUE"
                 ET.SubElement(fcp_track, "locked").text = "FALSE"
 
@@ -2496,15 +2470,19 @@ def _prproj_parse_sequence(
                 a_track_el = idx.resolve_uref(a_track_ref.get("ObjectURef", ""))
                 if a_track_el is None:
                     continue
-                fcp_a_track = ET.SubElement(audio_section, "track")
                 a_ct = a_track_el.find("ClipTrack")
                 if a_ct is None:
                     continue
                 a_ti_section = a_ct.find(".//TrackItems")
                 if a_ti_section is None:
                     continue
+                # Only create track if it has items (DC: no empty tracks)
+                a_track_items = a_ti_section.findall("TrackItem")
+                if not a_track_items:
+                    continue
+                fcp_a_track = ET.SubElement(audio_section, "track")
                 a_track_start = 0
-                for ac_idx, a_ti_ref in enumerate(a_ti_section.findall("TrackItem"), 1):
+                for ac_idx, a_ti_ref in enumerate(a_track_items, 1):
                     a_ti_el = idx.resolve_ref(a_ti_ref.get("ObjectRef", ""))
                     if a_ti_el is None:
                         continue
@@ -2541,6 +2519,7 @@ def _prproj_parse_sequence(
                     else:
                         file_dur_val = tc_info.full_duration_frames if tc_info.full_duration_frames > 0 else clip_dur
                         a_file = _build_file(name, path, file_dur_val, tc_info, sw, sh, for_audio_only=True)
+                        a_ci.append(a_file)
 
                     # Sourcetrack (audio only — video clipitems in DC format have none)
                     st_el = ET.SubElement(a_ci, "sourcetrack")
@@ -2676,16 +2655,24 @@ def _is_resolve_running() -> bool:
 # ── Process lifecycle tracking ───────────────────────────────────────────
 _resolve_process: Optional[subprocess.Popen[Any]] = None
 """The Popen handle for a Resolve process WE launched (None if reused)."""
+_launch_mode: str = ""
+"""Track how WE launched Resolve: 'headless', 'gui', or '' (not by us)."""
 
 
 def _shutdown_resolve() -> None:
-    """Terminate a Resolve headless process that we launched.
+    """Terminate a Resolve process that we launched.
 
-    Safe to call when no process was launched (no-op).
-    Only kills processes we started — never touches user's GUI instance.
+    - GUI mode: leaves Resolve running (user should see project)
+    - Headless mode: kills the process
+    - Pre-existing (not launched by us): no-op
     """
-    global _resolve_process
-    if _resolve_process is not None:
+    global _resolve_process, _launch_mode
+    if _launch_mode == "gui":
+        print("  (DaVinci GUI left open — project ready for you)")
+        _resolve_process = None
+        _launch_mode = ""
+        return
+    if _launch_mode == "headless" and _resolve_process is not None:
         try:
             pid = _resolve_process.pid
             print(f"  Shutting down DaVinci Resolve (PID {pid})...")
@@ -2700,6 +2687,7 @@ def _shutdown_resolve() -> None:
             print(f"  Note: DaVinci process cleanup failed ({e}) — may need manual kill.")
         finally:
             _resolve_process = None
+    _launch_mode = ""
 
 
 def _try_import_resolve() -> Any:
@@ -2840,6 +2828,13 @@ def _drt_batch_export(
             pass  # best-effort, silently ignore API limitations
 
         drt_path = output_dir / f"{seq_name}_resolve.drt"
+        # Dedup: append -1, -2, … if file already exists
+        if drt_path.exists():
+            for _n in range(1, 100):
+                candidate = output_dir / f"{seq_name}_resolve-{_n}.drt"
+                if not candidate.exists():
+                    drt_path = candidate
+                    break
         if timeline.Export(str(drt_path), resolve.EXPORT_DRT):
             print(f"    DRT: {drt_path.name}")
             results.append((True, drt_path))
@@ -2872,14 +2867,12 @@ def _drp_export(
     output_path: Path,
     project_name: str,
     sequence_names: list[str],
+    gui: bool = False,
 ) -> bool:
     """Export a full project as DRP with bin structure and timelines.
 
     Creates a sandbox project, imports all timelines, sets project name
     to match the original PR project, then exports as DRP package.
-
-    Uses GUI mode (DaVinci must be running with UI) because DRP export
-    puts the project into DaVinci's database.
 
     Args:
         resolve: DaVinci Resolve object
@@ -2887,6 +2880,8 @@ def _drp_export(
         output_path: Path for the .drp file
         project_name: Name for the Resolve project
         sequence_names: Timeline names matching xml_paths
+        gui: If True, leave project open in GUI (interactive mode).
+             If False, close project and shut down headless after export.
 
     Returns:
         True if DRP exported successfully
@@ -2895,8 +2890,19 @@ def _drp_export(
     original_project = pm.GetCurrentProject()
     original_name = original_project.GetName() if original_project else None
 
-    temp_name = project_name
-    print(f"  DRP export: creating project \"{temp_name}\"")
+    # DaVinci API only accepts ASCII project names — sanitize non-ASCII chars
+    def _sanitize_name(name: str) -> str:
+        import re
+        # Replace non-ASCII runs with single underscore
+        safe = re.sub(r'[^\x20-\x7E]+', '_', name)
+        safe = re.sub(r'_+', '_', safe).strip('_ ')
+        return safe or "pr2resolve"
+
+    temp_name = _sanitize_name(project_name)
+    if temp_name != project_name:
+        print(f"  DRP export: creating project \"{temp_name}\" (name sanitized for DaVinci)")
+    else:
+        print(f"  DRP export: creating project \"{temp_name}\"")
 
     if original_project is not None:
         pname = original_project.GetName() or ""
@@ -2910,13 +2916,16 @@ def _drp_export(
     project = pm.CreateProject(temp_name)
     if project is None:
         print("  Error: Could not create project for DRP export")
-        if original_name:
+        if original_name and not original_name.startswith("Untitled"):
             pm.LoadProject(original_name)
         return False
 
     media_pool = project.GetMediaPool()
 
-    # Smart media detection for each sequence
+    # Import timelines
+    # _strip_file_elements_for_drt handles media availability:
+    #   - media online → full XML, importSourceClips: True (DaVinci auto-discovers from pathurl)
+    #   - media offline → skeleton XML (no <file>), importSourceClips: False
     for xml_path, seq_name in zip(xml_paths, sequence_names):
         drt_xml, is_skeleton = _strip_file_elements_for_drt(xml_path)
         timeline = media_pool.ImportTimelineFromFile(
@@ -2927,7 +2936,6 @@ def _drp_export(
             drt_xml.unlink(missing_ok=True)
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
-            # Force start timecode to 00:00:00:00
             try:
                 timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
             except Exception:
@@ -2942,18 +2950,25 @@ def _drp_export(
     if drp_result:
         print(f"  DRP exported: {output_path}")
     else:
-        print(f"  DRP export via API not available (beta limitation).")
+        print(f"  DRP export via API failed (project may still be in database).")
         print(f"  Project \"{temp_name}\" created in DaVinci database.")
-        print(f"  To export: File -> Export Project -> {output_path.name}")
-        # Keep project open so user can export it
-        print(f"  (project kept open for manual export)")
-        return True  # Project was created successfully
+        print(f"  To export manually: File -> Export Project -> {output_path.name}")
 
-    # Restore
-    pm.CloseProject(project)
-    if original_name:
-        pm.LoadProject(original_name)
-        print(f"  Restored: \"{original_name}\"")
+    if gui:
+        # Interactive mode: keep project open in GUI for user
+        print(f"  Project \"{temp_name}\" ready in DaVinci Resolve.")
+    else:
+        # Background mode: clean up temp project, shut down headless
+        try:
+            pm.SaveProject()
+        except Exception:
+            pass
+        pm.CloseProject(project)
+        try:
+            pm.DeleteProject(temp_name)
+        except Exception:
+            pass
+        _shutdown_resolve()
 
     return drp_result
 
@@ -3062,6 +3077,7 @@ def _drt_sandbox_export(
     Returns:
         True if successful, False otherwise
     """
+    original_name = None
     try:
         pm = resolve.GetProjectManager()
         original_project = pm.GetCurrentProject()
@@ -3197,9 +3213,18 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     Returns:
         The Resolve object if available, None otherwise
     """
+    global _resolve_process, _launch_mode
     resolve = _check_resolve_running()
     if resolve is not None:
-        return resolve
+        # API already available — check mode compatibility
+        if not nogui and _launch_mode == "headless":
+            # DRP needs GUI but we have headless → restart
+            print("  DRP requires GUI — restarting DaVinci Resolve...")
+            _shutdown_resolve()
+            time.sleep(3)
+            # Fall through to launch below
+        else:
+            return resolve
 
     # Check if a GUI instance is already running but API not ready (cold start)
     if _is_resolve_running():
@@ -3231,6 +3256,7 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
         cmd = [str(exe)]
         if nogui:
             cmd.append("-nogui")
+        _launch_mode = "headless" if nogui else "gui"
         _resolve_process = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=0x00000008 if sys.platform == "win32" else 0,

@@ -22,11 +22,11 @@ INPUT_FILE=""
 OUTPUT_DIR=""
 SEQ_NAME=""
 OPT_DRT="[OFF]"
-OPT_REPORT="[ON]"
+OPT_REPORT="[OFF]"
 OPT_XML="[ON]"
 OPT_ALL_SEQ="[OFF]"
 OPT_MODE="[AUTO]"
-OPT_SUFFIX="[ON]"
+OPT_SUFFIX="[OFF]"
 OPT_DRP="[OFF]"
 
 # Find Python
@@ -78,11 +78,18 @@ print_header() {
     rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
     all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
     suffix_clr=$([ "$OPT_SUFFIX" = "[ON]" ] && echo "$GREEN" || echo "")
-    drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || echo "")
+    drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || ([ "$OPT_DRP" = "[BG]" ] && echo "$YELLOW" || echo ""))
     mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
+    if [ "$OPT_DRP" = "[ON]" ]; then
+        drp_label="DaVinci DRP interactive (needs Resolve GUI)"
+    elif [ "$OPT_DRP" = "[BG]" ]; then
+        drp_label="DaVinci DRP background export"
+    else
+        drp_label="DaVinci DRP project export (needs Resolve GUI)"
+    fi
     echo -e "  XML:     ${xml_clr}${OPT_XML}${NC}   FCP7 XML output"
     echo -e "  DRT:     ${drt_clr}${OPT_DRT}${NC}  DaVinci DRT output (needs Resolve Studio)"
-    echo -e "  DRP:     ${drp_clr}${OPT_DRP}${NC}  DaVinci DRP project export (needs Resolve GUI)"
+    echo -e "  DRP:     ${drp_clr}${OPT_DRP}${NC}  ${drp_label}"
     echo -e "  Mode:    ${mode_clr}${OPT_MODE}${NC} Sequence: AUTO/ALL/MAN"
     echo -e "  Suffix:  ${suffix_clr}${OPT_SUFFIX}${NC}   _pr2resolve name tag"
     echo -e "  Report:  ${rpt_clr}${OPT_REPORT}${NC}   Fix report (.md)"
@@ -180,14 +187,14 @@ options_menu() {
         rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
         all_seq_clr=$([ "$OPT_ALL_SEQ" = "[ON]" ] && echo "$GREEN" || echo "")
         suffix_clr=$([ "$OPT_SUFFIX" = "[ON]" ] && echo "$GREEN" || echo "")
-        drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || echo "")
+        drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || ([ "$OPT_DRP" = "[BG]" ] && echo "$YELLOW" || echo ""))
         mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
         echo -e "  ${BOLD}[1]${NC} FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
         echo -e "  ${BOLD}[2]${NC} DRT            ${drt_clr}${OPT_DRT}${NC}  (needs DaVinci Resolve Studio)"
         echo -e "  ${BOLD}[3]${NC} Export Mode    ${mode_clr}${OPT_MODE}${NC}  (AUTO/ALL/MAN)"
         echo -e "  ${BOLD}[4]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
         echo -e "  ${BOLD}[5]${NC} Name suffix    ${suffix_clr}${OPT_SUFFIX}${NC}  _pr2resolve tag"
-        echo -e "  ${BOLD}[6]${NC} DRP project    ${drp_clr}${OPT_DRP}${NC}  (needs Resolve GUI + Studio)"
+        echo -e "  ${BOLD}[6]${NC} DRP project    ${drp_clr}${OPT_DRP}${NC}  OFF/BG(no GUI)/ON(needs GUI)"
         echo -e "  ${BOLD}[0]${NC} Back"
         echo ""
         read -n 1 -r -p "  Select [1-6, 0]: " choice
@@ -203,7 +210,11 @@ options_menu() {
                esac ;;
             4) if [ "$OPT_REPORT" = "[ON]" ]; then OPT_REPORT="[OFF]"; else OPT_REPORT="[ON]"; fi ;;
             5) if [ "$OPT_SUFFIX" = "[ON]" ]; then OPT_SUFFIX="[OFF]"; else OPT_SUFFIX="[ON]"; fi ;;
-            6) if [ "$OPT_DRP" = "[ON]" ]; then OPT_DRP="[OFF]"; else OPT_DRP="[ON]"; fi ;;
+            6) case "$OPT_DRP" in
+                   "[OFF]") OPT_DRP="[BG]" ;;
+                   "[BG]") OPT_DRP="[ON]" ;;
+                   "[ON]") OPT_DRP="[OFF]" ;;
+               esac ;;
             0) return ;;
         esac
     done
@@ -245,13 +256,10 @@ run_pipeline() {
     if [ "$OPT_XML" = "[OFF]" ]; then
         cmd+=(--no-xml)
     fi
-    if [ "$OPT_DRP" = "[ON]" ]; then
-        input_stem="$(basename "$INPUT_FILE" | sed 's/\.[^.]*$//')"
-        if [ -n "$OUTPUT_DIR" ]; then
-            cmd+=(--drp "$OUTPUT_DIR/$input_stem.drp")
-        else
-            cmd+=(--drp "$(dirname "$INPUT_FILE")/$input_stem.drp")
-        fi
+    if [ "$OPT_DRP" = "[BG]" ]; then
+        cmd+=(--drp)
+    elif [ "$OPT_DRP" = "[ON]" ]; then
+        cmd+=(--drp-gui)
     fi
 
     PYTHONIOENCODING=utf-8 "${cmd[@]}"
