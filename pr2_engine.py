@@ -882,8 +882,9 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
                 si.text = "00;00;00;00" if nt else "00:00:00:00"
             if fi is not None:
                 fi.text = "0"
-            if tc_in.get("source") != "source":
-                tc_in.set("source", "source")
+            # Remove source=source if present (it was a bug)
+            if tc_in.get("source"):
+                del tc_in.attrib["source"]
             fix_count += 1
     if any(i.rule_id == "N1" for i in issues):
         _mark_fixed(issues, "N1", "timecode")
@@ -1072,7 +1073,6 @@ def _create_timecode(root: ET.Element) -> ET.Element:
         A <timecode> Element
     """
     tc = ET.Element("timecode")
-    tc.set("source", "source")
 
     # Read actual sequence timebase
     seq = root.find("sequence")
@@ -1097,8 +1097,6 @@ def _create_timecode(root: ET.Element) -> ET.Element:
     string.text = "00;00;00;00" if is_ntsc_tc else "00:00:00:00"
     frame = ET.SubElement(tc, "frame")
     frame.text = "0"
-    source = ET.SubElement(tc, "source")
-    source.text = "source"
     df = ET.SubElement(tc, "displayformat")
     df.text = "DF" if is_ntsc_tc else "NDF"
 
@@ -2211,9 +2209,8 @@ def _prproj_parse_sequence(
     name_elem = ET.SubElement(sequence, "name")
     name_elem.text = seq_name
 
-    # Timecode
+    # Timecode — NO source attribute (mimics PR export, prevents DaVinci misdetection)
     tc = ET.SubElement(sequence, "timecode")
-    tc.set("source", "source")  # FCP7 convention: tells importer this is timeline start TC
     tc_rate = ET.SubElement(tc, "rate")
     tc_tb = ET.SubElement(tc_rate, "timebase")
     tc_tb.text = str(timebase)
@@ -2237,13 +2234,7 @@ def _prproj_parse_sequence(
     media = ET.SubElement(sequence, "media")
     video_section = ET.SubElement(media, "video")
     audio_section = ET.SubElement(media, "audio")
-
-    # Audio format (FCP7 spec: format/samplecharacteristics with samplerate + size + channelcount)
-    afmt = ET.SubElement(audio_section, "format")
-    afmt_sc = ET.SubElement(afmt, "samplecharacteristics")
-    ET.SubElement(afmt_sc, "samplerate").text = "48000"
-    ET.SubElement(afmt_sc, "size").text = "16-bit"
-    ET.SubElement(afmt_sc, "channelcount").text = "2"
+    # numOutputChannels + outputs + audio format deferred until after tracks built
 
     # Video format
     vfmt = ET.SubElement(video_section, "format")
@@ -2595,14 +2586,26 @@ def _prproj_parse_sequence(
                         rv.text = str(rotation_val)
 
     # Parse audio tracks
+    # Read num adaptive channels from AudioTrackGroup for stereo/mono detection
+    a_num_channels = 2  # default stereo
+    if audio_tg is not None:
+        nac = audio_tg.findtext("NumAdaptiveChannels", "")
+        if nac and nac.isdigit():
+            a_num_channels = int(nac)
+
     if audio_tg is not None:
         a_tracks_el = audio_tg.find("TrackGroup/Tracks")
         if a_tracks_el is not None:
+            a_track_counter = 0
             for a_track_ref in a_tracks_el.findall("Track"):
                 a_uref = a_track_ref.get("ObjectURef")
                 a_track_el = idx.resolve_uref(a_uref) if a_uref else None
                 if a_track_el is None:
                     continue
+
+                a_track_counter += 1
+                # trackindex: 1=left, 2=right for stereo pairs (alternating)
+                a_trackindex = ((a_track_counter - 1) % a_num_channels) + 1
 
                 fcp_a_track = ET.SubElement(audio_section, "track")
                 fcp_a_track.set("premiereTrackType", "Stereo")
@@ -2710,7 +2713,7 @@ def _prproj_parse_sequence(
                     # Sourcetrack (audio)
                     a_st_el = ET.SubElement(a_ci, "sourcetrack")
                     ET.SubElement(a_st_el, "mediatype").text = "audio"
-                    ET.SubElement(a_st_el, "trackindex").text = "1"
+                    ET.SubElement(a_st_el, "trackindex").text = str(a_trackindex)
 
                     # logginginfo
                     a_log_info = ET.SubElement(a_ci, "logginginfo")
@@ -2724,6 +2727,28 @@ def _prproj_parse_sequence(
                     # labels
                     a_labels = ET.SubElement(a_ci, "labels")
                     ET.SubElement(a_labels, "label2").text = "Audio"
+
+    # ── Audio section metadata (deferred until tracks built) ───────────
+    # Insert before track elements: numOutputChannels → format → outputs
+    noc = ET.Element("numOutputChannels")
+    noc.text = str(a_num_channels)
+    audio_section.insert(0, noc)
+
+    afmt = ET.Element("format")
+    afmt_sc = ET.Element("samplecharacteristics")
+    ET.SubElement(afmt_sc, "samplerate").text = "48000"
+    ET.SubElement(afmt_sc, "depth").text = "16"
+    ET.SubElement(afmt_sc, "channelcount").text = str(a_num_channels)
+    afmt.append(afmt_sc)
+    audio_section.insert(1, afmt)
+
+    outputs = ET.Element("outputs")
+    for ch in range(1, a_num_channels + 1):
+        group = ET.SubElement(outputs, "group")
+        ET.SubElement(group, "index").text = str(ch)
+        ET.SubElement(group, "numchannels").text = "1"
+        ET.SubElement(group, "depth").text = "16"
+    audio_section.insert(2, outputs)
 
     # ── Second pass: link elements (A/V sync, FCP7 group semantics) ────
     # FCP7 spec: ALL clipitems sharing the same source media form a
