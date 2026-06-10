@@ -152,7 +152,16 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
             "/xmeml/@version",
         ))
 
-    # C1: DISABLED — DC format: no <format> in video section
+    # C1: Missing <format> under video (DC has full format with codec)
+    seq = root.find("sequence")
+    if seq is not None:
+        vformat = seq.find("media/video/format")
+        if vformat is None:
+            issues.append(Issue(
+                CRITICAL, "C1",
+                "Missing <format> under sequence/media/video",
+                "sequence/media/video",
+            ))
     # C2: DISABLED — DC format: no <format> in audio section
 
     # C3, C4: Rate issues — check all <rate> elements
@@ -560,14 +569,18 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
         fix_count += 1
         _mark_fixed(issues, "C0", "version")
 
-    # C1: DISABLED — DC format: no <format> in video
-    if any(i.rule_id == "C1" for i in issues):
-        _mark_fixed(issues, "C1", "video")
+    # C1: Insert missing video format (DC has full format with codec AFTER tracks)
+    seq = root.find("sequence")
+    if seq is not None:
+        video = seq.find("media/video")
+        if video is not None and video.find("format") is None:
+            fmt = _create_video_format(root)
+            video.append(fmt)  # DC: format comes AFTER all tracks
+            fix_count += 1
+            _mark_fixed(issues, "C1", "video")
     # C2: DISABLED — DC format: no <format> in audio
     if any(i.rule_id == "C2" for i in issues):
         _mark_fixed(issues, "C2", "audio")
-
-    seq = root.find("sequence")
 
     # C3: Add missing <ntsc> to <rate> elements
     for rate_elem in root.iter("rate"):
@@ -878,10 +891,17 @@ def _create_video_format(root: ET.Element) -> ET.Element:
     w_elem.text = width
     h_elem = ET.SubElement(sc, "height")
     h_elem.text = height
-    anamorphic = ET.SubElement(sc, "anamorphic")
-    anamorphic.text = "FALSE"
-    par = ET.SubElement(sc, "pixelaspectratio")
-    par.text = "square"
+    ET.SubElement(sc, "pixelaspectratio").text = "square"
+
+    # Codec (minimal — matches 5 of 6 DC reference files)
+    codec = ET.SubElement(sc, "codec")
+    appdata = ET.SubElement(codec, "appspecificdata")
+    ET.SubElement(appdata, "appname").text = "Final Cut Pro"
+    ET.SubElement(appdata, "appmanufacturer").text = "Apple Inc."
+    data = ET.SubElement(appdata, "data")
+    ET.SubElement(data, "qtcodec")
+
+    return fmt
 
     return fmt
 
@@ -1044,7 +1064,9 @@ def _validate(root: ET.Element) -> list[Issue]:
     if audio is None:
         issues.append(Issue(MAJOR, "V6", "Missing <audio> in media", "media"))
 
-    # V7: DISABLED — DC format: no <format> in video
+    # V7: Video format exists
+    if video is not None and video.find("format") is None:
+        issues.append(Issue(CRITICAL, "V7", "Missing <format> in video", "media/video"))
     # V8: DISABLED — DC format: no <format> in audio
 
     # V9: Video format has samplecharacteristics
@@ -2526,11 +2548,17 @@ def _prproj_parse_sequence(
                 ET.SubElement(fcp_a_track, "locked").text = "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
-    # PASS 3: Link elements (DC convention: linkclipref only)
+    # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
     # ═══════════════════════════════════════════════════════════════════
     for name, members in _link_groups.items():
         if len(members) < 2:
             continue
+        # Find the first video member (for mediatype marking on audio links)
+        first_video_ref = None
+        for ref_id, mtype, _, _ in members:
+            if mtype == "video":
+                first_video_ref = ref_id
+                break
         links: list[ET.Element] = []
         for ref_id, _, _, _ in members:
             link = ET.Element("link")
@@ -2552,8 +2580,17 @@ def _prproj_parse_sequence(
                 if child.tag == "comments":
                     ins_pos = i
                     break
-            for link in links:
-                ci.insert(ins_pos, link)
+            for j, link in enumerate(links):
+                # DC: first link in audio clipitem gets <mediatype>video</mediatype>
+                # Use a COPY to avoid contaminating the shared link for video clipitems
+                if mtype == "audio" and j == 0 and first_video_ref is not None:
+                    link_copy = copy.deepcopy(link)
+                    mt = ET.Element("mediatype")
+                    mt.text = "video"
+                    link_copy.insert(1, mt)
+                    ci.insert(ins_pos, link_copy)
+                else:
+                    ci.insert(ins_pos, link)
                 ins_pos += 1
 
     # ─── Finalize ────────────────────────────────────────────────────
@@ -2989,12 +3026,13 @@ def _drp_export(
             _create_bin_structure(media_pool, bins)
             print(f"  Bins: {len(bins)} folder(s) created")
 
-    # ── Step 3: Import timelines (full XML, no stripping) ──
-    # DaVinci discovers media from pathurl — offline items shown as offline
+    # ── Step 3: Import timelines ──
+    # importSourceClips=False — media already in pool from Step 1
+    # True causes failure when some pathurls are unreachable
     for xml_path, seq_name in zip(xml_paths, sequence_names):
         timeline = media_pool.ImportTimelineFromFile(
             str(xml_path),
-            {"timelineName": seq_name, "importSourceClips": True},
+            {"timelineName": seq_name, "importSourceClips": False},
         )
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")

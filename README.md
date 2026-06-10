@@ -1,8 +1,10 @@
 <div align="center">
 
+<img src="fav.png" alt="pr2resolve TUI" width="600">
+
 # .PRPROJ-.DRT Converter
 
-Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML 和 DRT。
+Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT 和 DRP。
 
 [**README in English**](README_EN.md)
 
@@ -67,8 +69,9 @@ chmod +x converter.sh
 输入相应数字选择功能：
 [1] 选择输入文件 (.xml 或 .prproj)
 [2] 设置输出目录
-[3] 配置选项 (XML / DRT / Report)
+[3] 配置选项 (XML / DRT /DRP / Report)
 [4] 开始转换
+[0] 退出
 ```
 
 ### CLI
@@ -85,6 +88,12 @@ python pr2resolve.py "project.prproj" --sequence "序列 01"
 
 # DRT 输出（需要达芬奇 Studio 运行中）
 python pr2resolve.py "input.xml" --drt
+
+# DRP 后台导出（自动启动达芬奇，导出后关闭）
+python pr2resolve.py "project.prproj" --drp
+
+# DRP 交互式导出（打开达芬奇 GUI，项目保持打开）
+python pr2resolve.py "project.prproj" --drp-gui
 
 # 生成修正报告
 python pr2resolve.py "input.xml" --report
@@ -214,7 +223,9 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 - [PRPROJ-READER](https://github.com/sergeiventurinov/PRPROJ-READER) — .prproj 格式逆向
 - [prproj_downgrade](https://github.com/snorkem/prproj_downgrade) — .prproj 版本降级工具
 - [ppro-scripting](https://ppro-scripting.docsforadobe.dev) — Adobe 对象模型文档
-- [DaVinci Resolve Scripting API](https://resolvedevdoc.readthedocs.io/) — 达芬奇 API 参考
+- [DaVinci Resolve Scripting API](https://resolvedevdoc.readthedocs.io/) — 达芬奇 API 参考1
+- [DaVinci Resolve Scripting API](https://weijer.github.io/davinci-resolve-api/#/) — 达芬奇 API 参考2
+- [DaVinci Resolve MCP](https://github.com/samuelgursky/davinci-resolve-mcp) — 达芬奇 MCP 开源项目
 
 ---
 
