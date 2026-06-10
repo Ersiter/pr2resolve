@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="fav.png" alt="pr2resolve TUI" width="600">
-
 # .PRPROJ-.DRT Converter
 
 Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT 和 DRP。
 
 [**README in English**](README_EN.md)
+
+<img src="fav.png" alt="pr2resolve TUI" width="600">
 
 </div>
 
