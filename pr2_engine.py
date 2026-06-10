@@ -3034,8 +3034,15 @@ def _drp_export(
             print(f"  Timeline import FAILED: {seq_name}")
 
     # ── Step 4: Export DRP ──
-    pm.SaveProject()
-    drp_result = pm.ExportProject(final_name, str(output_path), False)
+    try:
+        pm.SaveProject()
+    except Exception:
+        pass
+    drp_result = False
+    try:
+        drp_result = pm.ExportProject(final_name, str(output_path), False)
+    except Exception as e:
+        print(f"  DRP export error: {e}")
 
     if drp_result:
         print(f"  DRP exported: {output_path}")
@@ -3052,7 +3059,10 @@ def _drp_export(
             pm.SaveProject()
         except Exception:
             pass
-        pm.CloseProject(project)
+        try:
+            pm.CloseProject(project)
+        except Exception:
+            pass
         try:
             pm.DeleteProject(final_name)
         except Exception:
