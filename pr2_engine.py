@@ -2920,23 +2920,13 @@ def _drp_export(
     Returns:
         True if DRP exported successfully
     """
-    import re
-
     pm = resolve.GetProjectManager()
     original_project = pm.GetCurrentProject()
     original_name = original_project.GetName() if original_project else None
 
-    # DaVinci API only accepts ASCII project names
-    def _sanitize_name(name: str) -> str:
-        safe = re.sub(r'[^\x20-\x7E]+', '_', name)
-        safe = re.sub(r'_+', '_', safe).strip('_ ')
-        return safe or "pr2resolve"
-
-    temp_name = _sanitize_name(project_name)
-    if temp_name != project_name:
-        print(f"  DRP export: creating project \"{temp_name}\" (name sanitized for DaVinci)")
-    else:
-        print(f"  DRP export: creating project \"{temp_name}\"")
+    # Use original project name (DaVinci supports Chinese names)
+    temp_name = project_name
+    print(f"  DRP export: creating project \"{temp_name}\"")
 
     if original_project is not None:
         pname = original_project.GetName() or ""
