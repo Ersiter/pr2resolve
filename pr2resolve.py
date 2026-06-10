@@ -389,30 +389,9 @@ def _run_pipeline(
                         _generate_report(issues, _validate(fcp), len([i for i in issues if i.fixed]),
                                          input_path, tmp_xml, rpt_path, fcp)
 
-                ran_drp = False
                 ran_drt = False
 
-                # DRP background first (nogui, auto-cleanup)
-                if drp_path:
-                    print(f"  DRP export (background): {drp_path}")
-                    resolve = _ensure_resolve_running(timeout=60, nogui=True)
-                    if resolve:
-                        _drp_export(resolve, xml_paths, drp_path, stem, seq_names, gui=False, prproj_root=prproj_root)
-                        ran_drp = True
-                    else:
-                        print("  DRP skipped: DaVinci not available")
-
-                # DRP interactive (GUI, keeps project open)
-                if drp_gui:
-                    print(f"  DRP export (interactive): {drp_gui}")
-                    resolve = _ensure_resolve_running(timeout=60, nogui=False)
-                    if resolve:
-                        _drp_export(resolve, xml_paths, drp_gui, stem, seq_names, gui=True, prproj_root=prproj_root)
-                        ran_drp = True
-                    else:
-                        print("  DRP skipped: DaVinci not available")
-
-                # DRT second (can reuse GUI instance for sandbox)
+                # DRT (uses selected sequences per Mode setting)
                 if drt:
                     resolve = _ensure_resolve_running(timeout=60, nogui=False)
                     if resolve:
@@ -423,23 +402,26 @@ def _run_pipeline(
                     else:
                         print("  DRT skipped: DaVinci not available")
 
-                # Cleanup temp XMLs
+                # Cleanup temp XMLs (DRT consumed them)
                 for tmp in xml_paths:
                     tmp.unlink(missing_ok=True)
-                # Only shutdown if we ran headless (GUI stays open for DRP)
-                if not ran_drp:
-                    _shutdown_resolve()
-                return 0
+                # Fall through to DRP + cleanup below
             # ─ End batch mode ──────────────────────────────────
 
-            print("  Converting .prproj to FCP7 XML...")
-            root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
-            print("  Conversion complete.")
-            print()
+            # Single-sequence mode: convert, diagnose, fix, write XML
+            if len(selected_seqs) <= 1:
+                print("  Converting .prproj to FCP7 XML...")
+                root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
+                print("  Conversion complete.")
+                print()
 
-            lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
-            if lumetri_data:
-                print(f"  Lumetri params: {sum(len(v) for v in lumetri_data.values())} across {len(lumetri_data)} clips")
+                lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
+                if lumetri_data:
+                    print(f"  Lumetri params: {sum(len(v) for v in lumetri_data.values())} across {len(lumetri_data)} clips")
+            else:
+                # Batch mode already converted — use first selected for display
+                root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
+                lumetri_data = {}
         else:
             root = load_xml(input_path)
             lumetri_data = {}
@@ -505,28 +487,50 @@ def _run_pipeline(
         _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path, root)
         print(f"  Report: {report_path}")
 
-    # DRP background — first (nogui, auto-cleanup after export)
+    # DRP — always exports ALL timelines (project-level, not sequence-level)
+    # Generate XML for all non-empty sequences if not already in batch mode
     ran_drp = False
-    if drp_path:
+    if (drp_path or drp_gui) and prproj_root is not None:
+        # Re-collect all non-empty sequences for DRP (independent of Mode selection)
+        all_seqs = _prproj_list_sequences(prproj_root, idx)
+        non_empty_all = [s for s in all_seqs if s["clip_count"] > 0]
+        drp_xml_paths: list[Path] = []
+        drp_seq_names: list[str] = []
         print()
-        print(f"  DRP export (background): {drp_path}")
-        resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
-        if resolve_drp:
-            _drp_export(resolve_drp, [output_path], drp_path, stem, [seq_name], gui=False, prproj_root=prproj_root)
-            ran_drp = True
-        else:
-            print("  DRP skipped: DaVinci not available")
+        print(f"  DRP: generating XML for all {len(non_empty_all)} sequences...")
+        for s in non_empty_all:
+            fcp = _prproj_parse_sequence(prproj_root, s["uid"], input_path)
+            issues_s = _scan(fcp)
+            _apply_fixes(fcp, issues_s)
+            tmp_xml = output_dir / _make_output_name(s["name"], add_suffix=not no_suffix)
+            tmp_xml = _next_available_path(tmp_xml)
+            _write_fixed_xml(fcp, tmp_xml)
+            drp_xml_paths.append(tmp_xml)
+            drp_seq_names.append(s["name"])
 
-    # DRP interactive — GUI mode, keeps project open for user
-    if drp_gui:
-        print()
-        print(f"  DRP export (interactive): {drp_gui}")
-        resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
-        if resolve_gui:
-            _drp_export(resolve_gui, [output_path], drp_gui, stem, [seq_name], gui=True, prproj_root=prproj_root)
-            ran_drp = True
-        else:
-            print("  DRP skipped: DaVinci not available")
+        if drp_path:
+            print(f"  DRP export (background): {drp_path}")
+            resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
+            if resolve_drp:
+                _drp_export(resolve_drp, drp_xml_paths, drp_path, stem, drp_seq_names, gui=False, prproj_root=prproj_root)
+                ran_drp = True
+            else:
+                print("  DRP skipped: DaVinci not available")
+
+        if drp_gui:
+            print(f"  DRP export (interactive): {drp_gui}")
+            resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
+            if resolve_gui:
+                _drp_export(resolve_gui, drp_xml_paths, drp_gui, stem, drp_seq_names, gui=True, prproj_root=prproj_root)
+                ran_drp = True
+            else:
+                print("  DRP skipped: DaVinci not available")
+
+        # Cleanup DRP intermediate XMLs (not the user's main output)
+        if not no_xml:
+            for tmp in drp_xml_paths:
+                if tmp != output_path:
+                    tmp.unlink(missing_ok=True)
 
     # DRT output — second (can reuse GUI instance opened by DRP)
     if drt:
