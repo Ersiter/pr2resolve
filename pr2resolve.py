@@ -329,6 +329,7 @@ def _run_pipeline(
     # output_path / report_path deferred — computed from sequence name after parsing
 
     # Load
+    prproj_root = None  # only available for .prproj inputs
     print(f"  Loading: {input_path}")
     try:
         if input_path.suffix.lower() == ".prproj":
@@ -396,7 +397,7 @@ def _run_pipeline(
                     print(f"  DRP export (background): {drp_path}")
                     resolve = _ensure_resolve_running(timeout=60, nogui=True)
                     if resolve:
-                        _drp_export(resolve, xml_paths, drp_path, stem, seq_names, gui=False)
+                        _drp_export(resolve, xml_paths, drp_path, stem, seq_names, gui=False, prproj_root=prproj_root)
                         ran_drp = True
                     else:
                         print("  DRP skipped: DaVinci not available")
@@ -406,7 +407,7 @@ def _run_pipeline(
                     print(f"  DRP export (interactive): {drp_gui}")
                     resolve = _ensure_resolve_running(timeout=60, nogui=False)
                     if resolve:
-                        _drp_export(resolve, xml_paths, drp_gui, stem, seq_names, gui=True)
+                        _drp_export(resolve, xml_paths, drp_gui, stem, seq_names, gui=True, prproj_root=prproj_root)
                         ran_drp = True
                     else:
                         print("  DRP skipped: DaVinci not available")
@@ -511,7 +512,7 @@ def _run_pipeline(
         print(f"  DRP export (background): {drp_path}")
         resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
         if resolve_drp:
-            _drp_export(resolve_drp, [output_path], drp_path, stem, [seq_name], gui=False)
+            _drp_export(resolve_drp, [output_path], drp_path, stem, [seq_name], gui=False, prproj_root=prproj_root)
             ran_drp = True
         else:
             print("  DRP skipped: DaVinci not available")
@@ -522,7 +523,7 @@ def _run_pipeline(
         print(f"  DRP export (interactive): {drp_gui}")
         resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
         if resolve_gui:
-            _drp_export(resolve_gui, [output_path], drp_gui, stem, [seq_name], gui=True)
+            _drp_export(resolve_gui, [output_path], drp_gui, stem, [seq_name], gui=True, prproj_root=prproj_root)
             ran_drp = True
         else:
             print("  DRP skipped: DaVinci not available")

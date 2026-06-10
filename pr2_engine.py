@@ -1073,15 +1073,8 @@ def _validate(root: ET.Element) -> list[Issue]:
         if tb and _is_ntsc(float(tb)) and rate_elem.find("ntsc") is None:
             issues.append(Issue(MAJOR, "V12", "NTSC rate missing <ntsc>", "rate"))
 
-    # V13: All clipitems have masterclipid
-    for ci in root.iter("clipitem"):
-        if ci.find("masterclipid") is None:
-            issues.append(Issue(MAJOR, "V13", f"clipitem missing <masterclipid>", ci.get("id", "?")))
-
-    # V14: All clipitems have sourcetrack
-    for ci in root.iter("clipitem"):
-        if ci.find("sourcetrack") is None:
-            issues.append(Issue(MINOR, "V14", f"clipitem missing <sourcetrack>", ci.get("id", "?")))
+    # V13: DISABLED — DC format does not use <masterclipid>
+    # V14: DISABLED — DC format: video clipitems don't have <sourcetrack>
 
     # V15: pathurl uses file:/// or file://localhost/ format
     for pu in root.iter("pathurl"):
@@ -2868,11 +2861,14 @@ def _drp_export(
     project_name: str,
     sequence_names: list[str],
     gui: bool = False,
+    prproj_root: Optional[ET.Element] = None,
 ) -> bool:
-    """Export a full project as DRP with bin structure and timelines.
+    """Export a full project as DRP with media pool, bin structure, and timelines.
 
-    Creates a sandbox project, imports all timelines, sets project name
-    to match the original PR project, then exports as DRP package.
+    Faithfully reproduces the PR project in DaVinci:
+    - Imports individual media files (NOT directories) into media pool
+    - Recreates bin/folder structure from .prproj
+    - Imports all timelines with full media linking
 
     Args:
         resolve: DaVinci Resolve object
@@ -2881,19 +2877,20 @@ def _drp_export(
         project_name: Name for the Resolve project
         sequence_names: Timeline names matching xml_paths
         gui: If True, leave project open in GUI (interactive mode).
-             If False, close project and shut down headless after export.
+             If False, clean up and shut down after export.
+        prproj_root: Optional .prproj root for bin structure extraction.
 
     Returns:
         True if DRP exported successfully
     """
+    import re
+
     pm = resolve.GetProjectManager()
     original_project = pm.GetCurrentProject()
     original_name = original_project.GetName() if original_project else None
 
-    # DaVinci API only accepts ASCII project names — sanitize non-ASCII chars
+    # DaVinci API only accepts ASCII project names
     def _sanitize_name(name: str) -> str:
-        import re
-        # Replace non-ASCII runs with single underscore
         safe = re.sub(r'[^\x20-\x7E]+', '_', name)
         safe = re.sub(r'_+', '_', safe).strip('_ ')
         return safe or "pr2resolve"
@@ -2913,27 +2910,92 @@ def _drp_export(
                 pass
         pm.CloseProject(original_project)
 
-    project = pm.CreateProject(temp_name)
+    # Find next available project name (don't delete existing projects)
+    try:
+        existing = pm.GetProjectListInCurrentFolder() or []
+    except Exception:
+        existing = []
+    final_name = temp_name
+    if temp_name in existing:
+        for n in range(1, 100):
+            candidate = f"{temp_name}-{n}"
+            if candidate not in existing:
+                final_name = candidate
+                break
+        if final_name != temp_name:
+            print(f"  Project \"{temp_name}\" exists — using \"{final_name}\"")
+
+    project = pm.CreateProject(final_name)
     if project is None:
-        print("  Error: Could not create project for DRP export")
-        if original_name and not original_name.startswith("Untitled"):
-            pm.LoadProject(original_name)
-        return False
+        # ── Retry strategy by scenario ──
+        # Scenario A: BG mode, stale headless from previous run
+        #   → Kill it, launch fresh, retry
+        # Scenario B: ON mode, stale API connection to existing DaVinci
+        #   → Cannot kill user's instance, try re-importing API module
+        # Scenario C: ON mode, user's DaVinci, genuine failure
+        #   → Report error, no retry (don't disturb user)
+        if not gui:
+            # BG mode: we own the instance — safe to kill and restart
+            print("  CreateProject failed — restarting DaVinci (BG mode)...")
+            _shutdown_resolve()
+            # Force kill any leftover Resolve.exe
+            if _is_resolve_running():
+                try:
+                    subprocess.run(
+                        ["taskkill", "/IM", "Resolve.exe", "/F"],
+                        capture_output=True, timeout=10,
+                    )
+                    time.sleep(3)
+                except Exception:
+                    pass
+            resolve = _ensure_resolve_running(timeout=60, nogui=True)
+            if resolve is None:
+                print("  Error: Could not restart DaVinci Resolve")
+                return False
+            pm = resolve.GetProjectManager()
+            project = pm.CreateProject(final_name)
+        else:
+            # ON mode: try refreshing API connection without killing DaVinci
+            print("  CreateProject failed — refreshing API connection...")
+            resolve = _try_import_resolve()
+            if resolve is not None:
+                pm = resolve.GetProjectManager()
+                project = pm.CreateProject(final_name)
+
+        if project is None:
+            print("  Error: Could not create project for DRP export.")
+            print("  Possible causes:")
+            print("    - DaVinci API not accessible (check Preferences > External scripting)")
+            print("    - Previous 'pr2resolve' project may need manual cleanup")
+            print("    - DaVinci may need to be restarted manually")
+            return False
 
     media_pool = project.GetMediaPool()
 
-    # Import timelines
-    # _strip_file_elements_for_drt handles media availability:
-    #   - media online → full XML, importSourceClips: True (DaVinci auto-discovers from pathurl)
-    #   - media offline → skeleton XML (no <file>), importSourceClips: False
+    # ── Step 1: Extract and import individual media files ──
+    all_files: set[str] = set()
+    for xml_path in xml_paths:
+        all_files.update(_extract_media_files(xml_path))
+    if all_files:
+        imported = _import_media_to_pool(media_pool, sorted(all_files))
+        print(f"  Media pool: {imported}/{len(all_files)} files imported")
+    else:
+        print("  Media pool: no local media found (offline mode)")
+
+    # ── Step 2: Recreate bin structure from PR project ──
+    if prproj_root is not None:
+        bins = _prproj_get_bin_structure(prproj_root)
+        if bins:
+            _create_bin_structure(media_pool, bins)
+            print(f"  Bins: {len(bins)} folder(s) created")
+
+    # ── Step 3: Import timelines (full XML, no stripping) ──
+    # DaVinci discovers media from pathurl — offline items shown as offline
     for xml_path, seq_name in zip(xml_paths, sequence_names):
-        drt_xml, is_skeleton = _strip_file_elements_for_drt(xml_path)
         timeline = media_pool.ImportTimelineFromFile(
-            str(drt_xml),
-            {"timelineName": seq_name, "importSourceClips": not is_skeleton},
+            str(xml_path),
+            {"timelineName": seq_name, "importSourceClips": True},
         )
-        if is_skeleton and drt_xml.exists() and drt_xml != xml_path:
-            drt_xml.unlink(missing_ok=True)
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
             try:
@@ -2943,29 +3005,28 @@ def _drp_export(
         else:
             print(f"  Timeline import FAILED: {seq_name}")
 
-    # Export DRP
+    # ── Step 4: Export DRP ──
     pm.SaveProject()
-    drp_result = pm.ExportProject(temp_name, str(output_path), False)
+    drp_result = pm.ExportProject(final_name, str(output_path), False)
 
     if drp_result:
         print(f"  DRP exported: {output_path}")
     else:
         print(f"  DRP export via API failed (project may still be in database).")
-        print(f"  Project \"{temp_name}\" created in DaVinci database.")
+        print(f"  Project \"{final_name}\" created in DaVinci database.")
         print(f"  To export manually: File -> Export Project -> {output_path.name}")
 
+    # ── Step 5: Cleanup based on mode ──
     if gui:
-        # Interactive mode: keep project open in GUI for user
-        print(f"  Project \"{temp_name}\" ready in DaVinci Resolve.")
+        print(f"  Project \"{final_name}\" ready in DaVinci Resolve.")
     else:
-        # Background mode: clean up temp project, shut down headless
         try:
             pm.SaveProject()
         except Exception:
             pass
         pm.CloseProject(project)
         try:
-            pm.DeleteProject(temp_name)
+            pm.DeleteProject(final_name)
         except Exception:
             pass
         _shutdown_resolve()
@@ -2990,6 +3051,83 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
         if name:
             bins.append(name)
     return bins
+
+
+def _extract_media_files(xml_path: Path) -> list[str]:
+    """Extract unique local media file paths from XML pathurls.
+
+    Scans all <pathurl> elements, resolves to local paths, returns only
+    files that exist on disk. Used by DRP export to import individual
+    media files (NOT directories) into the DaVinci media pool.
+
+    Args:
+        xml_path: Path to the FCP7 XML file
+
+    Returns:
+        List of unique local file paths that exist
+    """
+    from urllib.parse import unquote
+    seen: set[str] = set()
+    result: list[str] = []
+    try:
+        tree = ET.parse(str(xml_path))
+        for pu in tree.iter("pathurl"):
+            url = pu.text or ""
+            local = ""
+            if url.startswith("file://localhost/"):
+                local = unquote(url[len("file://localhost/"):]).replace("/", "\\")
+            elif url.startswith("file:///"):
+                local = url[8:].replace("/", "\\")
+            if local and local not in seen:
+                seen.add(local)
+                if Path(local).exists():
+                    result.append(local)
+    except Exception:
+        pass
+    return result
+
+
+def _import_media_to_pool(media_pool: Any, files: list[str]) -> int:
+    """Import individual media files into DaVinci media pool.
+
+    Imports at FILE level (not directory) to avoid DaVinci's recursive
+    directory scan which causes memory explosion and hangs.
+
+    Args:
+        media_pool: DaVinci MediaPool object
+        files: List of local file paths to import
+
+    Returns:
+        Number of items successfully imported
+    """
+    if not files:
+        return 0
+    try:
+        items = media_pool.ImportMedia(files)
+        return len(items) if items else 0
+    except Exception as e:
+        print(f"  Warning: media import failed ({e})")
+        return 0
+
+
+def _create_bin_structure(media_pool: Any, bins: list[str]) -> None:
+    """Create bin/folder structure in DaVinci media pool from PR project bins.
+
+    Creates folders under the media pool root. Silently skips names that
+    already exist (DaVinci returns existing folder if name conflicts).
+
+    Args:
+        media_pool: DaVinci MediaPool object
+        bins: List of bin/folder names to create
+    """
+    if not bins:
+        return
+    root = media_pool.GetRootFolder()
+    for name in bins:
+        try:
+            media_pool.AddSubFolder(root, name)
+        except Exception:
+            pass  # bin already exists or name conflict
 
 
 def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
@@ -3218,7 +3356,6 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     if resolve is not None:
         # API already available — check mode compatibility
         if not nogui and _launch_mode == "headless":
-            # DRP needs GUI but we have headless → restart
             print("  DRP requires GUI — restarting DaVinci Resolve...")
             _shutdown_resolve()
             time.sleep(3)
@@ -3226,20 +3363,27 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
         else:
             return resolve
 
-    # Check if a GUI instance is already running but API not ready (cold start)
+    # Check if a Resolve process is running but API not ready (stale or cold start)
     if _is_resolve_running():
-        print("  DaVinci GUI is starting up. Waiting for API...")
-        start = time.time()
-        while time.time() - start < timeout:
-            time.sleep(2)
-            elapsed = int(time.time() - start)
-            print(f"  Waiting for DaVinci API... ({elapsed}s)")
-            resolve = _check_resolve_running()
-            if resolve is not None:
-                print(f"  API ready after {elapsed}s.")
-                return resolve
-        print(f"  API did not become available within {timeout}s.")
-        return None
+        # API not available but process exists — may be stale headless from previous run
+        if _launch_mode == "headless":
+            print("  Stale headless DaVinci detected — restarting...")
+            _shutdown_resolve()
+            time.sleep(3)
+            # Fall through to launch below
+        else:
+            print("  DaVinci is running. Waiting for API...")
+            start = time.time()
+            while time.time() - start < timeout:
+                time.sleep(2)
+                elapsed = int(time.time() - start)
+                print(f"  Waiting for DaVinci API... ({elapsed}s)")
+                resolve = _check_resolve_running()
+                if resolve is not None:
+                    print(f"  API ready after {elapsed}s.")
+                    return resolve
+            print(f"  API did not become available within {timeout}s.")
+            return None
 
     # No instance at all — launch one
     mode = "headless" if nogui else "GUI"
