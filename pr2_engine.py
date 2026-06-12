@@ -2919,126 +2919,128 @@ def _drp_export(
         if final_name != temp_name:
             print(f"  Project \"{temp_name}\" exists — using \"{final_name}\"")
 
-    project = pm.CreateProject(final_name)
-    if project is None:
-        # ── Retry strategy by scenario ──
-        # Scenario A: BG mode, stale headless from previous run
-        #   → Kill it, launch fresh, retry
-        # Scenario B: ON mode, stale API connection to existing DaVinci
-        #   → Cannot kill user's instance, try re-importing API module
-        # Scenario C: ON mode, user's DaVinci, genuine failure
-        #   → Report error, no retry (don't disturb user)
-        if not gui:
-            # BG mode: we own the instance — safe to kill and restart
-            print("  CreateProject failed — restarting DaVinci (BG mode)...")
-            _shutdown_resolve()
-            # Force kill any leftover Resolve.exe
-            if _is_resolve_running():
-                try:
-                    subprocess.run(
-                        ["taskkill", "/IM", "Resolve.exe", "/F"],
-                        capture_output=True, timeout=10,
-                    )
-                    time.sleep(3)
-                except Exception:
-                    pass
-            resolve = _ensure_resolve_running(timeout=60, nogui=True)
-            if resolve is None:
-                print("  Error: Could not restart DaVinci Resolve")
-                return False
-            pm = resolve.GetProjectManager()
-            project = pm.CreateProject(final_name)
-        else:
-            # ON mode: try refreshing API connection without killing DaVinci
-            print("  CreateProject failed — refreshing API connection...")
-            resolve = _try_import_resolve()
-            if resolve is not None:
+    try:
+        project = pm.CreateProject(final_name)
+        if project is None:
+            # ── Retry strategy by scenario ──
+            # Scenario A: BG mode, stale headless from previous run
+            #   → Kill it, launch fresh, retry
+            # Scenario B: ON mode, stale API connection to existing DaVinci
+            #   → Cannot kill user's instance, try re-importing API module
+            # Scenario C: ON mode, user's DaVinci, genuine failure
+            #   → Report error, no retry (don't disturb user)
+            if not gui:
+                # BG mode: we own the instance — safe to kill and restart
+                print("  CreateProject failed — restarting DaVinci (BG mode)...")
+                _shutdown_resolve()
+                # Force kill any leftover Resolve.exe
+                if _is_resolve_running():
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/IM", "Resolve.exe", "/F"],
+                            capture_output=True, timeout=10,
+                        )
+                        time.sleep(3)
+                    except Exception:
+                        pass
+                resolve = _ensure_resolve_running(timeout=60, nogui=True)
+                if resolve is None:
+                    print("  Error: Could not restart DaVinci Resolve")
+                    return False
                 pm = resolve.GetProjectManager()
                 project = pm.CreateProject(final_name)
+            else:
+                # ON mode: try refreshing API connection without killing DaVinci
+                print("  CreateProject failed — refreshing API connection...")
+                resolve = _try_import_resolve()
+                if resolve is not None:
+                    pm = resolve.GetProjectManager()
+                    project = pm.CreateProject(final_name)
 
-        if project is None:
-            print("  Error: Could not create project for DRP export.")
-            print("  Possible causes:")
-            print("    - DaVinci API not accessible (check Preferences > External scripting)")
-            print("    - Previous 'pr2resolve' project may need manual cleanup")
-            print("    - DaVinci may need to be restarted manually")
-            return False
+            if project is None:
+                print("  Error: Could not create project for DRP export.")
+                print("  Possible causes:")
+                print("    - DaVinci API not accessible (check Preferences > External scripting)")
+                print("    - Previous 'pr2resolve' project may need manual cleanup")
+                print("    - DaVinci may need to be restarted manually")
+                return False
 
-    media_pool = project.GetMediaPool()
+        media_pool = project.GetMediaPool()
 
-    # ── Step 1: Extract and import individual media files ──
-    all_files: set[str] = set()
-    for xml_path in xml_paths:
-        all_files.update(_extract_media_files(xml_path))
-    if all_files:
-        imported = _import_media_to_pool(media_pool, sorted(all_files))
-        print(f"  Media pool: {imported}/{len(all_files)} files imported")
-    else:
-        print("  Media pool: no local media found (offline mode)")
+        # ── Step 1: Extract and import individual media files ──
+        all_files: set[str] = set()
+        for xml_path in xml_paths:
+            all_files.update(_extract_media_files(xml_path))
+        if all_files:
+            imported = _import_media_to_pool(media_pool, sorted(all_files))
+            print(f"  Media pool: {imported}/{len(all_files)} files imported")
+        else:
+            print("  Media pool: no local media found (offline mode)")
 
-    # ── Step 2: Recreate bin structure from PR project ──
-    if prproj_root is not None:
-        bins = _prproj_get_bin_structure(prproj_root)
-        if bins:
-            _create_bin_structure(media_pool, bins)
-            print(f"  Bins: {len(bins)} folder(s) created")
+        # ── Step 2: Recreate bin structure from PR project ──
+        if prproj_root is not None:
+            bins = _prproj_get_bin_structure(prproj_root)
+            if bins:
+                _create_bin_structure(media_pool, bins)
+                print(f"  Bins: {len(bins)} folder(s) created")
 
-    # ── Step 3: Import timelines ──
-    # importSourceClips=False — media already in pool from Step 1
-    import_failed = False
-    for xml_path, seq_name in zip(xml_paths, sequence_names):
-        timeline = media_pool.ImportTimelineFromFile(
-            str(xml_path),
-            {"timelineName": seq_name, "importSourceClips": False},
-        )
-        if timeline is not None:
-            print(f"  Timeline: {timeline.GetName()}")
+        # ── Step 3: Import timelines ──
+        # importSourceClips=False — media already in pool from Step 1
+        import_failed = False
+        for xml_path, seq_name in zip(xml_paths, sequence_names):
+            timeline = media_pool.ImportTimelineFromFile(
+                str(xml_path),
+                {"timelineName": seq_name, "importSourceClips": False},
+            )
+            if timeline is not None:
+                print(f"  Timeline: {timeline.GetName()}")
+                try:
+                    timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                except Exception:
+                    pass
+            else:
+                print(f"  Timeline import FAILED: {seq_name}")
+                import_failed = True
+
+        # ── Step 4: Export DRP ──
+        drp_result = False
+        if import_failed:
+            print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
+        else:
             try:
-                timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                pm.SaveProject()
             except Exception:
                 pass
-        else:
-            print(f"  Timeline import FAILED: {seq_name}")
-            import_failed = True
+            try:
+                drp_result = pm.ExportProject(final_name, str(output_path), False)
+            except Exception as e:
+                print(f"  DRP export error: {e}")
 
-    # ── Step 4: Export DRP ──
-    drp_result = False
-    if import_failed:
-        print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
-    else:
-        try:
-            pm.SaveProject()
-        except Exception:
-            pass
-        try:
-            drp_result = pm.ExportProject(final_name, str(output_path), False)
-        except Exception as e:
-            print(f"  DRP export error: {e}")
+            if drp_result:
+                print(f"  DRP exported: {output_path}")
+            else:
+                print(f"  DRP export via API failed (project may still be in database).")
+                print(f"  Project \"{final_name}\" created in DaVinci database.")
+                print(f"  To export manually: File -> Export Project -> {output_path.name}")
 
-        if drp_result:
-            print(f"  DRP exported: {output_path}")
-        else:
-            print(f"  DRP export via API failed (project may still be in database).")
-            print(f"  Project \"{final_name}\" created in DaVinci database.")
-            print(f"  To export manually: File -> Export Project -> {output_path.name}")
+        if gui:
+            print(f"  Project \"{final_name}\" ready in DaVinci Resolve.")
 
-    # ── Step 5: Cleanup based on mode ──
-    if gui:
-        print(f"  Project \"{final_name}\" ready in DaVinci Resolve.")
-    else:
-        try:
-            pm.SaveProject()
-        except Exception:
-            pass
-        try:
-            pm.CloseProject(project)
-        except Exception:
-            pass
-        try:
-            pm.DeleteProject(final_name)
-        except Exception:
-            pass
-        _shutdown_resolve()
+    finally:
+        if not gui:
+            try:
+                pm.SaveProject()
+            except Exception:
+                pass
+            try:
+                pm.CloseProject(project)
+            except Exception:
+                pass
+            try:
+                pm.DeleteProject(final_name)
+            except Exception:
+                pass
+            _shutdown_resolve()
 
     return drp_result
 

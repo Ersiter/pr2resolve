@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.0.0 — production release*
+> *v1.0.1 — try/finally orphan cleanup*
 
 # .PRPROJ-.DRT Converter
 
