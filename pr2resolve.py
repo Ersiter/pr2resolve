@@ -330,6 +330,7 @@ def _run_pipeline(
 
     # Load
     prproj_root = None  # only available for .prproj inputs
+    idx = None  # _PrprojIndex, set alongside prproj_root
     print(f"  Loading: {input_path}")
     try:
         if input_path.suffix.lower() == ".prproj":
@@ -490,6 +491,8 @@ def _run_pipeline(
     # DRP — always exports ALL timelines (project-level, not sequence-level)
     # Generate XML for all non-empty sequences if not already in batch mode
     ran_drp = False
+    if (drp_path or drp_gui) and prproj_root is None:
+        print("  Warning: DRP requires .prproj input (XML input skipped)")
     if (drp_path or drp_gui) and prproj_root is not None:
         # Re-collect all non-empty sequences for DRP (independent of Mode selection)
         all_seqs = _prproj_list_sequences(prproj_root, idx)

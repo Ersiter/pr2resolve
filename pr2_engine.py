@@ -903,8 +903,6 @@ def _create_video_format(root: ET.Element) -> ET.Element:
 
     return fmt
 
-    return fmt
-
 
 def _create_audio_format() -> ET.Element:
     """Create a <format> element for audio.
@@ -1714,9 +1712,12 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
         )
         fps_str = result2.stdout.strip()
         if fps_str and "/" in fps_str:
-            num, den = fps_str.split("/", 1)
-            if int(den) > 0:
-                info.media_fps = round(int(num) / int(den), 3)
+            try:
+                num, den = fps_str.split("/", 1)
+                if int(den) > 0:
+                    info.media_fps = round(int(num) / int(den), 3)
+            except (ValueError, ZeroDivisionError):
+                pass
         elif fps_str:
             try:
                 info.media_fps = float(fps_str)
@@ -2581,16 +2582,14 @@ def _prproj_parse_sequence(
                     ins_pos = i
                     break
             for j, link in enumerate(links):
+                # Always deepcopy — XML Element can only have ONE parent
+                link_copy = copy.deepcopy(link)
                 # DC: first link in audio clipitem gets <mediatype>video</mediatype>
-                # Use a COPY to avoid contaminating the shared link for video clipitems
                 if mtype == "audio" and j == 0 and first_video_ref is not None:
-                    link_copy = copy.deepcopy(link)
                     mt = ET.Element("mediatype")
                     mt.text = "video"
                     link_copy.insert(1, mt)
-                    ci.insert(ins_pos, link_copy)
-                else:
-                    ci.insert(ins_pos, link)
+                ci.insert(ins_pos, link_copy)
                 ins_pos += 1
 
     # ─── Finalize ────────────────────────────────────────────────────
@@ -3115,7 +3114,7 @@ def _extract_media_files(xml_path: Path) -> list[str]:
             if url.startswith("file://localhost/"):
                 local = unquote(url[len("file://localhost/"):]).replace("/", "\\")
             elif url.startswith("file:///"):
-                local = url[8:].replace("/", "\\")
+                local = unquote(url[8:]).replace("/", "\\")
             if local and local not in seen:
                 seen.add(local)
                 if Path(local).exists():
@@ -3462,6 +3461,7 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
             poll_interval = 5
 
     print(f"  DaVinci did not start within {timeout}s.")
+    _shutdown_resolve()  # kill the process we just launched
     return None
 
 
