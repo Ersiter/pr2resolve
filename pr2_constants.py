@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.3"
+VERSION = "0.9.4"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -88,6 +88,24 @@ class FileData:
     source_w: int = 0          # video width from source media
     source_h: int = 0          # video height from source media
     for_audio_only: bool = False
+
+
+@dataclass
+class LinkMember:
+    """One clipitem in a link group (clips sharing the same source media)."""
+
+    clipitem_id: str   # "{media_name} {counter}" — DC clipitem id
+    mediatype: str     # "video" | "audio"
+    track_index: int   # 1-based track index
+    clip_index: int    # within-track clip index
+
+
+@dataclass
+class LinkGroup:
+    """All clipitems sharing the same source media file."""
+
+    media_name: str               # group key (same as ClipData.name)
+    members: list[LinkMember]     # all linked clipitems
 
 
 @dataclass

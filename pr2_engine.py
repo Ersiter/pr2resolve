@@ -24,7 +24,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue, ClipData, FileData,
+    Issue, ScaleIssue, ClipData, FileData, LinkMember,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2095,7 +2095,7 @@ def _prproj_parse_sequence(
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
     _file_ids: dict[str, FileData] = {}  # media_name → FileData
-    _link_groups: dict[str, list[tuple[str, str, int, int]]] = {}  # name → [(ci_id, mediatype, t_idx, c_idx)]
+    _link_groups: dict[str, list[LinkMember]] = {}
 
     def _next_ci_id(name: str) -> str:
         cid = f"{name} {_id_counter[0]}"
@@ -2449,7 +2449,8 @@ def _prproj_parse_sequence(
                     ci = ET.SubElement(fcp_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
                     ci.set("id", ci_id)
-                    _link_groups.setdefault(cl.name, []).append((ci_id, "video", vt_idx, vc_idx))
+                    _link_groups.setdefault(cl.name, []).append(
+                        LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
 
                     ET.SubElement(ci, "name").text = cl.name
                     ET.SubElement(ci, "duration").text = str(clip_dur)
@@ -2523,7 +2524,8 @@ def _prproj_parse_sequence(
                     a_ci = ET.SubElement(fcp_a_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
                     a_ci.set("id", ci_id)
-                    _link_groups.setdefault(cl.name, []).append((ci_id, "audio", at_idx, ac_idx))
+                    _link_groups.setdefault(cl.name, []).append(
+                        LinkMember(clipitem_id=ci_id, mediatype="audio", track_index=at_idx, clip_index=ac_idx))
 
                     ET.SubElement(a_ci, "name").text = cl.name
                     ET.SubElement(a_ci, "duration").text = str(clip_dur)
@@ -2571,21 +2573,21 @@ def _prproj_parse_sequence(
             continue
         # Find the first video member (for mediatype marking on audio links)
         first_video_ref = None
-        for ref_id, mtype, _, _ in members:
-            if mtype == "video":
-                first_video_ref = ref_id
+        for m in members:
+            if m.mediatype == "video":
+                first_video_ref = m.clipitem_id
                 break
         links: list[ET.Element] = []
-        for ref_id, _, _, _ in members:
+        for m in members:
             link = ET.Element("link")
-            ET.SubElement(link, "linkclipref").text = ref_id
+            ET.SubElement(link, "linkclipref").text = m.clipitem_id
             links.append(link)
-        for ref_id, mtype, _, _ in members:
+        for m in members:
             ci = None
-            if mtype == "video":
-                ci = video_section.find(f".//clipitem[@id='{ref_id}']")
+            if m.mediatype == "video":
+                ci = video_section.find(f".//clipitem[@id='{m.clipitem_id}']")
             else:
-                ci = audio_section.find(f".//clipitem[@id='{ref_id}']")
+                ci = audio_section.find(f".//clipitem[@id='{m.clipitem_id}']")
             if ci is None:
                 continue
             for old in ci.findall("link"):
@@ -2600,7 +2602,7 @@ def _prproj_parse_sequence(
                 # Always deepcopy — XML Element can only have ONE parent
                 link_copy = copy.deepcopy(link)
                 # DC: first link in audio clipitem gets <mediatype>video</mediatype>
-                if mtype == "audio" and j == 0 and first_video_ref is not None:
+                if m.mediatype == "audio" and j == 0 and first_video_ref is not None:
                     mt = ET.Element("mediatype")
                     mt.text = "video"
                     link_copy.insert(1, mt)
