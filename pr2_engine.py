@@ -24,7 +24,8 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue, ClipData,
+    Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
+    FilterParam, FilterSpec, TrackData, TransitionData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2002,6 +2003,129 @@ def _prproj_extract_all_lumetri(
     return lumetri_data
 
 
+def _extract_clip(
+    cti: ET.Element,
+    idx: _PrprojIndex,
+    prproj_root: ET.Element,
+    default_w: int,
+    default_h: int,
+    fps: float,
+) -> ClipData:
+    """Extract ClipData from a .prproj ClipTrackItem chain.
+
+    All external dependencies are explicit parameters (no closure capture).
+    This function is pure data extraction — zero ET output created.
+    """
+    subclip = cti.find("SubClip")
+    mc_name = "(unknown)"
+    media_path = ""
+    in_point = 0
+    out_point = 0
+    playback_speed = 100
+    source_tc = _SourceTCInfo()
+    src_w, src_h = default_w, default_h
+    scale_val = 100.0
+    rotation_val = 0.0
+
+    # Timeline position
+    ti_inner = cti.find("TrackItem")
+    if ti_inner is not None:
+        s = ti_inner.findtext("Start")
+        e = ti_inner.findtext("End")
+        start = _prproj_ticks_to_frames(s, fps) if s else 0
+        end = _prproj_ticks_to_frames(e, fps) if e else 0
+    else:
+        start, end = 0, 0
+
+    if subclip is not None:
+        sc_ref = subclip.get("ObjectRef")
+        sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
+        if sc_el is not None:
+            mc_name = sc_el.findtext("Name", mc_name)
+            mc_uref_el = sc_el.find("MasterClip")
+            if mc_uref_el is not None:
+                mc_uref = mc_uref_el.get("ObjectURef")
+                mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
+                if mc_el is not None:
+                    for media_el in prproj_root.findall("Media"):
+                        mfp = media_el.findtext("FilePath")
+                        if not mfp:
+                            continue
+                        if Path(mfp.replace("\\", "/")).name.lower() == mc_name.lower():
+                            media_path = mfp
+                            break
+                    source_tc = _prproj_extract_source_tc_info(mc_el, idx)
+                    if not source_tc.resolved and media_path:
+                        local = Path(media_path)
+                        if local.exists():
+                            source_tc = _ffprobe_read_timecode(str(local))
+                    sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
+                    if sr[0] > 0 and sr[1] > 0:
+                        src_w, src_h = sr
+            clip_ref_el = sc_el.find("Clip")
+            if clip_ref_el is not None:
+                clip_ref = clip_ref_el.get("ObjectRef")
+                clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
+                if clip_el is not None:
+                    inner = clip_el.find("Clip")
+                    if inner is not None:
+                        ip = inner.findtext("InPoint")
+                        op = inner.findtext("OutPoint")
+                        if ip is not None:
+                            in_point = _prproj_ticks_to_frames(ip, fps)
+                        if op is not None:
+                            out_point = _prproj_ticks_to_frames(op, fps)
+                    ps = clip_el.findtext("PlaybackSpeed")
+                    if ps:
+                        try:
+                            playback_speed = int(float(ps))
+                        except ValueError:
+                            pass
+
+    # Motion data
+    co = cti.find("ComponentOwner")
+    if co is not None:
+        comps = co.find("Components")
+        if comps is not None:
+            chain = idx.resolve_ref(comps.get("ObjectRef", ""))
+            if chain is not None and chain.findtext("DefaultMotion") == "false":
+                chain_comps = chain.find("Components")
+                if chain_comps is not None:
+                    for c in chain_comps.findall("Component"):
+                        c_el = idx.resolve_ref(c.get("ObjectRef", ""))
+                        if c_el is None:
+                            continue
+                        inner_c = c_el.find(".//Params")
+                        if inner_c is None:
+                            continue
+                        for p_ref in inner_c.findall("Param"):
+                            p_el = idx.resolve_ref(p_ref.get("ObjectRef", ""))
+                            if p_el is None:
+                                continue
+                            pname = p_el.findtext("Name", "")
+                            sk = p_el.findtext("StartKeyframe", "")
+                            if not pname or not sk:
+                                continue
+                            parts = sk.split(",")
+                            if len(parts) < 2:
+                                continue
+                            try:
+                                val = float(parts[1])
+                            except ValueError:
+                                continue
+                            if pname == "Scale":
+                                scale_val = val
+                            elif pname == "Rotation":
+                                rotation_val = val
+
+    return ClipData(
+        name=mc_name, media_path=media_path,
+        start=start, end=end, in_pt=in_point, out_pt=out_point,
+        playback_speed=playback_speed, source_tc=source_tc,
+        source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
+    )
+
+
 def _prproj_parse_sequence(
     prproj_root: ET.Element,
     sequence_uid: str,
@@ -2065,37 +2189,37 @@ def _prproj_parse_sequence(
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
 
-    # ─── Build XML skeleton (DC format: name→duration→rate→in→out→timecode→media) ───
-    xmeml = ET.Element("xmeml")
-    xmeml.set("version", FCP7_VERSION)
+    def _render_sequence_skeleton(seq_name: str, timebase: int, is_ntsc: bool):
+        """Build DC-format sequence skeleton. Returns (xmeml, dur_elem, video_et, audio_et)."""
+        xmeml = ET.Element("xmeml")
+        xmeml.set("version", FCP7_VERSION)
+        sequence = ET.SubElement(xmeml, "sequence")
+        ET.SubElement(sequence, "name").text = seq_name
+        dur_elem = ET.SubElement(sequence, "duration")
+        rate_elem = ET.SubElement(sequence, "rate")
+        ET.SubElement(rate_elem, "timebase").text = str(timebase)
+        ET.SubElement(rate_elem, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(sequence, "in").text = "-1"
+        ET.SubElement(sequence, "out").text = "-1"
+        tc = ET.SubElement(sequence, "timecode")
+        ET.SubElement(tc, "string").text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+        ET.SubElement(tc, "frame").text = "0"
+        ET.SubElement(tc, "displayformat").text = "DF" if is_ntsc else "NDF"
+        tc_rate = ET.SubElement(tc, "rate")
+        ET.SubElement(tc_rate, "timebase").text = str(timebase)
+        ET.SubElement(tc_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        media = ET.SubElement(sequence, "media")
+        video_section = ET.SubElement(media, "video")
+        audio_section = ET.SubElement(media, "audio")
+        return xmeml, dur_elem, video_section, audio_section
 
-    sequence = ET.SubElement(xmeml, "sequence")
     total_frames = 0
-
-    ET.SubElement(sequence, "name").text = seq_name
-    dur_elem = ET.SubElement(sequence, "duration")
-    rate_elem = ET.SubElement(sequence, "rate")
-    ET.SubElement(rate_elem, "timebase").text = str(timebase)
-    ET.SubElement(rate_elem, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-    ET.SubElement(sequence, "in").text = "-1"
-    ET.SubElement(sequence, "out").text = "-1"
-
-    tc = ET.SubElement(sequence, "timecode")
-    ET.SubElement(tc, "string").text = "00;00;00;00" if is_ntsc else "00:00:00:00"
-    ET.SubElement(tc, "frame").text = "0"
-    ET.SubElement(tc, "displayformat").text = "DF" if is_ntsc else "NDF"
-    tc_rate = ET.SubElement(tc, "rate")
-    ET.SubElement(tc_rate, "timebase").text = str(timebase)
-    ET.SubElement(tc_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-
-    media = ET.SubElement(sequence, "media")
-    video_section = ET.SubElement(media, "video")
-    audio_section = ET.SubElement(media, "audio")
+    xmeml, dur_elem, video_section, audio_section = _render_sequence_skeleton(seq_name, timebase, is_ntsc)
 
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
-    _file_ids: dict[str, str] = {}  # media_name → file-id
-    _link_groups: dict[str, list[tuple[str, str, int, int]]] = {}  # name → [(ci_id, mediatype, t_idx, c_idx)]
+    _file_ids: dict[str, FileData] = {}  # media_name → FileData
+    _link_groups: dict[str, list[LinkMember]] = {}
 
     def _next_ci_id(name: str) -> str:
         cid = f"{name} {_id_counter[0]}"
@@ -2107,133 +2231,21 @@ def _prproj_parse_sequence(
         _id_counter[0] += 1
         return fid
 
-    # ─── Helper: extract clip data from .prproj chain ────────────────
-    def _extract_clip(cti: ET.Element) -> ClipData:
-        """Returns (name, media_path, start, end, in_pt, out_pt, speed, tc, sw, sh, scale, rot)."""
-        subclip = cti.find("SubClip")
-        mc_name = "(unknown)"
-        media_path = ""
-        in_point = 0
-        out_point = 0
-        playback_speed = 100
-        source_tc = _SourceTCInfo()
-        src_w, src_h = w, h
-        scale_val = 100.0
-        rotation_val = 0.0
-
-        # Timeline position
-        ti_inner = cti.find("TrackItem")
-        if ti_inner is not None:
-            s = ti_inner.findtext("Start")
-            e = ti_inner.findtext("End")
-            start = _prproj_ticks_to_frames(s, fps) if s else 0
-            end = _prproj_ticks_to_frames(e, fps) if e else 0
-        else:
-            start, end = 0, 0
-
-        if subclip is not None:
-            sc_ref = subclip.get("ObjectRef")
-            sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
-            if sc_el is not None:
-                mc_name = sc_el.findtext("Name", mc_name)
-                mc_uref_el = sc_el.find("MasterClip")
-                if mc_uref_el is not None:
-                    mc_uref = mc_uref_el.get("ObjectURef")
-                    mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
-                    if mc_el is not None:
-                        for media_el in prproj_root.findall("Media"):
-                            mfp = media_el.findtext("FilePath")
-                            if not mfp:
-                                continue
-                            if Path(mfp.replace("\\", "/")).name.lower() == mc_name.lower():
-                                media_path = mfp
-                                break
-                        source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                        if not source_tc.resolved and media_path:
-                            local = Path(media_path)
-                            if local.exists():
-                                source_tc = _ffprobe_read_timecode(str(local))
-                        sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
-                        if sr[0] > 0 and sr[1] > 0:
-                            src_w, src_h = sr
-                clip_ref_el = sc_el.find("Clip")
-                if clip_ref_el is not None:
-                    clip_ref = clip_ref_el.get("ObjectRef")
-                    clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
-                    if clip_el is not None:
-                        inner = clip_el.find("Clip")
-                        if inner is not None:
-                            ip = inner.findtext("InPoint")
-                            op = inner.findtext("OutPoint")
-                            if ip is not None:
-                                in_point = _prproj_ticks_to_frames(ip, fps)
-                            if op is not None:
-                                out_point = _prproj_ticks_to_frames(op, fps)
-                        ps = clip_el.findtext("PlaybackSpeed")
-                        if ps:
-                            try:
-                                playback_speed = int(float(ps))
-                            except ValueError:
-                                pass
-
-        # Motion data
-        co = cti.find("ComponentOwner")
-        if co is not None:
-            comps = co.find("Components")
-            if comps is not None:
-                chain = idx.resolve_ref(comps.get("ObjectRef", ""))
-                if chain is not None and chain.findtext("DefaultMotion") == "false":
-                    chain_comps = chain.find("Components")
-                    if chain_comps is not None:
-                        for c in chain_comps.findall("Component"):
-                            c_el = idx.resolve_ref(c.get("ObjectRef", ""))
-                            if c_el is None:
-                                continue
-                            inner_c = c_el.find(".//Params")
-                            if inner_c is None:
-                                continue
-                            for p_ref in inner_c.findall("Param"):
-                                p_el = idx.resolve_ref(p_ref.get("ObjectRef", ""))
-                                if p_el is None:
-                                    continue
-                                pname = p_el.findtext("Name", "")
-                                sk = p_el.findtext("StartKeyframe", "")
-                                if not pname or not sk:
-                                    continue
-                                parts = sk.split(",")
-                                if len(parts) < 2:
-                                    continue
-                                try:
-                                    val = float(parts[1])
-                                except ValueError:
-                                    continue
-                                if pname == "Scale":
-                                    scale_val = val
-                                elif pname == "Rotation":
-                                    rotation_val = val
-
-        return ClipData(
-            name=mc_name, media_path=media_path,
-            start=start, end=end, in_pt=in_point, out_pt=out_point,
-            playback_speed=playback_speed, source_tc=source_tc,
-            source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
-        )
-
-    # ─── Helper: build a DC-format file element ─────────────────────
-    def _build_file(name: str, path: str, dur: int, tc_info: _SourceTCInfo,
-                    sw: int, sh: int, for_audio_only: bool = False) -> ET.Element:
-        fid = _next_fi_id(name)
-        _file_ids.setdefault(name, fid)
-        fe = ET.Element("file")
-        fe.set("id", fid)
+    # ─── Helper: render a <file> element from FileData ─────────────
+    def _render_file(fd: FileData) -> ET.Element:
+        tc_info = fd.timecode
+        if tc_info is None:
+            tc_info = _SourceTCInfo()
         src_tb = int(round(tc_info.media_fps))
         src_ntsc = tc_info.is_ntsc
-        ET.SubElement(fe, "duration").text = str(dur)
+        fe = ET.Element("file")
+        fe.set("id", fd.id)
+        ET.SubElement(fe, "duration").text = str(fd.duration)
         fr = ET.SubElement(fe, "rate")
         ET.SubElement(fr, "timebase").text = str(src_tb)
         ET.SubElement(fr, "ntsc").text = "TRUE" if src_ntsc else "FALSE"
-        ET.SubElement(fe, "name").text = name
-        ET.SubElement(fe, "pathurl").text = _to_fcp7_pathurl(path) if path else f"file://localhost/{name}"
+        ET.SubElement(fe, "name").text = fd.name
+        ET.SubElement(fe, "pathurl").text = _to_fcp7_pathurl(fd.path) if fd.path else f"file://localhost/{fd.name}"
         ftc = ET.SubElement(fe, "timecode")
         ET.SubElement(ftc, "string").text = tc_info.timecode_string
         ET.SubElement(ftc, "displayformat").text = "DF" if src_ntsc else "NDF"
@@ -2241,159 +2253,112 @@ def _prproj_parse_sequence(
         ET.SubElement(ftcr, "timebase").text = str(src_tb)
         ET.SubElement(ftcr, "ntsc").text = "TRUE" if src_ntsc else "FALSE"
         fmedia = ET.SubElement(fe, "media")
-        if not for_audio_only:
+        if not fd.for_audio_only:
             fv = ET.SubElement(fmedia, "video")
-            ET.SubElement(fv, "duration").text = str(dur)
+            ET.SubElement(fv, "duration").text = str(fd.duration)
             fvsc = ET.SubElement(fv, "samplecharacteristics")
-            ET.SubElement(fvsc, "width").text = str(sw)
-            ET.SubElement(fvsc, "height").text = str(sh)
+            ET.SubElement(fvsc, "width").text = str(fd.source_w)
+            ET.SubElement(fvsc, "height").text = str(fd.source_h)
         fa = ET.SubElement(fmedia, "audio")
         ET.SubElement(fa, "channelcount").text = "2"
         return fe
 
     # ─── Helper: build DC-format filters ────────────────────────────
-    def _add_video_filters(ci: ET.Element, dur: int, scale: float, rotation: float, speed: int):
-        # Basic Motion
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Basic Motion"),("effectid","basic"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname, pid, pval, pmin, pmax in [
-            ("Scale","scale", str(scale),"1","10000"),
-            ("Center","center","","",""),
-            ("Rotation","rotation", str(rotation),"-100000","100000"),
-            ("Anchor Point","centerOffset","","","")]:
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pid
-            if pname in ("Center","Anchor Point"):
-                cv = ET.SubElement(param, "value")
-                ET.SubElement(cv, "horiz").text = "0"
-                ET.SubElement(cv, "vert").text = "0"
-            else:
-                ET.SubElement(param, "value").text = pval
-            if pmin:
-                ET.SubElement(param, "valuemin").text = pmin
-                ET.SubElement(param, "valuemax").text = pmax
-        # Crop
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Crop"),("effectid","crop"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname in ("left","right","top","bottom"):
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pname
-            ET.SubElement(param, "value").text = "0"
-            ET.SubElement(param, "valuemin").text = "0"
-            ET.SubElement(param, "valuemax").text = "100"
-        # Opacity
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Opacity"),("effectid","opacity"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "opacity"
-        ET.SubElement(param, "parameterid").text = "opacity"
-        ET.SubElement(param, "value").text = "100"
-        ET.SubElement(param, "valuemin").text = "0"
-        ET.SubElement(param, "valuemax").text = "100"
-        # Time Remap
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","-1"),("end","-1")]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Time Remap"),("effectid","timeremap"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname, pid, pval, pmin, pmax in [
-            ("speed","speed", str(speed),"-10000","10000"),
-            ("reverse","reverse","FALSE","",""),
-            ("frameblending","frameblending","FALSE","",""),
-            ("variablespeed","variablespeed","0","0","1")]:
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pid
-            ET.SubElement(param, "value").text = pval
-            if pmin:
-                ET.SubElement(param, "valuemin").text = pmin
-                ET.SubElement(param, "valuemax").text = pmax
-
-    def _add_audio_filters(ci: ET.Element, dur: int, speed: int):
-        # Time Remap (if speed != 100)
-        if speed != 100:
+    def _render_filters(ci: ET.Element, specs: list[FilterSpec]) -> None:
+        """Render a list of FilterSpec objects into <filter> ET elements."""
+        for spec in specs:
             filt = ET.SubElement(ci, "filter")
-            for tag, val in [("enabled","TRUE"),("start","-1"),("end","-1")]:
+            for tag, val in [("enabled", "TRUE"), ("start", spec.start), ("end", spec.end)]:
                 ET.SubElement(filt, tag).text = val
             eff = ET.SubElement(filt, "effect")
-            for tag, val in [("name","Time Remap"),("effectid","timeremap"),("effecttype","motion"),
-                             ("mediatype","audio"),("effectcategory","motion")]:
+            for tag, val in [("name", spec.name), ("effectid", spec.effect_id),
+                             ("effecttype", spec.effect_type), ("mediatype", spec.media_type),
+                             ("effectcategory", spec.effect_category)]:
                 ET.SubElement(eff, tag).text = val
-            for pname, pid, pval, pmin, pmax in [
-                ("speed","speed", str(speed),"-10000","10000"),
-                ("reverse","reverse","FALSE","",""),
-                ("frameblending","frameblending","FALSE","",""),
-                ("variablespeed","variablespeed","0","0","1")]:
+            for p in spec.params:
                 param = ET.SubElement(eff, "parameter")
-                ET.SubElement(param, "name").text = pname
-                ET.SubElement(param, "parameterid").text = pid
-                ET.SubElement(param, "value").text = pval
-                if pmin:
-                    ET.SubElement(param, "valuemin").text = pmin
-                    ET.SubElement(param, "valuemax").text = pmax
-        # Audio Levels
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Audio Levels"),("effectid","audiolevels"),
-                         ("effecttype","audiolevels"),("mediatype","audio"),
-                         ("effectcategory","audiolevels")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "Level"
-        ET.SubElement(param, "parameterid").text = "level"
-        ET.SubElement(param, "value").text = "1"
-        ET.SubElement(param, "valuemin").text = "0"
-        ET.SubElement(param, "valuemax").text = "3.98109"
-        # Audio Pan
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Audio Pan"),("effectid","audiopan"),
-                         ("effecttype","audiopan"),("mediatype","audio"),
-                         ("effectcategory","audiopan")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "Pan"
-        ET.SubElement(param, "parameterid").text = "pan"
-        ET.SubElement(param, "value").text = "0"
-        ET.SubElement(param, "valuemin").text = "-1"
-        ET.SubElement(param, "valuemax").text = "1"
+                ET.SubElement(param, "name").text = p.name
+                ET.SubElement(param, "parameterid").text = p.parameterid
+                if p.is_composite:
+                    cv = ET.SubElement(param, "value")
+                    ET.SubElement(cv, "horiz").text = "0"
+                    ET.SubElement(cv, "vert").text = "0"
+                else:
+                    ET.SubElement(param, "value").text = p.value
+                if p.valuemin:
+                    ET.SubElement(param, "valuemin").text = p.valuemin
+                    ET.SubElement(param, "valuemax").text = p.valuemax
+
+    def _build_video_filters(dur: int, scale: float, rotation: float, speed: int) -> list[FilterSpec]:
+        """Build video filter specs from clip data. Pure data, no ET."""
+        dur_s = str(dur)
+        return [
+            FilterSpec(effect_id="basic", name="Basic Motion", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[
+                           FilterParam("Scale", "scale", str(scale), "1", "10000"),
+                           FilterParam("Center", "center", "", "", "", is_composite=True),
+                           FilterParam("Rotation", "rotation", str(rotation), "-100000", "100000"),
+                           FilterParam("Anchor Point", "centerOffset", "", "", "", is_composite=True),
+                       ]),
+            FilterSpec(effect_id="crop", name="Crop", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[FilterParam(p, p, "0", "0", "100") for p in ("left", "right", "top", "bottom")]),
+            FilterSpec(effect_id="opacity", name="Opacity", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[FilterParam("opacity", "opacity", "100", "0", "100")]),
+            FilterSpec(effect_id="timeremap", name="Time Remap", effect_type="motion",
+                       media_type="video", effect_category="motion", start="-1", end="-1",
+                       params=[
+                           FilterParam("speed", "speed", str(speed), "-10000", "10000"),
+                           FilterParam("reverse", "reverse", "FALSE"),
+                           FilterParam("frameblending", "frameblending", "FALSE"),
+                           FilterParam("variablespeed", "variablespeed", "0", "0", "1"),
+                       ]),
+        ]
+
+    def _build_audio_filters(dur: int, speed: int) -> list[FilterSpec]:
+        """Build audio filter specs. Pure data, no ET."""
+        dur_s = str(dur)
+        specs = []
+        if speed != 100:
+            specs.append(FilterSpec(effect_id="timeremap", name="Time Remap", effect_type="motion",
+                                    media_type="audio", effect_category="motion", start="-1", end="-1",
+                                    params=[
+                                        FilterParam("speed", "speed", str(speed), "-10000", "10000"),
+                                        FilterParam("reverse", "reverse", "FALSE"),
+                                        FilterParam("frameblending", "frameblending", "FALSE"),
+                                        FilterParam("variablespeed", "variablespeed", "0", "0", "1"),
+                                    ]))
+        specs.append(FilterSpec(effect_id="audiolevels", name="Audio Levels", effect_type="audiolevels",
+                                media_type="audio", effect_category="audiolevels", start="0", end=dur_s,
+                                params=[FilterParam("Level", "level", "1", "0", "3.98109")]))
+        specs.append(FilterSpec(effect_id="audiopan", name="Audio Pan", effect_type="audiopan",
+                                media_type="audio", effect_category="audiopan", start="0", end=dur_s,
+                                params=[FilterParam("Pan", "pan", "0", "-1", "1")]))
+        return specs
+
+    def _add_video_filters(ci: ET.Element, dur: int, scale: float, rotation: float, speed: int):
+        specs = _build_video_filters(dur, scale, rotation, speed)
+        _render_filters(ci, specs)
+
+    def _add_audio_filters(ci: ET.Element, dur: int, speed: int):
+        specs = _build_audio_filters(dur, speed)
+        _render_filters(ci, specs)
 
     # ─── Helper: build DC-format transition ─────────────────────────
-    def _build_transition(start_frame: int, end_frame: int) -> ET.Element:
-        """Build a DC-format Cross Dissolve transition item."""
+    def _render_transition(td: TransitionData) -> ET.Element:
+        """Build a DC-format transition item from TransitionData."""
         ti = ET.Element("transitionitem")
         tr = ET.SubElement(ti, "rate")
         ET.SubElement(tr, "timebase").text = str(timebase)
         ET.SubElement(tr, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-        ET.SubElement(ti, "start").text = str(start_frame)
-        ET.SubElement(ti, "end").text = str(end_frame)
-        ET.SubElement(ti, "alignment").text = "center"
+        ET.SubElement(ti, "start").text = str(td.start_frame)
+        ET.SubElement(ti, "end").text = str(td.end_frame)
+        ET.SubElement(ti, "alignment").text = td.alignment
         eff = ET.SubElement(ti, "effect")
         for tag, val in [
-            ("name", "Cross Dissolve"), ("effectid", "Cross Dissolve"),
+            ("name", td.effect_id), ("effectid", td.effect_id),
             ("effecttype", "transition"), ("mediatype", "video"),
             ("effectcategory", "Dissolve"),
         ]:
@@ -2403,6 +2368,43 @@ def _prproj_parse_sequence(
         return ti
 
     # ═══════════════════════════════════════════════════════════════════
+    # ─── Helper: render a complete clipitem from data ──────────────
+    def _render_clipitem(
+        cl: ClipData, fd: FileData, clip_dur: int, start_frame: int,
+        ci_id: str, mediatype: str,
+        *,
+        is_shared_file: bool = False,
+    ) -> ET.Element:
+        """Build a DC-format <clipitem> from data. No side effects."""
+        ci = ET.Element("clipitem")
+        ci.set("id", ci_id)
+        ET.SubElement(ci, "name").text = cl.name
+        ET.SubElement(ci, "duration").text = str(clip_dur)
+        cir = ET.SubElement(ci, "rate")
+        ET.SubElement(cir, "timebase").text = str(timebase)
+        ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(ci, "start").text = str(start_frame)
+        ET.SubElement(ci, "end").text = str(cl.end)
+        ET.SubElement(ci, "enabled").text = "TRUE"
+        ET.SubElement(ci, "in").text = str(cl.in_pt)
+        ET.SubElement(ci, "out").text = str(cl.out_pt)
+        if is_shared_file:
+            # Audio: self-closing ref to existing file
+            fe = ET.SubElement(ci, "file")
+            fe.set("id", fd.id)
+        else:
+            ci.append(_render_file(fd))
+        if mediatype == "video":
+            ET.SubElement(ci, "compositemode").text = "normal"
+            _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
+        else:
+            st_el = ET.SubElement(ci, "sourcetrack")
+            ET.SubElement(st_el, "mediatype").text = "audio"
+            ET.SubElement(st_el, "trackindex").text = "1"
+            _add_audio_filters(ci, clip_dur, cl.playback_speed)
+        ET.SubElement(ci, "comments")
+        return ci
+
     # PASS 1: Video tracks
     # ═══════════════════════════════════════════════════════════════════
     if video_tg is not None:
@@ -2423,6 +2425,7 @@ def _prproj_parse_sequence(
                 track_items = ti_section.findall("TrackItem")
                 if not track_items:
                     continue
+                track_data = TrackData(type="video", index=vt_idx)
                 fcp_track = ET.SubElement(video_section, "track")
                 track_start = 0
                 for vc_idx, ti_ref in enumerate(track_items, 1):
@@ -2432,33 +2435,23 @@ def _prproj_parse_sequence(
                     cti = ti_el.find("ClipTrackItem")
                     if cti is None:
                         continue
-                    cl = _extract_clip(cti)
+                    cl = _extract_clip(cti, idx, prproj_root, w, h, fps)
                     start = track_start  # override with contiguous track position
                     track_start = cl.end
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
                     file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
-                    file_fe = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h)
-
-                    ci = ET.SubElement(fcp_track, "clipitem")
+                    fd = FileData(
+                        id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
+                        duration=file_dur_val, timecode=cl.source_tc,
+                        source_w=cl.source_w, source_h=cl.source_h,
+                    )
+                    _file_ids.setdefault(cl.name, fd)
                     ci_id = _next_ci_id(cl.name)
-                    ci.set("id", ci_id)
-                    _link_groups.setdefault(cl.name, []).append((ci_id, "video", vt_idx, vc_idx))
-
-                    ET.SubElement(ci, "name").text = cl.name
-                    ET.SubElement(ci, "duration").text = str(clip_dur)
-                    cir = ET.SubElement(ci, "rate")
-                    ET.SubElement(cir, "timebase").text = str(timebase)
-                    ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-                    ET.SubElement(ci, "start").text = str(start)
-                    ET.SubElement(ci, "end").text = str(cl.end)
-                    ET.SubElement(ci, "enabled").text = "TRUE"
-                    ET.SubElement(ci, "in").text = str(cl.in_pt)
-                    ET.SubElement(ci, "out").text = str(cl.out_pt)
-                    ci.append(file_fe)
-                    ET.SubElement(ci, "compositemode").text = "normal"
-                    _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
-                    ET.SubElement(ci, "comments")
+                    _link_groups.setdefault(cl.name, []).append(
+                        LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
+                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
+                    fcp_track.append(ci)
 
                 # Insert transitions between adjacent clips on this track
                 clipitems_in_track = fcp_track.findall("clipitem")
@@ -2471,13 +2464,13 @@ def _prproj_parse_sequence(
                         # Transition overlaps: last N frames of A, first N frames of B
                         trans_start = max(0, end_a - overlap)
                         trans_end = end_a + overlap
-                        tr = _build_transition(trans_start, trans_end)
+                        tr = _render_transition(TransitionData(start_frame=trans_start, end_frame=trans_end))
                         # Insert at position of ci_b (before it in the track)
                         insert_idx = list(fcp_track).index(ci_b)
                         fcp_track.insert(insert_idx, tr)
 
-                ET.SubElement(fcp_track, "enabled").text = "TRUE"
-                ET.SubElement(fcp_track, "locked").text = "FALSE"
+                ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
+                ET.SubElement(fcp_track, "locked").text = "TRUE" if track_data.locked else "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
     # PASS 2: Audio tracks
@@ -2499,6 +2492,7 @@ def _prproj_parse_sequence(
                 a_track_items = a_ti_section.findall("TrackItem")
                 if not a_track_items:
                     continue
+                a_track_data = TrackData(type="audio", index=at_idx)
                 fcp_a_track = ET.SubElement(audio_section, "track")
                 a_track_start = 0
                 for ac_idx, a_ti_ref in enumerate(a_track_items, 1):
@@ -2508,92 +2502,96 @@ def _prproj_parse_sequence(
                     a_cti = a_ti_el.find("ClipTrackItem")
                     if a_cti is None:
                         continue
-                    cl = _extract_clip(a_cti)
+                    cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps)
                     start = a_track_start
                     a_track_start = cl.end
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
 
-                    a_ci = ET.SubElement(fcp_a_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
-                    a_ci.set("id", ci_id)
-                    _link_groups.setdefault(cl.name, []).append((ci_id, "audio", at_idx, ac_idx))
-
-                    ET.SubElement(a_ci, "name").text = cl.name
-                    ET.SubElement(a_ci, "duration").text = str(clip_dur)
-                    cir = ET.SubElement(a_ci, "rate")
-                    ET.SubElement(cir, "timebase").text = str(timebase)
-                    ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-                    ET.SubElement(a_ci, "start").text = str(start)
-                    ET.SubElement(a_ci, "end").text = str(cl.end)
-                    ET.SubElement(a_ci, "enabled").text = "TRUE"
-                    ET.SubElement(a_ci, "in").text = str(cl.in_pt)
-                    ET.SubElement(a_ci, "out").text = str(cl.out_pt)
+                    _link_groups.setdefault(cl.name, []).append(
+                        LinkMember(clipitem_id=ci_id, mediatype="audio", track_index=at_idx, clip_index=ac_idx))
 
                     # File: shared ref or full standalone
-                    vid_fid = _file_ids.get(cl.name)
-                    if vid_fid:
-                        a_file = ET.SubElement(a_ci, "file")
-                        a_file.set("id", vid_fid)
+                    existing_fd = _file_ids.get(cl.name)
+                    if existing_fd is not None:
+                        fd = existing_fd
+                        is_shared = True
                     else:
                         file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
-                        a_file = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h, for_audio_only=True)
-                        a_ci.append(a_file)
+                        fd = FileData(
+                            id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
+                            duration=file_dur_val, timecode=cl.source_tc,
+                            source_w=cl.source_w, source_h=cl.source_h, for_audio_only=True,
+                        )
+                        _file_ids[cl.name] = fd
+                        is_shared = False
 
-                    # Sourcetrack (audio only — video clipitems in DC format have none)
-                    st_el = ET.SubElement(a_ci, "sourcetrack")
-                    ET.SubElement(st_el, "mediatype").text = "audio"
-                    ET.SubElement(st_el, "trackindex").text = "1"
+                    a_ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "audio", is_shared_file=is_shared)
+                    fcp_a_track.append(a_ci)
 
-                    _add_audio_filters(a_ci, clip_dur, cl.playback_speed)
-                    ET.SubElement(a_ci, "comments")
-
-                ET.SubElement(fcp_a_track, "enabled").text = "TRUE"
-                ET.SubElement(fcp_a_track, "locked").text = "FALSE"
+                ET.SubElement(fcp_a_track, "enabled").text = "TRUE" if a_track_data.enabled else "FALSE"
+                ET.SubElement(fcp_a_track, "locked").text = "TRUE" if a_track_data.locked else "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
     # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
     # ═══════════════════════════════════════════════════════════════════
-    for name, members in _link_groups.items():
-        if len(members) < 2:
-            continue
-        # Find the first video member (for mediatype marking on audio links)
-        first_video_ref = None
-        for ref_id, mtype, _, _ in members:
-            if mtype == "video":
-                first_video_ref = ref_id
+    def _resolve_links(
+        groups: dict[str, list[LinkMember]],
+    ) -> list[LinkGroup]:
+        """Resolve link groups from raw registrations. Pure data, no ET."""
+        result = []
+        for name, members in groups.items():
+            if len(members) < 2:
+                continue
+            first_vid = None
+            for m in members:
+                if m.mediatype == "video":
+                    first_vid = m.clipitem_id
+                    break
+            result.append(LinkGroup(media_name=name, members=list(members), first_video_id=first_vid))
+        return result
+
+    def _render_links_for_clipitem(
+        ci: ET.Element,
+        group: LinkGroup,
+        *,
+        is_audio: bool = False,
+    ) -> None:
+        """Insert <link> elements into one clipitem. No shared ET objects.
+
+        Creates every <link> fresh — no deepcopy needed.
+        DC convention: audio clipitem's first link gets <mediatype>video</mediatype>.
+        Video clipitem links never have mediatype.
+        """
+        for old in ci.findall("link"):
+            ci.remove(old)
+        ins_pos = len(list(ci))
+        for i, child in enumerate(ci):
+            if child.tag == "comments":
+                ins_pos = i
                 break
-        links: list[ET.Element] = []
-        for ref_id, _, _, _ in members:
-            link = ET.Element("link")
-            ET.SubElement(link, "linkclipref").text = ref_id
-            links.append(link)
-        for ref_id, mtype, _, _ in members:
+        for other_m in group.members:
+            el = ET.Element("link")
+            ET.SubElement(el, "linkclipref").text = other_m.clipitem_id
+            # DC: only audio clipitems get <mediatype>video</mediatype>
+            if is_audio and group.first_video_id and other_m.clipitem_id == group.first_video_id:
+                mt = ET.Element("mediatype")
+                mt.text = "video"
+                el.insert(1, mt)
+            ci.insert(ins_pos, el)
+            ins_pos += 1
+
+    for group in _resolve_links(_link_groups):
+        for m in group.members:
             ci = None
-            if mtype == "video":
-                ci = video_section.find(f".//clipitem[@id='{ref_id}']")
+            if m.mediatype == "video":
+                ci = video_section.find(f".//clipitem[@id='{m.clipitem_id}']")
             else:
-                ci = audio_section.find(f".//clipitem[@id='{ref_id}']")
+                ci = audio_section.find(f".//clipitem[@id='{m.clipitem_id}']")
             if ci is None:
                 continue
-            for old in ci.findall("link"):
-                ci.remove(old)
-            # Insert links AFTER filters (DC convention: filter→link→comments)
-            ins_pos = len(list(ci))
-            for i, child in enumerate(ci):
-                if child.tag == "comments":
-                    ins_pos = i
-                    break
-            for j, link in enumerate(links):
-                # Always deepcopy — XML Element can only have ONE parent
-                link_copy = copy.deepcopy(link)
-                # DC: first link in audio clipitem gets <mediatype>video</mediatype>
-                if mtype == "audio" and j == 0 and first_video_ref is not None:
-                    mt = ET.Element("mediatype")
-                    mt.text = "video"
-                    link_copy.insert(1, mt)
-                ci.insert(ins_pos, link_copy)
-                ins_pos += 1
+            _render_links_for_clipitem(ci, group, is_audio=(m.mediatype == "audio"))
 
     # ─── Finalize ────────────────────────────────────────────────────
     dur_elem.text = str(total_frames if total_frames > 0 else 0)

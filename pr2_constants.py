@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "1.0.0"
+VERSION = "0.9.9"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -69,6 +69,90 @@ class ClipData:
     source_h: int = 0                     # Media→VideoStream→FrameRect height
     scale: float = 100.0                  # PR Motion Scale (StartKeyframe)
     rotation: float = 0.0                 # PR Motion Rotation (StartKeyframe)
+
+
+@dataclass
+class FileData:
+    """Media file metadata for one <file> element in FCP7 XML.
+
+    Decoupled from ElementTree.  Created once per unique media file
+    in the parser pass, then referenced by audio clipitems sharing
+    the same source media.
+    """
+
+    id: str                    # DC-format file id: "{name} {counter}"
+    name: str                  # media filename (base name)
+    path: str = ""             # local absolute file path
+    duration: int = 0          # full media duration in frames
+    timecode: Optional[object] = None  # _SourceTCInfo — timecode metadata
+    source_w: int = 0          # video width from source media
+    source_h: int = 0          # video height from source media
+    for_audio_only: bool = False
+
+
+@dataclass
+class LinkMember:
+    """One clipitem in a link group (clips sharing the same source media)."""
+
+    clipitem_id: str   # "{media_name} {counter}" — DC clipitem id
+    mediatype: str     # "video" | "audio"
+    track_index: int   # 1-based track index
+    clip_index: int    # within-track clip index
+
+
+@dataclass
+class LinkGroup:
+    """All clipitems sharing the same source media file."""
+
+    media_name: str                        # group key (same as ClipData.name)
+    members: list[LinkMember]              # all linked clipitems
+    first_video_id: Optional[str] = None   # first video member's clipitem_id
+
+
+@dataclass
+class FilterParam:
+    """One parameter inside a filter <effect> element — decoupled from ET."""
+
+    name: str               # e.g. "Scale", "Level"
+    parameterid: str        # e.g. "scale", "level"
+    value: str              # pre-formatted string
+    valuemin: str = ""
+    valuemax: str = ""
+    is_composite: bool = False  # True → value rendered as <horiz>/<vert>
+
+
+@dataclass
+class FilterSpec:
+    """One <filter> element's complete content — decoupled from ET."""
+
+    effect_id: str          # e.g. "basic", "crop", "timeremap"
+    name: str               # e.g. "Basic Motion", "Crop"
+    effect_type: str        # "motion" | "audiolevels" | "audiopan"
+    media_type: str         # "video" | "audio"
+    effect_category: str    # "motion" | "audiolevels" | "audiopan"
+    start: str              # filter range start ("0" or "-1")
+    end: str                # filter range end (str(dur) or "-1")
+    params: list[FilterParam]
+
+
+@dataclass
+class TrackData:
+    """One timeline track — decoupled from ET."""
+
+    type: str             # "video" | "audio"
+    index: int            # 1-based track index
+    enabled: bool = True
+    locked: bool = False
+
+
+@dataclass
+class TransitionData:
+    """One cross-dissolve transition — decoupled from ET."""
+
+    start_frame: int
+    end_frame: int
+    alignment: str = "center"
+    effect_id: str = "Cross Dissolve"
 
 
 @dataclass
