@@ -50,6 +50,28 @@ class ScaleIssue:
 
 
 @dataclass
+class ClipData:
+    """Extracted clip data from a .prproj ClipTrackItem chain.
+
+    Covers clip identity, timeline position, source trimming,
+    playback speed, motion effects, and media file metadata.
+    """
+
+    name: str                             # SubClip→MasterClip→Name
+    media_path: str = ""                  # full local path to media file
+    start: int = 0                        # timeline start (ticks→frames)
+    end: int = 0                          # timeline end (ticks→frames)
+    in_pt: int = 0                        # source in-point (Clip→InPoint)
+    out_pt: int = 0                       # source out-point (Clip→OutPoint)
+    playback_speed: int = 100             # 100 = normal speed
+    source_tc: Optional[object] = None    # _SourceTCInfo — timecode metadata
+    source_w: int = 0                     # Media→VideoStream→FrameRect width
+    source_h: int = 0                     # Media→VideoStream→FrameRect height
+    scale: float = 100.0                  # PR Motion Scale (StartKeyframe)
+    rotation: float = 0.0                 # PR Motion Rotation (StartKeyframe)
+
+
+@dataclass
 class Issue:
     """A single diagnostics finding."""
     severity: str       # CRITICAL | MAJOR | MINOR
