@@ -3018,7 +3018,7 @@ def _drp_export(
 
     # ── Step 3: Import timelines ──
     # importSourceClips=False — media already in pool from Step 1
-    # True causes failure when some pathurls are unreachable
+    import_failed = False
     for xml_path, seq_name in zip(xml_paths, sequence_names):
         timeline = media_pool.ImportTimelineFromFile(
             str(xml_path),
@@ -3032,24 +3032,28 @@ def _drp_export(
                 pass
         else:
             print(f"  Timeline import FAILED: {seq_name}")
+            import_failed = True
 
     # ── Step 4: Export DRP ──
-    try:
-        pm.SaveProject()
-    except Exception:
-        pass
     drp_result = False
-    try:
-        drp_result = pm.ExportProject(final_name, str(output_path), False)
-    except Exception as e:
-        print(f"  DRP export error: {e}")
-
-    if drp_result:
-        print(f"  DRP exported: {output_path}")
+    if import_failed:
+        print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
     else:
-        print(f"  DRP export via API failed (project may still be in database).")
-        print(f"  Project \"{final_name}\" created in DaVinci database.")
-        print(f"  To export manually: File -> Export Project -> {output_path.name}")
+        try:
+            pm.SaveProject()
+        except Exception:
+            pass
+        try:
+            drp_result = pm.ExportProject(final_name, str(output_path), False)
+        except Exception as e:
+            print(f"  DRP export error: {e}")
+
+        if drp_result:
+            print(f"  DRP exported: {output_path}")
+        else:
+            print(f"  DRP export via API failed (project may still be in database).")
+            print(f"  Project \"{final_name}\" created in DaVinci database.")
+            print(f"  To export manually: File -> Export Project -> {output_path.name}")
 
     # ── Step 5: Cleanup based on mode ──
     if gui:
