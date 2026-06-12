@@ -1,7 +1,7 @@
 <div align="center">
 
-> **Current Status: Architecture Refactor In Progress**  
-> *v0.9.3 — extracting domain model from XML rendering layer*
+> **Current Status: Stable**  
+> *v1.0.0 — production release*
 
 # .PRPROJ-.DRT Converter
 

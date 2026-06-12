@@ -7,13 +7,12 @@ prproj parser, and DRT bridge.
 from __future__ import annotations
 
 import copy
-import gzip
 import os
 import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -21,9 +20,8 @@ from xml.dom import minidom
 
 from pr2_constants import (
     VERSION, DEFAULT_FPS, MICROSECOND, NTSC_RATES, PAL_RATES, FPS_TOLERANCE,
-    FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
+    FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
-    _ORDER_MAP,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
     FilterParam, FilterSpec, TrackData, TransitionData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
@@ -901,29 +899,6 @@ def _create_video_format(root: ET.Element) -> ET.Element:
     ET.SubElement(appdata, "appmanufacturer").text = "Apple Inc."
     data = ET.SubElement(appdata, "data")
     ET.SubElement(data, "qtcodec")
-
-    return fmt
-
-
-def _create_audio_format() -> ET.Element:
-    """Create a <format> element for audio.
-
-    Returns:
-        A <format> Element with audio samplecharacteristics
-    """
-    fmt = ET.Element("format")
-    sc = ET.SubElement(fmt, "samplecharacteristics")
-
-    rate = ET.SubElement(sc, "rate")
-    tb = ET.SubElement(rate, "timebase")
-    tb.text = "48000"
-
-    depth = ET.SubElement(sc, "depth")
-    depth.text = "16"
-    samplerate = ET.SubElement(sc, "samplerate")
-    samplerate.text = "48000"
-    channelcount = ET.SubElement(sc, "channelcount")
-    channelcount.text = "2"
 
     return fmt
 
@@ -2338,14 +2313,6 @@ def _prproj_parse_sequence(
                                 params=[FilterParam("Pan", "pan", "0", "-1", "1")]))
         return specs
 
-    def _add_video_filters(ci: ET.Element, dur: int, scale: float, rotation: float, speed: int):
-        specs = _build_video_filters(dur, scale, rotation, speed)
-        _render_filters(ci, specs)
-
-    def _add_audio_filters(ci: ET.Element, dur: int, speed: int):
-        specs = _build_audio_filters(dur, speed)
-        _render_filters(ci, specs)
-
     # ─── Helper: build DC-format transition ─────────────────────────
     def _render_transition(td: TransitionData) -> ET.Element:
         """Build a DC-format transition item from TransitionData."""
@@ -2396,12 +2363,12 @@ def _prproj_parse_sequence(
             ci.append(_render_file(fd))
         if mediatype == "video":
             ET.SubElement(ci, "compositemode").text = "normal"
-            _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
+            _render_filters(ci, _build_video_filters(clip_dur, cl.scale, cl.rotation, cl.playback_speed))
         else:
             st_el = ET.SubElement(ci, "sourcetrack")
             ET.SubElement(st_el, "mediatype").text = "audio"
             ET.SubElement(st_el, "trackindex").text = "1"
-            _add_audio_filters(ci, clip_dur, cl.playback_speed)
+            _render_filters(ci, _build_audio_filters(clip_dur, cl.playback_speed))
         ET.SubElement(ci, "comments")
         return ci
 
