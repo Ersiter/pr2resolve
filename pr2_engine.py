@@ -2919,6 +2919,7 @@ def _drp_export(
         if final_name != temp_name:
             print(f"  Project \"{temp_name}\" exists — using \"{final_name}\"")
 
+    drp_result = False  # declared outside try so return below is safe
     try:
         project = pm.CreateProject(final_name)
         if project is None:
@@ -3003,7 +3004,6 @@ def _drp_export(
                 import_failed = True
 
         # ── Step 4: Export DRP ──
-        drp_result = False
         if import_failed:
             print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
         else:
