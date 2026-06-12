@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.5"
+VERSION = "0.9.6"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -132,6 +132,26 @@ class FilterSpec:
     start: str              # filter range start ("0" or "-1")
     end: str                # filter range end (str(dur) or "-1")
     params: list[FilterParam]
+
+
+@dataclass
+class TrackData:
+    """One timeline track — decoupled from ET."""
+
+    type: str             # "video" | "audio"
+    index: int            # 1-based track index
+    enabled: bool = True
+    locked: bool = False
+
+
+@dataclass
+class TransitionData:
+    """One cross-dissolve transition — decoupled from ET."""
+
+    start_frame: int
+    end_frame: int
+    alignment: str = "center"
+    effect_id: str = "Cross Dissolve"
 
 
 @dataclass

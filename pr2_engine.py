@@ -25,6 +25,7 @@ from pr2_constants import (
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, FilterParam, FilterSpec,
+    TrackData, TransitionData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2335,18 +2336,18 @@ def _prproj_parse_sequence(
         _render_filters(ci, specs)
 
     # ─── Helper: build DC-format transition ─────────────────────────
-    def _build_transition(start_frame: int, end_frame: int) -> ET.Element:
-        """Build a DC-format Cross Dissolve transition item."""
+    def _render_transition(td: TransitionData) -> ET.Element:
+        """Build a DC-format transition item from TransitionData."""
         ti = ET.Element("transitionitem")
         tr = ET.SubElement(ti, "rate")
         ET.SubElement(tr, "timebase").text = str(timebase)
         ET.SubElement(tr, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-        ET.SubElement(ti, "start").text = str(start_frame)
-        ET.SubElement(ti, "end").text = str(end_frame)
-        ET.SubElement(ti, "alignment").text = "center"
+        ET.SubElement(ti, "start").text = str(td.start_frame)
+        ET.SubElement(ti, "end").text = str(td.end_frame)
+        ET.SubElement(ti, "alignment").text = td.alignment
         eff = ET.SubElement(ti, "effect")
         for tag, val in [
-            ("name", "Cross Dissolve"), ("effectid", "Cross Dissolve"),
+            ("name", td.effect_id), ("effectid", td.effect_id),
             ("effecttype", "transition"), ("mediatype", "video"),
             ("effectcategory", "Dissolve"),
         ]:
@@ -2376,6 +2377,7 @@ def _prproj_parse_sequence(
                 track_items = ti_section.findall("TrackItem")
                 if not track_items:
                     continue
+                track_data = TrackData(type="video", index=vt_idx)
                 fcp_track = ET.SubElement(video_section, "track")
                 track_start = 0
                 for vc_idx, ti_ref in enumerate(track_items, 1):
@@ -2431,13 +2433,13 @@ def _prproj_parse_sequence(
                         # Transition overlaps: last N frames of A, first N frames of B
                         trans_start = max(0, end_a - overlap)
                         trans_end = end_a + overlap
-                        tr = _build_transition(trans_start, trans_end)
+                        tr = _render_transition(TransitionData(start_frame=trans_start, end_frame=trans_end))
                         # Insert at position of ci_b (before it in the track)
                         insert_idx = list(fcp_track).index(ci_b)
                         fcp_track.insert(insert_idx, tr)
 
-                ET.SubElement(fcp_track, "enabled").text = "TRUE"
-                ET.SubElement(fcp_track, "locked").text = "FALSE"
+                ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
+                ET.SubElement(fcp_track, "locked").text = "TRUE" if track_data.locked else "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
     # PASS 2: Audio tracks
@@ -2459,6 +2461,7 @@ def _prproj_parse_sequence(
                 a_track_items = a_ti_section.findall("TrackItem")
                 if not a_track_items:
                     continue
+                a_track_data = TrackData(type="audio", index=at_idx)
                 fcp_a_track = ET.SubElement(audio_section, "track")
                 a_track_start = 0
                 for ac_idx, a_ti_ref in enumerate(a_track_items, 1):
@@ -2515,8 +2518,8 @@ def _prproj_parse_sequence(
                     _add_audio_filters(a_ci, clip_dur, cl.playback_speed)
                     ET.SubElement(a_ci, "comments")
 
-                ET.SubElement(fcp_a_track, "enabled").text = "TRUE"
-                ET.SubElement(fcp_a_track, "locked").text = "FALSE"
+                ET.SubElement(fcp_a_track, "enabled").text = "TRUE" if a_track_data.enabled else "FALSE"
+                ET.SubElement(fcp_a_track, "locked").text = "TRUE" if a_track_data.locked else "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
     # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
