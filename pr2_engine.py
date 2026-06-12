@@ -2003,6 +2003,129 @@ def _prproj_extract_all_lumetri(
     return lumetri_data
 
 
+def _extract_clip(
+    cti: ET.Element,
+    idx: _PrprojIndex,
+    prproj_root: ET.Element,
+    default_w: int,
+    default_h: int,
+    fps: float,
+) -> ClipData:
+    """Extract ClipData from a .prproj ClipTrackItem chain.
+
+    All external dependencies are explicit parameters (no closure capture).
+    This function is pure data extraction — zero ET output created.
+    """
+    subclip = cti.find("SubClip")
+    mc_name = "(unknown)"
+    media_path = ""
+    in_point = 0
+    out_point = 0
+    playback_speed = 100
+    source_tc = _SourceTCInfo()
+    src_w, src_h = default_w, default_h
+    scale_val = 100.0
+    rotation_val = 0.0
+
+    # Timeline position
+    ti_inner = cti.find("TrackItem")
+    if ti_inner is not None:
+        s = ti_inner.findtext("Start")
+        e = ti_inner.findtext("End")
+        start = _prproj_ticks_to_frames(s, fps) if s else 0
+        end = _prproj_ticks_to_frames(e, fps) if e else 0
+    else:
+        start, end = 0, 0
+
+    if subclip is not None:
+        sc_ref = subclip.get("ObjectRef")
+        sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
+        if sc_el is not None:
+            mc_name = sc_el.findtext("Name", mc_name)
+            mc_uref_el = sc_el.find("MasterClip")
+            if mc_uref_el is not None:
+                mc_uref = mc_uref_el.get("ObjectURef")
+                mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
+                if mc_el is not None:
+                    for media_el in prproj_root.findall("Media"):
+                        mfp = media_el.findtext("FilePath")
+                        if not mfp:
+                            continue
+                        if Path(mfp.replace("\\", "/")).name.lower() == mc_name.lower():
+                            media_path = mfp
+                            break
+                    source_tc = _prproj_extract_source_tc_info(mc_el, idx)
+                    if not source_tc.resolved and media_path:
+                        local = Path(media_path)
+                        if local.exists():
+                            source_tc = _ffprobe_read_timecode(str(local))
+                    sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
+                    if sr[0] > 0 and sr[1] > 0:
+                        src_w, src_h = sr
+            clip_ref_el = sc_el.find("Clip")
+            if clip_ref_el is not None:
+                clip_ref = clip_ref_el.get("ObjectRef")
+                clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
+                if clip_el is not None:
+                    inner = clip_el.find("Clip")
+                    if inner is not None:
+                        ip = inner.findtext("InPoint")
+                        op = inner.findtext("OutPoint")
+                        if ip is not None:
+                            in_point = _prproj_ticks_to_frames(ip, fps)
+                        if op is not None:
+                            out_point = _prproj_ticks_to_frames(op, fps)
+                    ps = clip_el.findtext("PlaybackSpeed")
+                    if ps:
+                        try:
+                            playback_speed = int(float(ps))
+                        except ValueError:
+                            pass
+
+    # Motion data
+    co = cti.find("ComponentOwner")
+    if co is not None:
+        comps = co.find("Components")
+        if comps is not None:
+            chain = idx.resolve_ref(comps.get("ObjectRef", ""))
+            if chain is not None and chain.findtext("DefaultMotion") == "false":
+                chain_comps = chain.find("Components")
+                if chain_comps is not None:
+                    for c in chain_comps.findall("Component"):
+                        c_el = idx.resolve_ref(c.get("ObjectRef", ""))
+                        if c_el is None:
+                            continue
+                        inner_c = c_el.find(".//Params")
+                        if inner_c is None:
+                            continue
+                        for p_ref in inner_c.findall("Param"):
+                            p_el = idx.resolve_ref(p_ref.get("ObjectRef", ""))
+                            if p_el is None:
+                                continue
+                            pname = p_el.findtext("Name", "")
+                            sk = p_el.findtext("StartKeyframe", "")
+                            if not pname or not sk:
+                                continue
+                            parts = sk.split(",")
+                            if len(parts) < 2:
+                                continue
+                            try:
+                                val = float(parts[1])
+                            except ValueError:
+                                continue
+                            if pname == "Scale":
+                                scale_val = val
+                            elif pname == "Rotation":
+                                rotation_val = val
+
+    return ClipData(
+        name=mc_name, media_path=media_path,
+        start=start, end=end, in_pt=in_point, out_pt=out_point,
+        playback_speed=playback_speed, source_tc=source_tc,
+        source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
+    )
+
+
 def _prproj_parse_sequence(
     prproj_root: ET.Element,
     sequence_uid: str,
@@ -2066,32 +2189,32 @@ def _prproj_parse_sequence(
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
 
-    # ─── Build XML skeleton (DC format: name→duration→rate→in→out→timecode→media) ───
-    xmeml = ET.Element("xmeml")
-    xmeml.set("version", FCP7_VERSION)
+    def _render_sequence_skeleton(seq_name: str, timebase: int, is_ntsc: bool):
+        """Build DC-format sequence skeleton. Returns (xmeml, dur_elem, video_et, audio_et)."""
+        xmeml = ET.Element("xmeml")
+        xmeml.set("version", FCP7_VERSION)
+        sequence = ET.SubElement(xmeml, "sequence")
+        ET.SubElement(sequence, "name").text = seq_name
+        dur_elem = ET.SubElement(sequence, "duration")
+        rate_elem = ET.SubElement(sequence, "rate")
+        ET.SubElement(rate_elem, "timebase").text = str(timebase)
+        ET.SubElement(rate_elem, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(sequence, "in").text = "-1"
+        ET.SubElement(sequence, "out").text = "-1"
+        tc = ET.SubElement(sequence, "timecode")
+        ET.SubElement(tc, "string").text = "00;00;00;00" if is_ntsc else "00:00:00:00"
+        ET.SubElement(tc, "frame").text = "0"
+        ET.SubElement(tc, "displayformat").text = "DF" if is_ntsc else "NDF"
+        tc_rate = ET.SubElement(tc, "rate")
+        ET.SubElement(tc_rate, "timebase").text = str(timebase)
+        ET.SubElement(tc_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        media = ET.SubElement(sequence, "media")
+        video_section = ET.SubElement(media, "video")
+        audio_section = ET.SubElement(media, "audio")
+        return xmeml, dur_elem, video_section, audio_section
 
-    sequence = ET.SubElement(xmeml, "sequence")
     total_frames = 0
-
-    ET.SubElement(sequence, "name").text = seq_name
-    dur_elem = ET.SubElement(sequence, "duration")
-    rate_elem = ET.SubElement(sequence, "rate")
-    ET.SubElement(rate_elem, "timebase").text = str(timebase)
-    ET.SubElement(rate_elem, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-    ET.SubElement(sequence, "in").text = "-1"
-    ET.SubElement(sequence, "out").text = "-1"
-
-    tc = ET.SubElement(sequence, "timecode")
-    ET.SubElement(tc, "string").text = "00;00;00;00" if is_ntsc else "00:00:00:00"
-    ET.SubElement(tc, "frame").text = "0"
-    ET.SubElement(tc, "displayformat").text = "DF" if is_ntsc else "NDF"
-    tc_rate = ET.SubElement(tc, "rate")
-    ET.SubElement(tc_rate, "timebase").text = str(timebase)
-    ET.SubElement(tc_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-
-    media = ET.SubElement(sequence, "media")
-    video_section = ET.SubElement(media, "video")
-    audio_section = ET.SubElement(media, "audio")
+    xmeml, dur_elem, video_section, audio_section = _render_sequence_skeleton(seq_name, timebase, is_ntsc)
 
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
@@ -2107,118 +2230,6 @@ def _prproj_parse_sequence(
         fid = f"{name} {_id_counter[0]}"
         _id_counter[0] += 1
         return fid
-
-    # ─── Helper: extract clip data from .prproj chain ────────────────
-    def _extract_clip(cti: ET.Element) -> ClipData:
-        """Returns (name, media_path, start, end, in_pt, out_pt, speed, tc, sw, sh, scale, rot)."""
-        subclip = cti.find("SubClip")
-        mc_name = "(unknown)"
-        media_path = ""
-        in_point = 0
-        out_point = 0
-        playback_speed = 100
-        source_tc = _SourceTCInfo()
-        src_w, src_h = w, h
-        scale_val = 100.0
-        rotation_val = 0.0
-
-        # Timeline position
-        ti_inner = cti.find("TrackItem")
-        if ti_inner is not None:
-            s = ti_inner.findtext("Start")
-            e = ti_inner.findtext("End")
-            start = _prproj_ticks_to_frames(s, fps) if s else 0
-            end = _prproj_ticks_to_frames(e, fps) if e else 0
-        else:
-            start, end = 0, 0
-
-        if subclip is not None:
-            sc_ref = subclip.get("ObjectRef")
-            sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
-            if sc_el is not None:
-                mc_name = sc_el.findtext("Name", mc_name)
-                mc_uref_el = sc_el.find("MasterClip")
-                if mc_uref_el is not None:
-                    mc_uref = mc_uref_el.get("ObjectURef")
-                    mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
-                    if mc_el is not None:
-                        for media_el in prproj_root.findall("Media"):
-                            mfp = media_el.findtext("FilePath")
-                            if not mfp:
-                                continue
-                            if Path(mfp.replace("\\", "/")).name.lower() == mc_name.lower():
-                                media_path = mfp
-                                break
-                        source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                        if not source_tc.resolved and media_path:
-                            local = Path(media_path)
-                            if local.exists():
-                                source_tc = _ffprobe_read_timecode(str(local))
-                        sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
-                        if sr[0] > 0 and sr[1] > 0:
-                            src_w, src_h = sr
-                clip_ref_el = sc_el.find("Clip")
-                if clip_ref_el is not None:
-                    clip_ref = clip_ref_el.get("ObjectRef")
-                    clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
-                    if clip_el is not None:
-                        inner = clip_el.find("Clip")
-                        if inner is not None:
-                            ip = inner.findtext("InPoint")
-                            op = inner.findtext("OutPoint")
-                            if ip is not None:
-                                in_point = _prproj_ticks_to_frames(ip, fps)
-                            if op is not None:
-                                out_point = _prproj_ticks_to_frames(op, fps)
-                        ps = clip_el.findtext("PlaybackSpeed")
-                        if ps:
-                            try:
-                                playback_speed = int(float(ps))
-                            except ValueError:
-                                pass
-
-        # Motion data
-        co = cti.find("ComponentOwner")
-        if co is not None:
-            comps = co.find("Components")
-            if comps is not None:
-                chain = idx.resolve_ref(comps.get("ObjectRef", ""))
-                if chain is not None and chain.findtext("DefaultMotion") == "false":
-                    chain_comps = chain.find("Components")
-                    if chain_comps is not None:
-                        for c in chain_comps.findall("Component"):
-                            c_el = idx.resolve_ref(c.get("ObjectRef", ""))
-                            if c_el is None:
-                                continue
-                            inner_c = c_el.find(".//Params")
-                            if inner_c is None:
-                                continue
-                            for p_ref in inner_c.findall("Param"):
-                                p_el = idx.resolve_ref(p_ref.get("ObjectRef", ""))
-                                if p_el is None:
-                                    continue
-                                pname = p_el.findtext("Name", "")
-                                sk = p_el.findtext("StartKeyframe", "")
-                                if not pname or not sk:
-                                    continue
-                                parts = sk.split(",")
-                                if len(parts) < 2:
-                                    continue
-                                try:
-                                    val = float(parts[1])
-                                except ValueError:
-                                    continue
-                                if pname == "Scale":
-                                    scale_val = val
-                                elif pname == "Rotation":
-                                    rotation_val = val
-
-        return ClipData(
-            name=mc_name, media_path=media_path,
-            start=start, end=end, in_pt=in_point, out_pt=out_point,
-            playback_speed=playback_speed, source_tc=source_tc,
-            source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
-        )
 
     # ─── Helper: render a <file> element from FileData ─────────────
     def _render_file(fd: FileData) -> ET.Element:
@@ -2424,7 +2435,7 @@ def _prproj_parse_sequence(
                     cti = ti_el.find("ClipTrackItem")
                     if cti is None:
                         continue
-                    cl = _extract_clip(cti)
+                    cl = _extract_clip(cti, idx, prproj_root, w, h, fps)
                     start = track_start  # override with contiguous track position
                     track_start = cl.end
                     total_frames = max(total_frames, cl.end)
@@ -2491,7 +2502,7 @@ def _prproj_parse_sequence(
                     a_cti = a_ti_el.find("ClipTrackItem")
                     if a_cti is None:
                         continue
-                    cl = _extract_clip(a_cti)
+                    cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps)
                     start = a_track_start
                     a_track_start = cl.end
                     total_frames = max(total_frames, cl.end)
