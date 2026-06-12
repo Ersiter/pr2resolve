@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.1"
+VERSION = "0.9.3"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -69,6 +69,25 @@ class ClipData:
     source_h: int = 0                     # Media→VideoStream→FrameRect height
     scale: float = 100.0                  # PR Motion Scale (StartKeyframe)
     rotation: float = 0.0                 # PR Motion Rotation (StartKeyframe)
+
+
+@dataclass
+class FileData:
+    """Media file metadata for one <file> element in FCP7 XML.
+
+    Decoupled from ElementTree.  Created once per unique media file
+    in the parser pass, then referenced by audio clipitems sharing
+    the same source media.
+    """
+
+    id: str                    # DC-format file id: "{name} {counter}"
+    name: str                  # media filename (base name)
+    path: str = ""             # local absolute file path
+    duration: int = 0          # full media duration in frames
+    timecode: Optional[object] = None  # _SourceTCInfo — timecode metadata
+    source_w: int = 0          # video width from source media
+    source_h: int = 0          # video height from source media
+    for_audio_only: bool = False
 
 
 @dataclass

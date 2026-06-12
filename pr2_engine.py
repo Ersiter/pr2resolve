@@ -24,7 +24,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue, ClipData,
+    Issue, ScaleIssue, ClipData, FileData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2094,7 +2094,7 @@ def _prproj_parse_sequence(
 
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
-    _file_ids: dict[str, str] = {}  # media_name → file-id
+    _file_ids: dict[str, FileData] = {}  # media_name → FileData
     _link_groups: dict[str, list[tuple[str, str, int, int]]] = {}  # name → [(ci_id, mediatype, t_idx, c_idx)]
 
     def _next_ci_id(name: str) -> str:
@@ -2219,21 +2219,21 @@ def _prproj_parse_sequence(
             source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
         )
 
-    # ─── Helper: build a DC-format file element ─────────────────────
-    def _build_file(name: str, path: str, dur: int, tc_info: _SourceTCInfo,
-                    sw: int, sh: int, for_audio_only: bool = False) -> ET.Element:
-        fid = _next_fi_id(name)
-        _file_ids.setdefault(name, fid)
-        fe = ET.Element("file")
-        fe.set("id", fid)
+    # ─── Helper: render a <file> element from FileData ─────────────
+    def _render_file(fd: FileData) -> ET.Element:
+        tc_info = fd.timecode
+        if tc_info is None:
+            tc_info = _SourceTCInfo()
         src_tb = int(round(tc_info.media_fps))
         src_ntsc = tc_info.is_ntsc
-        ET.SubElement(fe, "duration").text = str(dur)
+        fe = ET.Element("file")
+        fe.set("id", fd.id)
+        ET.SubElement(fe, "duration").text = str(fd.duration)
         fr = ET.SubElement(fe, "rate")
         ET.SubElement(fr, "timebase").text = str(src_tb)
         ET.SubElement(fr, "ntsc").text = "TRUE" if src_ntsc else "FALSE"
-        ET.SubElement(fe, "name").text = name
-        ET.SubElement(fe, "pathurl").text = _to_fcp7_pathurl(path) if path else f"file://localhost/{name}"
+        ET.SubElement(fe, "name").text = fd.name
+        ET.SubElement(fe, "pathurl").text = _to_fcp7_pathurl(fd.path) if fd.path else f"file://localhost/{fd.name}"
         ftc = ET.SubElement(fe, "timecode")
         ET.SubElement(ftc, "string").text = tc_info.timecode_string
         ET.SubElement(ftc, "displayformat").text = "DF" if src_ntsc else "NDF"
@@ -2241,12 +2241,12 @@ def _prproj_parse_sequence(
         ET.SubElement(ftcr, "timebase").text = str(src_tb)
         ET.SubElement(ftcr, "ntsc").text = "TRUE" if src_ntsc else "FALSE"
         fmedia = ET.SubElement(fe, "media")
-        if not for_audio_only:
+        if not fd.for_audio_only:
             fv = ET.SubElement(fmedia, "video")
-            ET.SubElement(fv, "duration").text = str(dur)
+            ET.SubElement(fv, "duration").text = str(fd.duration)
             fvsc = ET.SubElement(fv, "samplecharacteristics")
-            ET.SubElement(fvsc, "width").text = str(sw)
-            ET.SubElement(fvsc, "height").text = str(sh)
+            ET.SubElement(fvsc, "width").text = str(fd.source_w)
+            ET.SubElement(fvsc, "height").text = str(fd.source_h)
         fa = ET.SubElement(fmedia, "audio")
         ET.SubElement(fa, "channelcount").text = "2"
         return fe
@@ -2438,7 +2438,13 @@ def _prproj_parse_sequence(
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
                     file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
-                    file_fe = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h)
+                    fd = FileData(
+                        id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
+                        duration=file_dur_val, timecode=cl.source_tc,
+                        source_w=cl.source_w, source_h=cl.source_h,
+                    )
+                    _file_ids.setdefault(cl.name, fd)
+                    file_fe = _render_file(fd)
 
                     ci = ET.SubElement(fcp_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
@@ -2531,13 +2537,19 @@ def _prproj_parse_sequence(
                     ET.SubElement(a_ci, "out").text = str(cl.out_pt)
 
                     # File: shared ref or full standalone
-                    vid_fid = _file_ids.get(cl.name)
-                    if vid_fid:
+                    existing_fd = _file_ids.get(cl.name)
+                    if existing_fd is not None:
                         a_file = ET.SubElement(a_ci, "file")
-                        a_file.set("id", vid_fid)
+                        a_file.set("id", existing_fd.id)
                     else:
                         file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
-                        a_file = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h, for_audio_only=True)
+                        fd = FileData(
+                            id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
+                            duration=file_dur_val, timecode=cl.source_tc,
+                            source_w=cl.source_w, source_h=cl.source_h, for_audio_only=True,
+                        )
+                        _file_ids[cl.name] = fd
+                        a_file = _render_file(fd)
                         a_ci.append(a_file)
 
                     # Sourcetrack (audio only — video clipitems in DC format have none)
