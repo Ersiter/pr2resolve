@@ -24,7 +24,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue, ClipData, FileData, LinkMember,
+    Issue, ScaleIssue, ClipData, FileData, LinkMember, FilterParam, FilterSpec,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2252,134 +2252,87 @@ def _prproj_parse_sequence(
         return fe
 
     # ─── Helper: build DC-format filters ────────────────────────────
-    def _add_video_filters(ci: ET.Element, dur: int, scale: float, rotation: float, speed: int):
-        # Basic Motion
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Basic Motion"),("effectid","basic"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname, pid, pval, pmin, pmax in [
-            ("Scale","scale", str(scale),"1","10000"),
-            ("Center","center","","",""),
-            ("Rotation","rotation", str(rotation),"-100000","100000"),
-            ("Anchor Point","centerOffset","","","")]:
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pid
-            if pname in ("Center","Anchor Point"):
-                cv = ET.SubElement(param, "value")
-                ET.SubElement(cv, "horiz").text = "0"
-                ET.SubElement(cv, "vert").text = "0"
-            else:
-                ET.SubElement(param, "value").text = pval
-            if pmin:
-                ET.SubElement(param, "valuemin").text = pmin
-                ET.SubElement(param, "valuemax").text = pmax
-        # Crop
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Crop"),("effectid","crop"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname in ("left","right","top","bottom"):
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pname
-            ET.SubElement(param, "value").text = "0"
-            ET.SubElement(param, "valuemin").text = "0"
-            ET.SubElement(param, "valuemax").text = "100"
-        # Opacity
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Opacity"),("effectid","opacity"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "opacity"
-        ET.SubElement(param, "parameterid").text = "opacity"
-        ET.SubElement(param, "value").text = "100"
-        ET.SubElement(param, "valuemin").text = "0"
-        ET.SubElement(param, "valuemax").text = "100"
-        # Time Remap
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","-1"),("end","-1")]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Time Remap"),("effectid","timeremap"),("effecttype","motion"),
-                         ("mediatype","video"),("effectcategory","motion")]:
-            ET.SubElement(eff, tag).text = val
-        for pname, pid, pval, pmin, pmax in [
-            ("speed","speed", str(speed),"-10000","10000"),
-            ("reverse","reverse","FALSE","",""),
-            ("frameblending","frameblending","FALSE","",""),
-            ("variablespeed","variablespeed","0","0","1")]:
-            param = ET.SubElement(eff, "parameter")
-            ET.SubElement(param, "name").text = pname
-            ET.SubElement(param, "parameterid").text = pid
-            ET.SubElement(param, "value").text = pval
-            if pmin:
-                ET.SubElement(param, "valuemin").text = pmin
-                ET.SubElement(param, "valuemax").text = pmax
-
-    def _add_audio_filters(ci: ET.Element, dur: int, speed: int):
-        # Time Remap (if speed != 100)
-        if speed != 100:
+    def _render_filters(ci: ET.Element, specs: list[FilterSpec]) -> None:
+        """Render a list of FilterSpec objects into <filter> ET elements."""
+        for spec in specs:
             filt = ET.SubElement(ci, "filter")
-            for tag, val in [("enabled","TRUE"),("start","-1"),("end","-1")]:
+            for tag, val in [("enabled", "TRUE"), ("start", spec.start), ("end", spec.end)]:
                 ET.SubElement(filt, tag).text = val
             eff = ET.SubElement(filt, "effect")
-            for tag, val in [("name","Time Remap"),("effectid","timeremap"),("effecttype","motion"),
-                             ("mediatype","audio"),("effectcategory","motion")]:
+            for tag, val in [("name", spec.name), ("effectid", spec.effect_id),
+                             ("effecttype", spec.effect_type), ("mediatype", spec.media_type),
+                             ("effectcategory", spec.effect_category)]:
                 ET.SubElement(eff, tag).text = val
-            for pname, pid, pval, pmin, pmax in [
-                ("speed","speed", str(speed),"-10000","10000"),
-                ("reverse","reverse","FALSE","",""),
-                ("frameblending","frameblending","FALSE","",""),
-                ("variablespeed","variablespeed","0","0","1")]:
+            for p in spec.params:
                 param = ET.SubElement(eff, "parameter")
-                ET.SubElement(param, "name").text = pname
-                ET.SubElement(param, "parameterid").text = pid
-                ET.SubElement(param, "value").text = pval
-                if pmin:
-                    ET.SubElement(param, "valuemin").text = pmin
-                    ET.SubElement(param, "valuemax").text = pmax
-        # Audio Levels
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Audio Levels"),("effectid","audiolevels"),
-                         ("effecttype","audiolevels"),("mediatype","audio"),
-                         ("effectcategory","audiolevels")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "Level"
-        ET.SubElement(param, "parameterid").text = "level"
-        ET.SubElement(param, "value").text = "1"
-        ET.SubElement(param, "valuemin").text = "0"
-        ET.SubElement(param, "valuemax").text = "3.98109"
-        # Audio Pan
-        filt = ET.SubElement(ci, "filter")
-        for tag, val in [("enabled","TRUE"),("start","0"),("end", str(dur))]:
-            ET.SubElement(filt, tag).text = val
-        eff = ET.SubElement(filt, "effect")
-        for tag, val in [("name","Audio Pan"),("effectid","audiopan"),
-                         ("effecttype","audiopan"),("mediatype","audio"),
-                         ("effectcategory","audiopan")]:
-            ET.SubElement(eff, tag).text = val
-        param = ET.SubElement(eff, "parameter")
-        ET.SubElement(param, "name").text = "Pan"
-        ET.SubElement(param, "parameterid").text = "pan"
-        ET.SubElement(param, "value").text = "0"
-        ET.SubElement(param, "valuemin").text = "-1"
-        ET.SubElement(param, "valuemax").text = "1"
+                ET.SubElement(param, "name").text = p.name
+                ET.SubElement(param, "parameterid").text = p.parameterid
+                if p.is_composite:
+                    cv = ET.SubElement(param, "value")
+                    ET.SubElement(cv, "horiz").text = "0"
+                    ET.SubElement(cv, "vert").text = "0"
+                else:
+                    ET.SubElement(param, "value").text = p.value
+                if p.valuemin:
+                    ET.SubElement(param, "valuemin").text = p.valuemin
+                    ET.SubElement(param, "valuemax").text = p.valuemax
+
+    def _build_video_filters(dur: int, scale: float, rotation: float, speed: int) -> list[FilterSpec]:
+        """Build video filter specs from clip data. Pure data, no ET."""
+        dur_s = str(dur)
+        return [
+            FilterSpec(effect_id="basic", name="Basic Motion", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[
+                           FilterParam("Scale", "scale", str(scale), "1", "10000"),
+                           FilterParam("Center", "center", "", "", "", is_composite=True),
+                           FilterParam("Rotation", "rotation", str(rotation), "-100000", "100000"),
+                           FilterParam("Anchor Point", "centerOffset", "", "", "", is_composite=True),
+                       ]),
+            FilterSpec(effect_id="crop", name="Crop", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[FilterParam(p, p, "0", "0", "100") for p in ("left", "right", "top", "bottom")]),
+            FilterSpec(effect_id="opacity", name="Opacity", effect_type="motion",
+                       media_type="video", effect_category="motion", start="0", end=dur_s,
+                       params=[FilterParam("opacity", "opacity", "100", "0", "100")]),
+            FilterSpec(effect_id="timeremap", name="Time Remap", effect_type="motion",
+                       media_type="video", effect_category="motion", start="-1", end="-1",
+                       params=[
+                           FilterParam("speed", "speed", str(speed), "-10000", "10000"),
+                           FilterParam("reverse", "reverse", "FALSE"),
+                           FilterParam("frameblending", "frameblending", "FALSE"),
+                           FilterParam("variablespeed", "variablespeed", "0", "0", "1"),
+                       ]),
+        ]
+
+    def _build_audio_filters(dur: int, speed: int) -> list[FilterSpec]:
+        """Build audio filter specs. Pure data, no ET."""
+        dur_s = str(dur)
+        specs = []
+        if speed != 100:
+            specs.append(FilterSpec(effect_id="timeremap", name="Time Remap", effect_type="motion",
+                                    media_type="audio", effect_category="motion", start="-1", end="-1",
+                                    params=[
+                                        FilterParam("speed", "speed", str(speed), "-10000", "10000"),
+                                        FilterParam("reverse", "reverse", "FALSE"),
+                                        FilterParam("frameblending", "frameblending", "FALSE"),
+                                        FilterParam("variablespeed", "variablespeed", "0", "0", "1"),
+                                    ]))
+        specs.append(FilterSpec(effect_id="audiolevels", name="Audio Levels", effect_type="audiolevels",
+                                media_type="audio", effect_category="audiolevels", start="0", end=dur_s,
+                                params=[FilterParam("Level", "level", "1", "0", "3.98109")]))
+        specs.append(FilterSpec(effect_id="audiopan", name="Audio Pan", effect_type="audiopan",
+                                media_type="audio", effect_category="audiopan", start="0", end=dur_s,
+                                params=[FilterParam("Pan", "pan", "0", "-1", "1")]))
+        return specs
+
+    def _add_video_filters(ci: ET.Element, dur: int, scale: float, rotation: float, speed: int):
+        specs = _build_video_filters(dur, scale, rotation, speed)
+        _render_filters(ci, specs)
+
+    def _add_audio_filters(ci: ET.Element, dur: int, speed: int):
+        specs = _build_audio_filters(dur, speed)
+        _render_filters(ci, specs)
 
     # ─── Helper: build DC-format transition ─────────────────────────
     def _build_transition(start_frame: int, end_frame: int) -> ET.Element:

@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.4"
+VERSION = "0.9.5"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -106,6 +106,32 @@ class LinkGroup:
 
     media_name: str               # group key (same as ClipData.name)
     members: list[LinkMember]     # all linked clipitems
+
+
+@dataclass
+class FilterParam:
+    """One parameter inside a filter <effect> element — decoupled from ET."""
+
+    name: str               # e.g. "Scale", "Level"
+    parameterid: str        # e.g. "scale", "level"
+    value: str              # pre-formatted string
+    valuemin: str = ""
+    valuemax: str = ""
+    is_composite: bool = False  # True → value rendered as <horiz>/<vert>
+
+
+@dataclass
+class FilterSpec:
+    """One <filter> element's complete content — decoupled from ET."""
+
+    effect_id: str          # e.g. "basic", "crop", "timeremap"
+    name: str               # e.g. "Basic Motion", "Crop"
+    effect_type: str        # "motion" | "audiolevels" | "audiopan"
+    media_type: str         # "video" | "audio"
+    effect_category: str    # "motion" | "audiolevels" | "audiopan"
+    start: str              # filter range start ("0" or "-1")
+    end: str                # filter range end (str(dur) or "-1")
+    params: list[FilterParam]
 
 
 @dataclass
