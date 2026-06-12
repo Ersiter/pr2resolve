@@ -3091,6 +3091,23 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
     return bins
 
 
+def _resolve_pathurl(url: str) -> Optional[str]:
+    """Convert a FCP7 pathurl to a local filesystem path.
+
+    Handles both formats: file://localhost/... and file:///...
+    Applies percent-decoding (unquote) for both.
+    Returns None for unrecognized or empty URLs.
+    """
+    from urllib.parse import unquote
+    if not url:
+        return None
+    if url.startswith("file://localhost/"):
+        return unquote(url[len("file://localhost/"):]).replace("/", "\\")
+    if url.startswith("file:///"):
+        return unquote(url[8:]).replace("/", "\\")
+    return None
+
+
 def _extract_media_files(xml_path: Path) -> list[str]:
     """Extract unique local media file paths from XML pathurls.
 
@@ -3104,18 +3121,12 @@ def _extract_media_files(xml_path: Path) -> list[str]:
     Returns:
         List of unique local file paths that exist
     """
-    from urllib.parse import unquote
     seen: set[str] = set()
     result: list[str] = []
     try:
         tree = ET.parse(str(xml_path))
         for pu in tree.iter("pathurl"):
-            url = pu.text or ""
-            local = ""
-            if url.startswith("file://localhost/"):
-                local = unquote(url[len("file://localhost/"):]).replace("/", "\\")
-            elif url.startswith("file:///"):
-                local = unquote(url[8:]).replace("/", "\\")
+            local = _resolve_pathurl(pu.text or "")
             if local and local not in seen:
                 seen.add(local)
                 if Path(local).exists():
@@ -3190,18 +3201,11 @@ def _strip_file_elements_for_drt(xml_path: Path) -> tuple[Path, bool]:
 
         # Check if ANY media file exists locally
         has_local_media = False
-        from urllib.parse import unquote
         for pu in tree.iter("pathurl"):
-            url = pu.text or ""
-            if url.startswith("file://localhost/"):
-                local_path = unquote(url[len("file://localhost/"):]).replace("/", "\\")
-                if Path(local_path).exists():
-                    has_local_media = True
-            elif url.startswith("file:///"):
-                local_path = url[8:].replace("/", "\\")
-                if Path(local_path).exists():
-                    has_local_media = True
-                    break
+            local_path = _resolve_pathurl(pu.text or "")
+            if local_path and Path(local_path).exists():
+                has_local_media = True
+                break
 
         if has_local_media:
             # Media exists — do NOT strip, let DaVinci link it
