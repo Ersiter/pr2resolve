@@ -24,7 +24,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue,
+    Issue, ScaleIssue, ClipData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -152,7 +152,16 @@ def _scan_critical(root: ET.Element) -> list[Issue]:
             "/xmeml/@version",
         ))
 
-    # C1: DISABLED — DC format: no <format> in video section
+    # C1: Missing <format> under video (DC has full format with codec)
+    seq = root.find("sequence")
+    if seq is not None:
+        vformat = seq.find("media/video/format")
+        if vformat is None:
+            issues.append(Issue(
+                CRITICAL, "C1",
+                "Missing <format> under sequence/media/video",
+                "sequence/media/video",
+            ))
     # C2: DISABLED — DC format: no <format> in audio section
 
     # C3, C4: Rate issues — check all <rate> elements
@@ -560,14 +569,18 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
         fix_count += 1
         _mark_fixed(issues, "C0", "version")
 
-    # C1: DISABLED — DC format: no <format> in video
-    if any(i.rule_id == "C1" for i in issues):
-        _mark_fixed(issues, "C1", "video")
+    # C1: Insert missing video format (DC has full format with codec AFTER tracks)
+    seq = root.find("sequence")
+    if seq is not None:
+        video = seq.find("media/video")
+        if video is not None and video.find("format") is None:
+            fmt = _create_video_format(root)
+            video.append(fmt)  # DC: format comes AFTER all tracks
+            fix_count += 1
+            _mark_fixed(issues, "C1", "video")
     # C2: DISABLED — DC format: no <format> in audio
     if any(i.rule_id == "C2" for i in issues):
         _mark_fixed(issues, "C2", "audio")
-
-    seq = root.find("sequence")
 
     # C3: Add missing <ntsc> to <rate> elements
     for rate_elem in root.iter("rate"):
@@ -878,10 +891,15 @@ def _create_video_format(root: ET.Element) -> ET.Element:
     w_elem.text = width
     h_elem = ET.SubElement(sc, "height")
     h_elem.text = height
-    anamorphic = ET.SubElement(sc, "anamorphic")
-    anamorphic.text = "FALSE"
-    par = ET.SubElement(sc, "pixelaspectratio")
-    par.text = "square"
+    ET.SubElement(sc, "pixelaspectratio").text = "square"
+
+    # Codec (minimal — matches 5 of 6 DC reference files)
+    codec = ET.SubElement(sc, "codec")
+    appdata = ET.SubElement(codec, "appspecificdata")
+    ET.SubElement(appdata, "appname").text = "Final Cut Pro"
+    ET.SubElement(appdata, "appmanufacturer").text = "Apple Inc."
+    data = ET.SubElement(appdata, "data")
+    ET.SubElement(data, "qtcodec")
 
     return fmt
 
@@ -1044,7 +1062,9 @@ def _validate(root: ET.Element) -> list[Issue]:
     if audio is None:
         issues.append(Issue(MAJOR, "V6", "Missing <audio> in media", "media"))
 
-    # V7: DISABLED — DC format: no <format> in video
+    # V7: Video format exists
+    if video is not None and video.find("format") is None:
+        issues.append(Issue(CRITICAL, "V7", "Missing <format> in video", "media/video"))
     # V8: DISABLED — DC format: no <format> in audio
 
     # V9: Video format has samplecharacteristics
@@ -1692,9 +1712,12 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
         )
         fps_str = result2.stdout.strip()
         if fps_str and "/" in fps_str:
-            num, den = fps_str.split("/", 1)
-            if int(den) > 0:
-                info.media_fps = round(int(num) / int(den), 3)
+            try:
+                num, den = fps_str.split("/", 1)
+                if int(den) > 0:
+                    info.media_fps = round(int(num) / int(den), 3)
+            except (ValueError, ZeroDivisionError):
+                pass
         elif fps_str:
             try:
                 info.media_fps = float(fps_str)
@@ -2085,8 +2108,7 @@ def _prproj_parse_sequence(
         return fid
 
     # ─── Helper: extract clip data from .prproj chain ────────────────
-    def _extract_clip(cti: ET.Element
-    ) -> tuple[str, str, int, int, int, int, int, _SourceTCInfo, int, int, float, float]:
+    def _extract_clip(cti: ET.Element) -> ClipData:
         """Returns (name, media_path, start, end, in_pt, out_pt, speed, tc, sw, sh, scale, rot)."""
         subclip = cti.find("SubClip")
         mc_name = "(unknown)"
@@ -2190,8 +2212,12 @@ def _prproj_parse_sequence(
                                 elif pname == "Rotation":
                                     rotation_val = val
 
-        return (mc_name, media_path, start, end, in_point, out_point,
-                playback_speed, source_tc, src_w, src_h, scale_val, rotation_val)
+        return ClipData(
+            name=mc_name, media_path=media_path,
+            start=start, end=end, in_pt=in_point, out_pt=out_point,
+            playback_speed=playback_speed, source_tc=source_tc,
+            source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
+        )
 
     # ─── Helper: build a DC-format file element ─────────────────────
     def _build_file(name: str, path: str, dur: int, tc_info: _SourceTCInfo,
@@ -2406,32 +2432,32 @@ def _prproj_parse_sequence(
                     cti = ti_el.find("ClipTrackItem")
                     if cti is None:
                         continue
-                    name, path, start, end, in_pt, out_pt, speed, tc_info, sw, sh, scale, rot = _extract_clip(cti)
+                    cl = _extract_clip(cti)
                     start = track_start  # override with contiguous track position
-                    track_start = end
-                    total_frames = max(total_frames, end)
-                    clip_dur = out_pt - in_pt if out_pt > in_pt else end - start
-                    file_dur_val = tc_info.full_duration_frames if tc_info.full_duration_frames > 0 else clip_dur
-                    file_fe = _build_file(name, path, file_dur_val, tc_info, sw, sh)
+                    track_start = cl.end
+                    total_frames = max(total_frames, cl.end)
+                    clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
+                    file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
+                    file_fe = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h)
 
                     ci = ET.SubElement(fcp_track, "clipitem")
-                    ci_id = _next_ci_id(name)
+                    ci_id = _next_ci_id(cl.name)
                     ci.set("id", ci_id)
-                    _link_groups.setdefault(name, []).append((ci_id, "video", vt_idx, vc_idx))
+                    _link_groups.setdefault(cl.name, []).append((ci_id, "video", vt_idx, vc_idx))
 
-                    ET.SubElement(ci, "name").text = name
+                    ET.SubElement(ci, "name").text = cl.name
                     ET.SubElement(ci, "duration").text = str(clip_dur)
                     cir = ET.SubElement(ci, "rate")
                     ET.SubElement(cir, "timebase").text = str(timebase)
                     ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
                     ET.SubElement(ci, "start").text = str(start)
-                    ET.SubElement(ci, "end").text = str(end)
+                    ET.SubElement(ci, "end").text = str(cl.end)
                     ET.SubElement(ci, "enabled").text = "TRUE"
-                    ET.SubElement(ci, "in").text = str(in_pt)
-                    ET.SubElement(ci, "out").text = str(out_pt)
+                    ET.SubElement(ci, "in").text = str(cl.in_pt)
+                    ET.SubElement(ci, "out").text = str(cl.out_pt)
                     ci.append(file_fe)
                     ET.SubElement(ci, "compositemode").text = "normal"
-                    _add_video_filters(ci, clip_dur, scale, rot, speed)
+                    _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
                     ET.SubElement(ci, "comments")
 
                 # Insert transitions between adjacent clips on this track
@@ -2482,36 +2508,36 @@ def _prproj_parse_sequence(
                     a_cti = a_ti_el.find("ClipTrackItem")
                     if a_cti is None:
                         continue
-                    name, path, start, end, in_pt, out_pt, speed, tc_info, sw, sh, scale, rot = _extract_clip(a_cti)
+                    cl = _extract_clip(a_cti)
                     start = a_track_start
-                    a_track_start = end
-                    total_frames = max(total_frames, end)
-                    clip_dur = out_pt - in_pt if out_pt > in_pt else end - start
+                    a_track_start = cl.end
+                    total_frames = max(total_frames, cl.end)
+                    clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
 
                     a_ci = ET.SubElement(fcp_a_track, "clipitem")
-                    ci_id = _next_ci_id(name)
+                    ci_id = _next_ci_id(cl.name)
                     a_ci.set("id", ci_id)
-                    _link_groups.setdefault(name, []).append((ci_id, "audio", at_idx, ac_idx))
+                    _link_groups.setdefault(cl.name, []).append((ci_id, "audio", at_idx, ac_idx))
 
-                    ET.SubElement(a_ci, "name").text = name
+                    ET.SubElement(a_ci, "name").text = cl.name
                     ET.SubElement(a_ci, "duration").text = str(clip_dur)
                     cir = ET.SubElement(a_ci, "rate")
                     ET.SubElement(cir, "timebase").text = str(timebase)
                     ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
                     ET.SubElement(a_ci, "start").text = str(start)
-                    ET.SubElement(a_ci, "end").text = str(end)
+                    ET.SubElement(a_ci, "end").text = str(cl.end)
                     ET.SubElement(a_ci, "enabled").text = "TRUE"
-                    ET.SubElement(a_ci, "in").text = str(in_pt)
-                    ET.SubElement(a_ci, "out").text = str(out_pt)
+                    ET.SubElement(a_ci, "in").text = str(cl.in_pt)
+                    ET.SubElement(a_ci, "out").text = str(cl.out_pt)
 
                     # File: shared ref or full standalone
-                    vid_fid = _file_ids.get(name)
+                    vid_fid = _file_ids.get(cl.name)
                     if vid_fid:
                         a_file = ET.SubElement(a_ci, "file")
                         a_file.set("id", vid_fid)
                     else:
-                        file_dur_val = tc_info.full_duration_frames if tc_info.full_duration_frames > 0 else clip_dur
-                        a_file = _build_file(name, path, file_dur_val, tc_info, sw, sh, for_audio_only=True)
+                        file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
+                        a_file = _build_file(cl.name, cl.media_path, file_dur_val, cl.source_tc, cl.source_w, cl.source_h, for_audio_only=True)
                         a_ci.append(a_file)
 
                     # Sourcetrack (audio only — video clipitems in DC format have none)
@@ -2519,18 +2545,24 @@ def _prproj_parse_sequence(
                     ET.SubElement(st_el, "mediatype").text = "audio"
                     ET.SubElement(st_el, "trackindex").text = "1"
 
-                    _add_audio_filters(a_ci, clip_dur, speed)
+                    _add_audio_filters(a_ci, clip_dur, cl.playback_speed)
                     ET.SubElement(a_ci, "comments")
 
                 ET.SubElement(fcp_a_track, "enabled").text = "TRUE"
                 ET.SubElement(fcp_a_track, "locked").text = "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
-    # PASS 3: Link elements (DC convention: linkclipref only)
+    # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
     # ═══════════════════════════════════════════════════════════════════
     for name, members in _link_groups.items():
         if len(members) < 2:
             continue
+        # Find the first video member (for mediatype marking on audio links)
+        first_video_ref = None
+        for ref_id, mtype, _, _ in members:
+            if mtype == "video":
+                first_video_ref = ref_id
+                break
         links: list[ET.Element] = []
         for ref_id, _, _, _ in members:
             link = ET.Element("link")
@@ -2552,8 +2584,15 @@ def _prproj_parse_sequence(
                 if child.tag == "comments":
                     ins_pos = i
                     break
-            for link in links:
-                ci.insert(ins_pos, link)
+            for j, link in enumerate(links):
+                # Always deepcopy — XML Element can only have ONE parent
+                link_copy = copy.deepcopy(link)
+                # DC: first link in audio clipitem gets <mediatype>video</mediatype>
+                if mtype == "audio" and j == 0 and first_video_ref is not None:
+                    mt = ET.Element("mediatype")
+                    mt.text = "video"
+                    link_copy.insert(1, mt)
+                ci.insert(ins_pos, link_copy)
                 ins_pos += 1
 
     # ─── Finalize ────────────────────────────────────────────────────
@@ -2883,23 +2922,13 @@ def _drp_export(
     Returns:
         True if DRP exported successfully
     """
-    import re
-
     pm = resolve.GetProjectManager()
     original_project = pm.GetCurrentProject()
     original_name = original_project.GetName() if original_project else None
 
-    # DaVinci API only accepts ASCII project names
-    def _sanitize_name(name: str) -> str:
-        safe = re.sub(r'[^\x20-\x7E]+', '_', name)
-        safe = re.sub(r'_+', '_', safe).strip('_ ')
-        return safe or "pr2resolve"
-
-    temp_name = _sanitize_name(project_name)
-    if temp_name != project_name:
-        print(f"  DRP export: creating project \"{temp_name}\" (name sanitized for DaVinci)")
-    else:
-        print(f"  DRP export: creating project \"{temp_name}\"")
+    # Use original project name (DaVinci supports Chinese names)
+    temp_name = project_name
+    print(f"  DRP export: creating project \"{temp_name}\"")
 
     if original_project is not None:
         pname = original_project.GetName() or ""
@@ -2989,12 +3018,13 @@ def _drp_export(
             _create_bin_structure(media_pool, bins)
             print(f"  Bins: {len(bins)} folder(s) created")
 
-    # ── Step 3: Import timelines (full XML, no stripping) ──
-    # DaVinci discovers media from pathurl — offline items shown as offline
+    # ── Step 3: Import timelines ──
+    # importSourceClips=False — media already in pool from Step 1
+    # True causes failure when some pathurls are unreachable
     for xml_path, seq_name in zip(xml_paths, sequence_names):
         timeline = media_pool.ImportTimelineFromFile(
             str(xml_path),
-            {"timelineName": seq_name, "importSourceClips": True},
+            {"timelineName": seq_name, "importSourceClips": False},
         )
         if timeline is not None:
             print(f"  Timeline: {timeline.GetName()}")
@@ -3006,8 +3036,15 @@ def _drp_export(
             print(f"  Timeline import FAILED: {seq_name}")
 
     # ── Step 4: Export DRP ──
-    pm.SaveProject()
-    drp_result = pm.ExportProject(final_name, str(output_path), False)
+    try:
+        pm.SaveProject()
+    except Exception:
+        pass
+    drp_result = False
+    try:
+        drp_result = pm.ExportProject(final_name, str(output_path), False)
+    except Exception as e:
+        print(f"  DRP export error: {e}")
 
     if drp_result:
         print(f"  DRP exported: {output_path}")
@@ -3024,7 +3061,10 @@ def _drp_export(
             pm.SaveProject()
         except Exception:
             pass
-        pm.CloseProject(project)
+        try:
+            pm.CloseProject(project)
+        except Exception:
+            pass
         try:
             pm.DeleteProject(final_name)
         except Exception:
@@ -3077,7 +3117,7 @@ def _extract_media_files(xml_path: Path) -> list[str]:
             if url.startswith("file://localhost/"):
                 local = unquote(url[len("file://localhost/"):]).replace("/", "\\")
             elif url.startswith("file:///"):
-                local = url[8:].replace("/", "\\")
+                local = unquote(url[8:]).replace("/", "\\")
             if local and local not in seen:
                 seen.add(local)
                 if Path(local).exists():
@@ -3424,6 +3464,7 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
             poll_interval = 5
 
     print(f"  DaVinci did not start within {timeout}s.")
+    _shutdown_resolve()  # kill the process we just launched
     return None
 
 
