@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Architecture Refactor In Progress**  
-> *v0.9.3 — ClipData & FileData extracted, TrackData/LinkData/FilterData pending*
+> *v0.9.3 — extracting domain model from XML rendering layer*
 
 # .PRPROJ-.DRT Converter
 
