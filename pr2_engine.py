@@ -24,8 +24,8 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE, FCP7_CLIPIITEM_ORDER,
     CRITICAL, MAJOR, MINOR,
     _ORDER_MAP,
-    Issue, ScaleIssue, ClipData, FileData, LinkMember, FilterParam, FilterSpec,
-    TrackData, TransitionData,
+    Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
+    FilterParam, FilterSpec, TrackData, TransitionData,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -2525,21 +2525,54 @@ def _prproj_parse_sequence(
     # ═══════════════════════════════════════════════════════════════════
     # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
     # ═══════════════════════════════════════════════════════════════════
-    for name, members in _link_groups.items():
-        if len(members) < 2:
-            continue
-        # Find the first video member (for mediatype marking on audio links)
-        first_video_ref = None
-        for m in members:
-            if m.mediatype == "video":
-                first_video_ref = m.clipitem_id
+    def _resolve_links(
+        groups: dict[str, list[LinkMember]],
+    ) -> list[LinkGroup]:
+        """Resolve link groups from raw registrations. Pure data, no ET."""
+        result = []
+        for name, members in groups.items():
+            if len(members) < 2:
+                continue
+            first_vid = None
+            for m in members:
+                if m.mediatype == "video":
+                    first_vid = m.clipitem_id
+                    break
+            result.append(LinkGroup(media_name=name, members=list(members), first_video_id=first_vid))
+        return result
+
+    def _render_links_for_clipitem(
+        ci: ET.Element,
+        group: LinkGroup,
+        *,
+        is_audio: bool = False,
+    ) -> None:
+        """Insert <link> elements into one clipitem. No shared ET objects.
+
+        Creates every <link> fresh — no deepcopy needed.
+        DC convention: audio clipitem's first link gets <mediatype>video</mediatype>.
+        Video clipitem links never have mediatype.
+        """
+        for old in ci.findall("link"):
+            ci.remove(old)
+        ins_pos = len(list(ci))
+        for i, child in enumerate(ci):
+            if child.tag == "comments":
+                ins_pos = i
                 break
-        links: list[ET.Element] = []
-        for m in members:
-            link = ET.Element("link")
-            ET.SubElement(link, "linkclipref").text = m.clipitem_id
-            links.append(link)
-        for m in members:
+        for other_m in group.members:
+            el = ET.Element("link")
+            ET.SubElement(el, "linkclipref").text = other_m.clipitem_id
+            # DC: only audio clipitems get <mediatype>video</mediatype>
+            if is_audio and group.first_video_id and other_m.clipitem_id == group.first_video_id:
+                mt = ET.Element("mediatype")
+                mt.text = "video"
+                el.insert(1, mt)
+            ci.insert(ins_pos, el)
+            ins_pos += 1
+
+    for group in _resolve_links(_link_groups):
+        for m in group.members:
             ci = None
             if m.mediatype == "video":
                 ci = video_section.find(f".//clipitem[@id='{m.clipitem_id}']")
@@ -2547,24 +2580,7 @@ def _prproj_parse_sequence(
                 ci = audio_section.find(f".//clipitem[@id='{m.clipitem_id}']")
             if ci is None:
                 continue
-            for old in ci.findall("link"):
-                ci.remove(old)
-            # Insert links AFTER filters (DC convention: filter→link→comments)
-            ins_pos = len(list(ci))
-            for i, child in enumerate(ci):
-                if child.tag == "comments":
-                    ins_pos = i
-                    break
-            for j, link in enumerate(links):
-                # Always deepcopy — XML Element can only have ONE parent
-                link_copy = copy.deepcopy(link)
-                # DC: first link in audio clipitem gets <mediatype>video</mediatype>
-                if m.mediatype == "audio" and j == 0 and first_video_ref is not None:
-                    mt = ET.Element("mediatype")
-                    mt.text = "video"
-                    link_copy.insert(1, mt)
-                ci.insert(ins_pos, link_copy)
-                ins_pos += 1
+            _render_links_for_clipitem(ci, group, is_audio=(m.mediatype == "audio"))
 
     # ─── Finalize ────────────────────────────────────────────────────
     dur_elem.text = str(total_frames if total_frames > 0 else 0)

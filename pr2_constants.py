@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.7"
+VERSION = "0.9.8"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -104,8 +104,9 @@ class LinkMember:
 class LinkGroup:
     """All clipitems sharing the same source media file."""
 
-    media_name: str               # group key (same as ClipData.name)
-    members: list[LinkMember]     # all linked clipitems
+    media_name: str                        # group key (same as ClipData.name)
+    members: list[LinkMember]              # all linked clipitems
+    first_video_id: Optional[str] = None   # first video member's clipitem_id
 
 
 @dataclass
