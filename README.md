@@ -1,5 +1,8 @@
 <div align="center">
 
+> **Current Status: Architecture Refactor In Progress**  
+> *v0.9.1 — extracting domain model from XML rendering layer*
+
 # .PRPROJ-.DRT Converter
 
 Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT 和 DRP。
