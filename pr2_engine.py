@@ -2357,6 +2357,43 @@ def _prproj_parse_sequence(
         return ti
 
     # ═══════════════════════════════════════════════════════════════════
+    # ─── Helper: render a complete clipitem from data ──────────────
+    def _render_clipitem(
+        cl: ClipData, fd: FileData, clip_dur: int, start_frame: int,
+        ci_id: str, mediatype: str,
+        *,
+        is_shared_file: bool = False,
+    ) -> ET.Element:
+        """Build a DC-format <clipitem> from data. No side effects."""
+        ci = ET.Element("clipitem")
+        ci.set("id", ci_id)
+        ET.SubElement(ci, "name").text = cl.name
+        ET.SubElement(ci, "duration").text = str(clip_dur)
+        cir = ET.SubElement(ci, "rate")
+        ET.SubElement(cir, "timebase").text = str(timebase)
+        ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(ci, "start").text = str(start_frame)
+        ET.SubElement(ci, "end").text = str(cl.end)
+        ET.SubElement(ci, "enabled").text = "TRUE"
+        ET.SubElement(ci, "in").text = str(cl.in_pt)
+        ET.SubElement(ci, "out").text = str(cl.out_pt)
+        if is_shared_file:
+            # Audio: self-closing ref to existing file
+            fe = ET.SubElement(ci, "file")
+            fe.set("id", fd.id)
+        else:
+            ci.append(_render_file(fd))
+        if mediatype == "video":
+            ET.SubElement(ci, "compositemode").text = "normal"
+            _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
+        else:
+            st_el = ET.SubElement(ci, "sourcetrack")
+            ET.SubElement(st_el, "mediatype").text = "audio"
+            ET.SubElement(st_el, "trackindex").text = "1"
+            _add_audio_filters(ci, clip_dur, cl.playback_speed)
+        ET.SubElement(ci, "comments")
+        return ci
+
     # PASS 1: Video tracks
     # ═══════════════════════════════════════════════════════════════════
     if video_tg is not None:
@@ -2399,28 +2436,11 @@ def _prproj_parse_sequence(
                         source_w=cl.source_w, source_h=cl.source_h,
                     )
                     _file_ids.setdefault(cl.name, fd)
-                    file_fe = _render_file(fd)
-
-                    ci = ET.SubElement(fcp_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
-                    ci.set("id", ci_id)
                     _link_groups.setdefault(cl.name, []).append(
                         LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
-
-                    ET.SubElement(ci, "name").text = cl.name
-                    ET.SubElement(ci, "duration").text = str(clip_dur)
-                    cir = ET.SubElement(ci, "rate")
-                    ET.SubElement(cir, "timebase").text = str(timebase)
-                    ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-                    ET.SubElement(ci, "start").text = str(start)
-                    ET.SubElement(ci, "end").text = str(cl.end)
-                    ET.SubElement(ci, "enabled").text = "TRUE"
-                    ET.SubElement(ci, "in").text = str(cl.in_pt)
-                    ET.SubElement(ci, "out").text = str(cl.out_pt)
-                    ci.append(file_fe)
-                    ET.SubElement(ci, "compositemode").text = "normal"
-                    _add_video_filters(ci, clip_dur, cl.scale, cl.rotation, cl.playback_speed)
-                    ET.SubElement(ci, "comments")
+                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
+                    fcp_track.append(ci)
 
                 # Insert transitions between adjacent clips on this track
                 clipitems_in_track = fcp_track.findall("clipitem")
@@ -2477,28 +2497,15 @@ def _prproj_parse_sequence(
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
 
-                    a_ci = ET.SubElement(fcp_a_track, "clipitem")
                     ci_id = _next_ci_id(cl.name)
-                    a_ci.set("id", ci_id)
                     _link_groups.setdefault(cl.name, []).append(
                         LinkMember(clipitem_id=ci_id, mediatype="audio", track_index=at_idx, clip_index=ac_idx))
-
-                    ET.SubElement(a_ci, "name").text = cl.name
-                    ET.SubElement(a_ci, "duration").text = str(clip_dur)
-                    cir = ET.SubElement(a_ci, "rate")
-                    ET.SubElement(cir, "timebase").text = str(timebase)
-                    ET.SubElement(cir, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
-                    ET.SubElement(a_ci, "start").text = str(start)
-                    ET.SubElement(a_ci, "end").text = str(cl.end)
-                    ET.SubElement(a_ci, "enabled").text = "TRUE"
-                    ET.SubElement(a_ci, "in").text = str(cl.in_pt)
-                    ET.SubElement(a_ci, "out").text = str(cl.out_pt)
 
                     # File: shared ref or full standalone
                     existing_fd = _file_ids.get(cl.name)
                     if existing_fd is not None:
-                        a_file = ET.SubElement(a_ci, "file")
-                        a_file.set("id", existing_fd.id)
+                        fd = existing_fd
+                        is_shared = True
                     else:
                         file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
                         fd = FileData(
@@ -2507,16 +2514,10 @@ def _prproj_parse_sequence(
                             source_w=cl.source_w, source_h=cl.source_h, for_audio_only=True,
                         )
                         _file_ids[cl.name] = fd
-                        a_file = _render_file(fd)
-                        a_ci.append(a_file)
+                        is_shared = False
 
-                    # Sourcetrack (audio only — video clipitems in DC format have none)
-                    st_el = ET.SubElement(a_ci, "sourcetrack")
-                    ET.SubElement(st_el, "mediatype").text = "audio"
-                    ET.SubElement(st_el, "trackindex").text = "1"
-
-                    _add_audio_filters(a_ci, clip_dur, cl.playback_speed)
-                    ET.SubElement(a_ci, "comments")
+                    a_ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "audio", is_shared_file=is_shared)
+                    fcp_a_track.append(a_ci)
 
                 ET.SubElement(fcp_a_track, "enabled").text = "TRUE" if a_track_data.enabled else "FALSE"
                 ET.SubElement(fcp_a_track, "locked").text = "TRUE" if a_track_data.locked else "FALSE"

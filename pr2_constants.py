@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "0.9.6"
+VERSION = "0.9.7"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
