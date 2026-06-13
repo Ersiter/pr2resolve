@@ -2920,6 +2920,7 @@ def _drp_export(
             print(f"  Project \"{temp_name}\" exists — using \"{final_name}\"")
 
     drp_result = False  # declared outside try so return below is safe
+    project = None      # defensive init — if CreateProject throws, finally accesses safely
     try:
         project = pm.CreateProject(final_name)
         if project is None:
