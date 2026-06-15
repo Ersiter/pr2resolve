@@ -1175,10 +1175,9 @@ def _to_fcp7_pathurl(filepath: str) -> str:
     """
     from urllib.parse import quote
     path = filepath.replace("\\", "/")
-    # Only encode characters that break XML/URL: spaces and ASCII control chars.
-    # Preserve CJK and other Unicode — helps DaVinci match pathurl to ImportMedia paths.
+    # DaVinci uses plain drive letter (E:/ not E%3a/), uppercase percent encoding
     import re
-    encoded = quote(path, safe="/:\\")  # preserve / : \ (and all Unicode)
+    encoded = quote(path, safe="/:")  # preserve / and :
     # Uppercase only percent-encoded hex sequences (DC convention: %E8 not %e8)
     encoded = re.sub(r'%[0-9a-f]{2}', lambda m: m.group(0).upper(), encoded)
     return f"file://localhost/{encoded}"
