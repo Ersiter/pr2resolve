@@ -1,3 +1,8 @@
+# ═══════════════════════════════════════════════════════════════
+# LOCAL/DEV FILES — never track
+# Do NOT use `git add -f` on these directories.
+# ═══════════════════════════════════════════════════════════════
+
 # Python
 __pycache__/
 *.py[cod]

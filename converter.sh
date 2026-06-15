@@ -3,7 +3,7 @@
 # pr2resolve - macOS/Linux TUI Launcher
 # ============================================================
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="${SCRIPT_DIR}/pr2resolve.py"
 

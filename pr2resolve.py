@@ -495,6 +495,7 @@ def _run_pipeline(
         print("  Warning: DRP requires .prproj input (XML input skipped)")
     if (drp_path or drp_gui) and prproj_root is not None:
         # Re-collect all non-empty sequences for DRP (independent of Mode selection)
+        assert idx is not None  # Pylance guard: prproj_root ≠ None → idx resolved
         all_seqs = _prproj_list_sequences(prproj_root, idx)
         non_empty_all = [s for s in all_seqs if s["clip_count"] > 0]
         drp_xml_paths: list[Path] = []
@@ -536,6 +537,7 @@ def _run_pipeline(
                     tmp.unlink(missing_ok=True)
 
     # DRT output — second (can reuse GUI instance opened by DRP)
+    drt_path: Path = output_dir / "drt_default.drt"  # Pylance guard: re-assigned below if drt=True
     if drt:
         print()
         drt_path = _next_available_path(output_dir / f"{Path(output_name).stem}.drt")

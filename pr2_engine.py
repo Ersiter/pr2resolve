@@ -23,7 +23,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
-    FilterParam, FilterSpec, TrackData, TransitionData,
+    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -1561,17 +1561,6 @@ def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bo
     return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
 
 
-@dataclass
-class _SourceTCInfo:
-    """Extracted source media timecode and frame rate info."""
-    media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
-    is_ntsc: bool = False                  # whether source rate is NTSC
-    timecode_frame: int = 0                # timecode start in source-rate frames
-    timecode_string: str = "00:00:00:00"   # formatted TC string
-    full_duration_frames: int = 0          # full file duration in source-rate frames
-    resolved: bool = False                 # True if real TC data was found
-
-
 def _prproj_extract_source_tc_info(
     mc_el: ET.Element,
     idx: _PrprojIndex,
@@ -1728,7 +1717,8 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
                 try:
                     dt_str = ct.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(dt_str)
+                    dt_utc = datetime.fromisoformat(dt_str)
+                    dt = dt_utc.astimezone()  # convert UTC → local time
                     display_fps = int(round(info.media_fps)) or 30
                     tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
                     tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
@@ -2030,10 +2020,15 @@ def _extract_clip(
                             media_path = mfp
                             break
                     source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                    if not source_tc.resolved and media_path:
+                    tc_source = "mediainpoint" if source_tc.resolved else "default"
+                    if media_path:
                         local = Path(media_path)
                         if local.exists():
-                            source_tc = _ffprobe_read_timecode(str(local))
+                            ff_tc = _ffprobe_read_timecode(str(local))
+                            if ff_tc.resolved:
+                                source_tc = ff_tc
+                                tc_source = "ffprobe"
+                    print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
                         src_w, src_h = sr
@@ -2047,9 +2042,11 @@ def _extract_clip(
                         ip = inner.findtext("InPoint")
                         op = inner.findtext("OutPoint")
                         if ip is not None:
-                            in_point = _prproj_ticks_to_frames(ip, fps)
+                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            in_point = _prproj_ticks_to_frames(ip, clip_fps)
                         if op is not None:
-                            out_point = _prproj_ticks_to_frames(op, fps)
+                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            out_point = _prproj_ticks_to_frames(op, clip_fps)
                     ps = clip_el.findtext("PlaybackSpeed")
                     if ps:
                         try:
@@ -2419,22 +2416,6 @@ def _prproj_parse_sequence(
                         LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
                     ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
                     fcp_track.append(ci)
-
-                # Insert transitions between adjacent clips on this track
-                clipitems_in_track = fcp_track.findall("clipitem")
-                if len(clipitems_in_track) >= 2:
-                    overlap = timebase  # 1 second default transition
-                    for j in range(len(clipitems_in_track) - 1):
-                        ci_a = clipitems_in_track[j]
-                        ci_b = clipitems_in_track[j + 1]
-                        end_a = int(ci_a.findtext("end", "0"))
-                        # Transition overlaps: last N frames of A, first N frames of B
-                        trans_start = max(0, end_a - overlap)
-                        trans_end = end_a + overlap
-                        tr = _render_transition(TransitionData(start_frame=trans_start, end_frame=trans_end))
-                        # Insert at position of ci_b (before it in the track)
-                        insert_idx = list(fcp_track).index(ci_b)
-                        fcp_track.insert(insert_idx, tr)
 
                 ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
                 ET.SubElement(fcp_track, "locked").text = "TRUE" if track_data.locked else "FALSE"
@@ -2919,126 +2900,130 @@ def _drp_export(
         if final_name != temp_name:
             print(f"  Project \"{temp_name}\" exists — using \"{final_name}\"")
 
-    project = pm.CreateProject(final_name)
-    if project is None:
-        # ── Retry strategy by scenario ──
-        # Scenario A: BG mode, stale headless from previous run
-        #   → Kill it, launch fresh, retry
-        # Scenario B: ON mode, stale API connection to existing DaVinci
-        #   → Cannot kill user's instance, try re-importing API module
-        # Scenario C: ON mode, user's DaVinci, genuine failure
-        #   → Report error, no retry (don't disturb user)
-        if not gui:
-            # BG mode: we own the instance — safe to kill and restart
-            print("  CreateProject failed — restarting DaVinci (BG mode)...")
-            _shutdown_resolve()
-            # Force kill any leftover Resolve.exe
-            if _is_resolve_running():
-                try:
-                    subprocess.run(
-                        ["taskkill", "/IM", "Resolve.exe", "/F"],
-                        capture_output=True, timeout=10,
-                    )
-                    time.sleep(3)
-                except Exception:
-                    pass
-            resolve = _ensure_resolve_running(timeout=60, nogui=True)
-            if resolve is None:
-                print("  Error: Could not restart DaVinci Resolve")
-                return False
-            pm = resolve.GetProjectManager()
-            project = pm.CreateProject(final_name)
-        else:
-            # ON mode: try refreshing API connection without killing DaVinci
-            print("  CreateProject failed — refreshing API connection...")
-            resolve = _try_import_resolve()
-            if resolve is not None:
+    drp_result = False  # declared outside try so return below is safe
+    project = None      # defensive init — if CreateProject throws, finally accesses safely
+    try:
+        project = pm.CreateProject(final_name)
+        if project is None:
+            # ── Retry strategy by scenario ──
+            # Scenario A: BG mode, stale headless from previous run
+            #   → Kill it, launch fresh, retry
+            # Scenario B: ON mode, stale API connection to existing DaVinci
+            #   → Cannot kill user's instance, try re-importing API module
+            # Scenario C: ON mode, user's DaVinci, genuine failure
+            #   → Report error, no retry (don't disturb user)
+            if not gui:
+                # BG mode: we own the instance — safe to kill and restart
+                print("  CreateProject failed — restarting DaVinci (BG mode)...")
+                _shutdown_resolve()
+                # Force kill any leftover Resolve.exe
+                if _is_resolve_running():
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/IM", "Resolve.exe", "/F"],
+                            capture_output=True, timeout=10,
+                        )
+                        time.sleep(3)
+                    except Exception:
+                        pass
+                resolve = _ensure_resolve_running(timeout=60, nogui=True)
+                if resolve is None:
+                    print("  Error: Could not restart DaVinci Resolve")
+                    return False
                 pm = resolve.GetProjectManager()
                 project = pm.CreateProject(final_name)
+            else:
+                # ON mode: try refreshing API connection without killing DaVinci
+                print("  CreateProject failed — refreshing API connection...")
+                resolve = _try_import_resolve()
+                if resolve is not None:
+                    pm = resolve.GetProjectManager()
+                    project = pm.CreateProject(final_name)
 
-        if project is None:
-            print("  Error: Could not create project for DRP export.")
-            print("  Possible causes:")
-            print("    - DaVinci API not accessible (check Preferences > External scripting)")
-            print("    - Previous 'pr2resolve' project may need manual cleanup")
-            print("    - DaVinci may need to be restarted manually")
-            return False
+            if project is None:
+                print("  Error: Could not create project for DRP export.")
+                print("  Possible causes:")
+                print("    - DaVinci API not accessible (check Preferences > External scripting)")
+                print("    - Previous 'pr2resolve' project may need manual cleanup")
+                print("    - DaVinci may need to be restarted manually")
+                return False
 
-    media_pool = project.GetMediaPool()
+        media_pool = project.GetMediaPool()
 
-    # ── Step 1: Extract and import individual media files ──
-    all_files: set[str] = set()
-    for xml_path in xml_paths:
-        all_files.update(_extract_media_files(xml_path))
-    if all_files:
-        imported = _import_media_to_pool(media_pool, sorted(all_files))
-        print(f"  Media pool: {imported}/{len(all_files)} files imported")
-    else:
-        print("  Media pool: no local media found (offline mode)")
+        # ── Step 1: Extract and import individual media files ──
+        all_files: set[str] = set()
+        for xml_path in xml_paths:
+            all_files.update(_extract_media_files(xml_path))
+        if all_files:
+            imported = _import_media_to_pool(media_pool, sorted(all_files))
+            print(f"  Media pool: {imported}/{len(all_files)} files imported")
+        else:
+            print("  Media pool: no local media found (offline mode)")
 
-    # ── Step 2: Recreate bin structure from PR project ──
-    if prproj_root is not None:
-        bins = _prproj_get_bin_structure(prproj_root)
-        if bins:
-            _create_bin_structure(media_pool, bins)
-            print(f"  Bins: {len(bins)} folder(s) created")
+        # ── Step 2: Recreate bin structure from PR project ──
+        if prproj_root is not None:
+            bins = _prproj_get_bin_structure(prproj_root)
+            if bins:
+                _create_bin_structure(media_pool, bins)
+                print(f"  Bins: {len(bins)} folder(s) created")
 
-    # ── Step 3: Import timelines ──
-    # importSourceClips=False — media already in pool from Step 1
-    import_failed = False
-    for xml_path, seq_name in zip(xml_paths, sequence_names):
-        timeline = media_pool.ImportTimelineFromFile(
-            str(xml_path),
-            {"timelineName": seq_name, "importSourceClips": False},
-        )
-        if timeline is not None:
-            print(f"  Timeline: {timeline.GetName()}")
+        # ── Step 3: Import timelines ──
+        # importSourceClips=False — media already in pool from Step 1
+        import_failed = False
+        for xml_path, seq_name in zip(xml_paths, sequence_names):
+            timeline = media_pool.ImportTimelineFromFile(
+                str(xml_path),
+                {"timelineName": seq_name, "importSourceClips": False,
+                 "sourceClipsFolders": [media_pool.GetRootFolder()]},
+            )
+            if timeline is not None:
+                print(f"  Timeline: {timeline.GetName()}")
+                try:
+                    timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                except Exception:
+                    pass
+            else:
+                print(f"  Timeline import FAILED: {seq_name}")
+                import_failed = True
+
+        # ── Step 4: Export DRP ──
+        if import_failed:
+            print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
+        else:
             try:
-                timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                pm.SaveProject()
             except Exception:
                 pass
-        else:
-            print(f"  Timeline import FAILED: {seq_name}")
-            import_failed = True
+            try:
+                drp_result = pm.ExportProject(final_name, str(output_path), False)
+            except Exception as e:
+                print(f"  DRP export error: {e}")
 
-    # ── Step 4: Export DRP ──
-    drp_result = False
-    if import_failed:
-        print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
-    else:
-        try:
-            pm.SaveProject()
-        except Exception:
-            pass
-        try:
-            drp_result = pm.ExportProject(final_name, str(output_path), False)
-        except Exception as e:
-            print(f"  DRP export error: {e}")
+            if drp_result:
+                print(f"  DRP exported: {output_path}")
+            else:
+                print(f"  DRP export via API failed (project may still be in database).")
+                print(f"  Project \"{final_name}\" created in DaVinci database.")
+                print(f"  To export manually: File -> Export Project -> {output_path.name}")
 
-        if drp_result:
-            print(f"  DRP exported: {output_path}")
-        else:
-            print(f"  DRP export via API failed (project may still be in database).")
-            print(f"  Project \"{final_name}\" created in DaVinci database.")
-            print(f"  To export manually: File -> Export Project -> {output_path.name}")
+        if gui:
+            print(f"  Project \"{final_name}\" ready in DaVinci Resolve.")
 
-    # ── Step 5: Cleanup based on mode ──
-    if gui:
-        print(f"  Project \"{final_name}\" ready in DaVinci Resolve.")
-    else:
-        try:
-            pm.SaveProject()
-        except Exception:
-            pass
-        try:
-            pm.CloseProject(project)
-        except Exception:
-            pass
-        try:
-            pm.DeleteProject(final_name)
-        except Exception:
-            pass
-        _shutdown_resolve()
+    finally:
+        if not gui:
+            try:
+                pm.SaveProject()
+            except Exception:
+                pass
+            try:
+                pm.CloseProject(project)
+            except Exception:
+                pass
+            try:
+                pm.DeleteProject(final_name)
+            except Exception:
+                pass
+            _shutdown_resolve()
 
     return drp_result
 
