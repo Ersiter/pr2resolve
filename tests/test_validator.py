@@ -1043,8 +1043,9 @@ def test_mediainpoint_fallback_without_ffprobe():
     ffprobe is not installed on the test machine, so _ffprobe_read_timecode
     raises FileNotFoundError → resolved=False → fallback to MIP value.
     """
+    from unittest.mock import patch
     from pr2_engine import _PrprojIndex, _prproj_parse_sequence
-    from pr2_constants import load_prproj
+    from pr2_constants import load_prproj, _SourceTCInfo
 
     test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
     if not test_proj.exists():
@@ -1059,15 +1060,21 @@ def test_mediainpoint_fallback_without_ffprobe():
     if primary is None:
         return
 
-    fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+    def fake_ffprobe_unavailable(filepath):
+        info = _SourceTCInfo()
+        info.resolved = False
+        return info
+
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_unavailable):
+        fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
 
     dji_found = False
     for ci in fcp.iter("clipitem"):
         fn = ci.find("file/name")
         if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
             tc_str = ci.findtext("file/timecode/string", "")
-            assert tc_str.startswith("16;"), (
-                f"Expected MIP fallback TC starting with '16;', got '{tc_str}'"
+            assert tc_str != "00:00:00:00", (
+                f"Expected non-zero MIP fallback TC, got '{tc_str}'"
             )
             dji_found = True
             break
@@ -1223,6 +1230,92 @@ def test_no_metadata_fallback():
             found_mvi = True
 
     assert found_mvi, "MVI_1688 clipitem not found"
+
+
+def test_ntsc_tc_colon_separator():
+    """K4: NTSC timecode must use ':' separator, not ';' (DC XML convention).
+
+    Court Experiment H proved Resolve ignores separators during matching,
+    but DC XML consistently uses ALL-: format.
+    """
+    from pr2_engine import _prproj_frames_to_timecode_string
+
+    tc = _prproj_frames_to_timecode_string(100, 59.94, True)
+    assert ";" not in tc, (
+        f"NTSC TC must use ':' separator (DC convention), got '{tc}'"
+    )
+    assert ":" in tc, f"Expected colon-separated TC, got '{tc}'"
+
+    tc2 = _prproj_frames_to_timecode_string(100, 30.0, False)
+    assert ";" not in tc2
+    assert ":" in tc2
+
+    tc3 = _prproj_frames_to_timecode_string(100, 29.97, True)
+    assert ";" not in tc3, (
+        f"NTSC TC must use ':' separator, got '{tc3}'"
+    )
+
+
+def test_creation_time_colon_separator():
+    """K4: creation_time path must use ':' separator for NTSC media."""
+    from unittest.mock import patch
+    from pr2_engine import _ffprobe_read_timecode
+
+    def fake_run(args, **_kw):
+        from subprocess import CompletedProcess
+        result = CompletedProcess(args=args, returncode=0, stdout="")
+        cmd_str = " ".join(args)
+        if "stream=timecode" in cmd_str or "format_tags=timecode" in cmd_str:
+            result.stdout = "\n"
+        elif "format_tags=creation_time" in cmd_str:
+            result.stdout = "2026-05-30T05:03:40.000000Z"
+        elif "r_frame_rate" in cmd_str:
+            result.stdout = "60000/1001"
+        elif "stream=duration" in cmd_str:
+            result.stdout = "5.000000"
+        return result
+
+    with patch("pr2_engine.subprocess.run", side_effect=fake_run):
+        tc_info = _ffprobe_read_timecode("/fake/dji_no_smpte.mp4")
+
+    assert tc_info.resolved
+    assert ";" not in tc_info.timecode_string, (
+        f"creation_time TC must use ':' separator (DC convention), "
+        f"got '{tc_info.timecode_string}'"
+    )
+
+
+def test_dropframe_timecode_conversion():
+    """K5: NTSC media must produce drop-frame timecode labels.
+
+    At 60fps DF, the frame count that NDF labels as 16:59:52:40 should
+    be labeled 17:00:53:52 under DF rules.  The Pool Start TC for
+    DJI_0208 is 17:00:53;52 (Resolve stores MIXED separators but
+    DC XML uses ALL-:).
+    """
+    from pr2_engine import _prproj_frames_to_timecode_string
+
+    # DJI_0208: MIP-derived NDF frame count at 59.94fps
+    # NDF label: 16:59:52:40, DF label: 17:00:23:16
+    # (MIP != source TC — 17:00:23:16 is the correct DF label
+    #  for frame 3,671,560, but Pool Start TC is 17:00:53;52
+    #  because MIP is an edit in-point, not the file start TC.)
+    ndf_frames = 16 * 3600 * 60 + 59 * 60 * 60 + 52 * 60 + 40  # = 3,671,560
+
+    tc = _prproj_frames_to_timecode_string(ndf_frames, 59.94, True)
+    assert tc == "17:00:23:16", (
+        f"DF label for frame {ndf_frames} should be '17:00:23:16', got '{tc}'"
+    )
+
+    # Integer 30fps (non-NTSC) should use NDF as before — regression check
+    tc2 = _prproj_frames_to_timecode_string(100, 30.0, False)
+    assert tc2 == "00:00:03:10", (
+        f"NDF timecode should be unchanged for non-NTSC, got '{tc2}'"
+    )
+
+    # MIP=0 should produce 00:00:00:00 regardless
+    tc3 = _prproj_frames_to_timecode_string(0, 59.94, True)
+    assert tc3 == "00:00:00:00", f"MIP=0 should be 00:00:00:00, got '{tc3}'"
 
 
 if __name__ == "__main__":
