@@ -23,7 +23,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
-    FilterParam, FilterSpec, TrackData, TransitionData,
+    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -1559,17 +1559,6 @@ def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bo
     frames = remainder % display_fps
     sep = ";" if is_ntsc else ":"
     return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
-
-
-@dataclass
-class _SourceTCInfo:
-    """Extracted source media timecode and frame rate info."""
-    media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
-    is_ntsc: bool = False                  # whether source rate is NTSC
-    timecode_frame: int = 0                # timecode start in source-rate frames
-    timecode_string: str = "00:00:00:00"   # formatted TC string
-    full_duration_frames: int = 0          # full file duration in source-rate frames
-    resolved: bool = False                 # True if real TC data was found
 
 
 def _prproj_extract_source_tc_info(

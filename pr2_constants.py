@@ -50,6 +50,18 @@ class ScaleIssue:
 
 
 @dataclass
+class _SourceTCInfo:
+    """Extracted source media timecode and frame rate info."""
+
+    media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
+    is_ntsc: bool = False                  # whether source rate is NTSC
+    timecode_frame: int = 0                # timecode start in source-rate frames
+    timecode_string: str = "00:00:00:00"   # formatted TC string
+    full_duration_frames: int = 0          # full file duration in source-rate frames
+    resolved: bool = False                 # True if real TC data was found
+
+
+@dataclass
 class ClipData:
     """Extracted clip data from a .prproj ClipTrackItem chain.
 
@@ -64,7 +76,7 @@ class ClipData:
     in_pt: int = 0                        # source in-point (Clip→InPoint)
     out_pt: int = 0                       # source out-point (Clip→OutPoint)
     playback_speed: int = 100             # 100 = normal speed
-    source_tc: Optional[object] = None    # _SourceTCInfo — timecode metadata
+    source_tc: Optional["_SourceTCInfo"] = None
     source_w: int = 0                     # Media→VideoStream→FrameRect width
     source_h: int = 0                     # Media→VideoStream→FrameRect height
     scale: float = 100.0                  # PR Motion Scale (StartKeyframe)
@@ -84,7 +96,7 @@ class FileData:
     name: str                  # media filename (base name)
     path: str = ""             # local absolute file path
     duration: int = 0          # full media duration in frames
-    timecode: Optional[object] = None  # _SourceTCInfo — timecode metadata
+    timecode: Optional["_SourceTCInfo"] = None
     source_w: int = 0          # video width from source media
     source_h: int = 0          # video height from source media
     for_audio_only: bool = False
