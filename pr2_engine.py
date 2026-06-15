@@ -1175,9 +1175,10 @@ def _to_fcp7_pathurl(filepath: str) -> str:
     """
     from urllib.parse import quote
     path = filepath.replace("\\", "/")
-    # DaVinci uses plain drive letter (E:/ not E%3a/), uppercase percent encoding
+    # Only encode characters that break XML/URL: spaces and ASCII control chars.
+    # Preserve CJK and other Unicode — helps DaVinci match pathurl to ImportMedia paths.
     import re
-    encoded = quote(path, safe="/:")  # preserve / and :
+    encoded = quote(path, safe="/:\\")  # preserve / : \ (and all Unicode)
     # Uppercase only percent-encoded hex sequences (DC convention: %E8 not %e8)
     encoded = re.sub(r'%[0-9a-f]{2}', lambda m: m.group(0).upper(), encoded)
     return f"file://localhost/{encoded}"
@@ -2036,9 +2037,11 @@ def _extract_clip(
                         ip = inner.findtext("InPoint")
                         op = inner.findtext("OutPoint")
                         if ip is not None:
-                            in_point = _prproj_ticks_to_frames(ip, fps)
+                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            in_point = _prproj_ticks_to_frames(ip, clip_fps)
                         if op is not None:
-                            out_point = _prproj_ticks_to_frames(op, fps)
+                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            out_point = _prproj_ticks_to_frames(op, clip_fps)
                     ps = clip_el.findtext("PlaybackSpeed")
                     if ps:
                         try:
