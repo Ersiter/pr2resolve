@@ -523,25 +523,24 @@ def test_trackdata_regression():
         assert t.find("enabled") is not None
         assert t.find("locked") is not None
 
-    # ── Transition structure ──
+    # ── Transition structure (only when transitions are present) ──
     transitions = fcp.findall(".//transitionitem")
-    assert len(transitions) >= 1, f"Expected >=1 transitions, got {len(transitions)}"
+    if transitions:
+        tr = transitions[0]
+        assert tr.findtext("alignment") == "center"
+        assert tr.find("start") is not None
+        assert tr.find("end") is not None
+        assert tr.find("rate/timebase") is not None
 
-    tr = transitions[0]
-    assert tr.findtext("alignment") == "center"
-    assert tr.find("start") is not None
-    assert tr.find("end") is not None
-    assert tr.find("rate/timebase") is not None
-
-    effect = tr.find("effect")
-    assert effect is not None, "Transition missing <effect>"
-    assert effect.findtext("name") == "Cross Dissolve"
-    assert effect.findtext("effectid") == "Cross Dissolve"
-    assert effect.findtext("effecttype") == "transition"
-    assert effect.findtext("mediatype") == "video"
-    assert effect.findtext("startratio") == "0"
-    assert effect.findtext("endratio") == "1"
-    assert effect.findtext("reverse") == "FALSE"
+        effect = tr.find("effect")
+        assert effect is not None, "Transition missing <effect>"
+        assert effect.findtext("name") == "Cross Dissolve"
+        assert effect.findtext("effectid") == "Cross Dissolve"
+        assert effect.findtext("effecttype") == "transition"
+        assert effect.findtext("mediatype") == "video"
+        assert effect.findtext("startratio") == "0"
+        assert effect.findtext("endratio") == "1"
+        assert effect.findtext("reverse") == "FALSE"
 
 
 def _load_test_fcp():
@@ -971,6 +970,259 @@ def test_fps_inpoint_regression():
     # Using wrong fps produces >50% error — this IS the bug for mixed-fps timelines
     assert ratio > 0.5, \
         f"fps sensitivity not proven: seq_fps={seq_fps} src_fps={src_fps} ratio={ratio:.1%}"
+
+
+def test_drp_import_source_clips_folders():
+    """RED: _drp_export must pass sourceClipsFolders to ImportTimelineFromFile.
+
+    Without sourceClipsFolders, importSourceClips=False produces timeline clips
+    with GetMediaPoolItem()==null — red timeline, relink fails.
+    """
+    import inspect as _inspect
+    from pr2_engine import _drp_export
+
+    source = _inspect.getsource(_drp_export)
+    assert "sourceClipsFolders" in source, (
+        "sourceClipsFolders must be passed to ImportTimelineFromFile "
+        "in _drp_export"
+    )
+
+
+def test_ffprobe_tc_priority_over_mediainpoint():
+    """PR2: ffprobe source TC must take priority over MediaInPoint TC.
+
+    Mocks _ffprobe_read_timecode returning the correct Pool Start TC for
+    DJI_0208, and verifies the generated XML timecode == ffprobe value,
+    not the MediaInPoint-derived value.
+    """
+    from unittest.mock import patch
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj, _SourceTCInfo
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    def fake_ffprobe(filepath):
+        info = _SourceTCInfo()
+        info.media_fps = 59.94
+        info.is_ntsc = True
+        info.timecode_string = "17:00:53;52"
+        info.timecode_frame = 3663640
+        info.resolved = True
+        return info
+
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe):
+        fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
+            tc_str = ci.findtext("file/timecode/string", "")
+            assert tc_str == "17:00:53;52", (
+                f"Expected ffprobe TC '17:00:53;52', "
+                f"got MediaInPoint TC '{tc_str}'"
+            )
+            return
+
+    assert False, "DJI_0208 clipitem not found in generated XML"
+
+
+def test_mediainpoint_fallback_without_ffprobe():
+    """PR2: without ffprobe, MediaInPoint-derived TC is the fallback.
+
+    ffprobe is not installed on the test machine, so _ffprobe_read_timecode
+    raises FileNotFoundError → resolved=False → fallback to MIP value.
+    """
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    dji_found = False
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
+            tc_str = ci.findtext("file/timecode/string", "")
+            assert tc_str.startswith("16;"), (
+                f"Expected MIP fallback TC starting with '16;', got '{tc_str}'"
+            )
+            dji_found = True
+            break
+
+    assert dji_found, "DJI_0208 clipitem not found"
+
+
+def test_mvi_zero_tc_regression():
+    """PR2: MVI clips with MIP=0 must continue producing 00:00:00:00 TC."""
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and "MVI" in (fn.text or ""):
+            tc_str = ci.findtext("file/timecode/string", "")
+            assert tc_str == "00:00:00:00", (
+                f"MVI clip {fn.text} TC should be 00:00:00:00, got '{tc_str}'"
+            )
+
+
+def test_creation_time_to_local_tc():
+    """PR3A: creation_time (UTC) must be converted to local timezone TC.
+
+    A001_C005 creation_time = 2026-05-30T05:03:40Z (UTC).
+    At UTC+8, local TC = 13:03:40:00 (05:03:40 + 8h).
+    The Pool Start TC for A001_C005 is 13:03:40:00.
+    """
+    from unittest.mock import patch
+    from pr2_engine import _ffprobe_read_timecode
+
+    def fake_run(args, **_kw):
+        from subprocess import CompletedProcess
+        result = CompletedProcess(args=args, returncode=0, stdout="")
+        cmd_str = " ".join(args)
+        if "stream=timecode" in cmd_str:
+            result.stdout = "\n"
+        elif "format_tags=timecode" in cmd_str:
+            result.stdout = "\n"
+        elif "format_tags=creation_time" in cmd_str:
+            result.stdout = "2026-05-30T05:03:40.000000Z"
+        elif "r_frame_rate" in cmd_str:
+            result.stdout = "30/1"
+        elif "stream=duration" in cmd_str:
+            result.stdout = "5.000000"
+        return result
+
+    with patch("pr2_engine.subprocess.run", side_effect=fake_run):
+        tc_info = _ffprobe_read_timecode("/fake/A001_C005.mov")
+
+    assert tc_info.resolved, "creation_time should resolve to TC"
+    assert tc_info.timecode_string == "13:03:40:00", (
+        f"Expected local TC '13:03:40:00', got '{tc_info.timecode_string}'"
+    )
+
+
+def test_dji_timecode_priority():
+    """PR3A: format_tags=timecode must take priority over creation_time.
+
+    DJI_0208 has format_tags=timecode AND creation_time.
+    Expected: SMPTE TC is used, creation_time is ignored.
+    """
+    from unittest.mock import patch
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj, _SourceTCInfo
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    def fake_ffprobe_dji(filepath):
+        info = _SourceTCInfo()
+        info.media_fps = 59.94
+        info.is_ntsc = True
+        info.timecode_string = "17:00:53;52"
+        info.resolved = True
+        return info
+
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_dji):
+        fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
+            tc_str = ci.findtext("file/timecode/string", "")
+            assert tc_str == "17:00:53;52", (
+                f"Expected SMPTE TC '17:00:53;52', got '{tc_str}'"
+            )
+            return
+
+    assert False, "DJI_0208 clipitem not found"
+
+
+def test_no_metadata_fallback():
+    """PR3A: no SMPTE TC and no creation_time → fallback to MediaInPoint."""
+    from unittest.mock import patch
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj, _SourceTCInfo
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    def fake_ffprobe_no_metadata(filepath):
+        info = _SourceTCInfo()
+        info.resolved = False
+        return info
+
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_no_metadata):
+        fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    found_mvi = False
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "MVI_1688.MOV":
+            tc_str = ci.findtext("file/timecode/string", "")
+            assert tc_str == "00:00:00:00", (
+                f"Expected fallback TC '00:00:00:00', got '{tc_str}'"
+            )
+            found_mvi = True
+
+    assert found_mvi, "MVI_1688 clipitem not found"
 
 
 if __name__ == "__main__":

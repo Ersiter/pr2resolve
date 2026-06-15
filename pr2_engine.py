@@ -1717,7 +1717,8 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
                 try:
                     dt_str = ct.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(dt_str)
+                    dt_utc = datetime.fromisoformat(dt_str)
+                    dt = dt_utc.astimezone()  # convert UTC → local time
                     display_fps = int(round(info.media_fps)) or 30
                     tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
                     tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
@@ -2019,10 +2020,15 @@ def _extract_clip(
                             media_path = mfp
                             break
                     source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                    if not source_tc.resolved and media_path:
+                    tc_source = "mediainpoint" if source_tc.resolved else "default"
+                    if media_path:
                         local = Path(media_path)
                         if local.exists():
-                            source_tc = _ffprobe_read_timecode(str(local))
+                            ff_tc = _ffprobe_read_timecode(str(local))
+                            if ff_tc.resolved:
+                                source_tc = ff_tc
+                                tc_source = "ffprobe"
+                    print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
                         src_w, src_h = sr
@@ -2410,22 +2416,6 @@ def _prproj_parse_sequence(
                         LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
                     ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
                     fcp_track.append(ci)
-
-                # Insert transitions between adjacent clips on this track
-                clipitems_in_track = fcp_track.findall("clipitem")
-                if len(clipitems_in_track) >= 2:
-                    overlap = timebase  # 1 second default transition
-                    for j in range(len(clipitems_in_track) - 1):
-                        ci_a = clipitems_in_track[j]
-                        ci_b = clipitems_in_track[j + 1]
-                        end_a = int(ci_a.findtext("end", "0"))
-                        # Transition overlaps: last N frames of A, first N frames of B
-                        trans_start = max(0, end_a - overlap)
-                        trans_end = end_a + overlap
-                        tr = _render_transition(TransitionData(start_frame=trans_start, end_frame=trans_end))
-                        # Insert at position of ci_b (before it in the track)
-                        insert_idx = list(fcp_track).index(ci_b)
-                        fcp_track.insert(insert_idx, tr)
 
                 ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
                 ET.SubElement(fcp_track, "locked").text = "TRUE" if track_data.locked else "FALSE"
@@ -2983,7 +2973,8 @@ def _drp_export(
         for xml_path, seq_name in zip(xml_paths, sequence_names):
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
-                {"timelineName": seq_name, "importSourceClips": False},
+                {"timelineName": seq_name, "importSourceClips": False,
+                 "sourceClipsFolders": [media_pool.GetRootFolder()]},
             )
             if timeline is not None:
                 print(f"  Timeline: {timeline.GetName()}")
