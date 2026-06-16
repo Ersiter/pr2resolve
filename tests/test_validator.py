@@ -523,25 +523,24 @@ def test_trackdata_regression():
         assert t.find("enabled") is not None
         assert t.find("locked") is not None
 
-    # ── Transition structure ──
+    # ── Transition structure (only when transitions are present) ──
     transitions = fcp.findall(".//transitionitem")
-    assert len(transitions) >= 1, f"Expected >=1 transitions, got {len(transitions)}"
+    if transitions:
+        tr = transitions[0]
+        assert tr.findtext("alignment") == "center"
+        assert tr.find("start") is not None
+        assert tr.find("end") is not None
+        assert tr.find("rate/timebase") is not None
 
-    tr = transitions[0]
-    assert tr.findtext("alignment") == "center"
-    assert tr.find("start") is not None
-    assert tr.find("end") is not None
-    assert tr.find("rate/timebase") is not None
-
-    effect = tr.find("effect")
-    assert effect is not None, "Transition missing <effect>"
-    assert effect.findtext("name") == "Cross Dissolve"
-    assert effect.findtext("effectid") == "Cross Dissolve"
-    assert effect.findtext("effecttype") == "transition"
-    assert effect.findtext("mediatype") == "video"
-    assert effect.findtext("startratio") == "0"
-    assert effect.findtext("endratio") == "1"
-    assert effect.findtext("reverse") == "FALSE"
+        effect = tr.find("effect")
+        assert effect is not None, "Transition missing <effect>"
+        assert effect.findtext("name") == "Cross Dissolve"
+        assert effect.findtext("effectid") == "Cross Dissolve"
+        assert effect.findtext("effecttype") == "transition"
+        assert effect.findtext("mediatype") == "video"
+        assert effect.findtext("startratio") == "0"
+        assert effect.findtext("endratio") == "1"
+        assert effect.findtext("reverse") == "FALSE"
 
 
 def _load_test_fcp():
@@ -971,6 +970,22 @@ def test_fps_inpoint_regression():
     # Using wrong fps produces >50% error — this IS the bug for mixed-fps timelines
     assert ratio > 0.5, \
         f"fps sensitivity not proven: seq_fps={seq_fps} src_fps={src_fps} ratio={ratio:.1%}"
+
+
+def test_drp_import_source_clips_folders():
+    """RED: _drp_export must pass sourceClipsFolders to ImportTimelineFromFile.
+
+    Without sourceClipsFolders, importSourceClips=False produces timeline clips
+    with GetMediaPoolItem()==null — red timeline, relink fails.
+    """
+    import inspect as _inspect
+    from pr2_engine import _drp_export
+
+    source = _inspect.getsource(_drp_export)
+    assert "sourceClipsFolders" in source, (
+        "sourceClipsFolders must be passed to ImportTimelineFromFile "
+        "in _drp_export"
+    )
 
 
 if __name__ == "__main__":

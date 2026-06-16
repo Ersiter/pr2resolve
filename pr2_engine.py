@@ -2411,22 +2411,6 @@ def _prproj_parse_sequence(
                     ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
                     fcp_track.append(ci)
 
-                # Insert transitions between adjacent clips on this track
-                clipitems_in_track = fcp_track.findall("clipitem")
-                if len(clipitems_in_track) >= 2:
-                    overlap = timebase  # 1 second default transition
-                    for j in range(len(clipitems_in_track) - 1):
-                        ci_a = clipitems_in_track[j]
-                        ci_b = clipitems_in_track[j + 1]
-                        end_a = int(ci_a.findtext("end", "0"))
-                        # Transition overlaps: last N frames of A, first N frames of B
-                        trans_start = max(0, end_a - overlap)
-                        trans_end = end_a + overlap
-                        tr = _render_transition(TransitionData(start_frame=trans_start, end_frame=trans_end))
-                        # Insert at position of ci_b (before it in the track)
-                        insert_idx = list(fcp_track).index(ci_b)
-                        fcp_track.insert(insert_idx, tr)
-
                 ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
                 ET.SubElement(fcp_track, "locked").text = "TRUE" if track_data.locked else "FALSE"
 
@@ -2983,7 +2967,8 @@ def _drp_export(
         for xml_path, seq_name in zip(xml_paths, sequence_names):
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
-                {"timelineName": seq_name, "importSourceClips": False},
+                {"timelineName": seq_name, "importSourceClips": False,
+                 "sourceClipsFolders": [media_pool.GetRootFolder()]},
             )
             if timeline is not None:
                 print(f"  Timeline: {timeline.GetName()}")
