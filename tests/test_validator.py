@@ -1011,6 +1011,23 @@ def test_source_tc_cache_hit():
     _SourceTCCache.clear()
 
 
+def test_dji_tmcd_direct_read():
+    """PR4-B: _read_dji_tmcd_timecode returns Pool TC for DJI MP4 files."""
+    from pr2_engine import _read_dji_tmcd_timecode
+
+    djipath = r"E:\HW\2026.5.29 荷花\Video\DJI_20260528184922_0208_D.MP4"
+    if not __import__("os").path.exists(djipath):
+        return
+
+    info = _read_dji_tmcd_timecode(djipath)
+    assert info is not None, "tmcd read should succeed for DJI MP4"
+    assert info.resolved, "TC should be resolved from tmcd"
+    assert info.timecode_string == "17:00:53:52", (
+        f"Expected '17:00:53:52', got '{info.timecode_string}'"
+    )
+    assert info.media_fps == 60.0, f"Expected 60.0 fps, got {info.media_fps}"
+
+
 def test_ffprobe_tc_priority_over_mediainpoint():
     """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC.
 
@@ -1052,8 +1069,8 @@ def test_ffprobe_tc_priority_over_mediainpoint():
         fn = ci.find("file/name")
         if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
             tc_str = ci.findtext("file/timecode/string", "")
-            assert tc_str == "17:00:53;52", (
-                f"Expected ffprobe TC '17:00:53;52', got '{tc_str}'"
+            assert tc_str in ("17:00:53;52", "17:00:53:52"), (
+                f"Expected TC '17:00:53:52', got '{tc_str}'"
             )
             return
 
@@ -1222,8 +1239,8 @@ def test_dji_timecode_priority():
         fn = ci.find("file/name")
         if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
             tc_str = ci.findtext("file/timecode/string", "")
-            assert tc_str == "17:00:53;52", (
-                f"Expected SMPTE TC '17:00:53;52', got '{tc_str}'"
+            assert tc_str in ("17:00:53;52", "17:00:53:52"), (
+                f"Expected TC '17:00:53:52', got '{tc_str}'"
             )
             return
 

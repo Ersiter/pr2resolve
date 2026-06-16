@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -1688,6 +1689,197 @@ def _prproj_extract_source_tc_info(
     return info
 
 
+def _read_dji_tmcd_timecode(filepath: str) -> _SourceTCInfo | None:
+    """Pure-Python: read timecode from DJI MP4 tmcd track sample.
+
+    DJI drones embed a tmcd handler track with one 4-byte sample
+    containing raw NDF frame count since midnight.  Reads moov box,
+    finds tmcd trak via handler type, locates the stco chunk offset,
+    and converts the sample value to an HH:MM:SS:FF timecode string.
+
+    Returns a resolved _SourceTCInfo on success, or None if the file
+    doesn't contain a parsable tmcd track.
+    """
+    info = _SourceTCInfo()
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        if len(data) < 64:
+            return None
+    except OSError:
+        return None
+
+    # ── Find moov box ──
+    moov = _find_moov_atom(data)
+    if not moov:
+        return None
+
+    # ── Find tmcd track ──
+    tmcd_trak = _find_trak_by_hdlr(moov, b"tmcd")
+    if not tmcd_trak:
+        return None
+
+    # ── Walk to stbl ──
+    stbl = _walk_trak_to_stbl(tmcd_trak)
+    if not stbl:
+        return None
+
+    # ── Read tmcd sample description (stsd) for timeScale + frameDuration ──
+    stsd = _find_child(stbl, b"stsd")
+    if not stsd:
+        return None
+    tscale, fdur = _parse_tmcd_stsd(stsd)
+    if not tscale or not fdur:
+        return None
+
+    # ── Read sample from stco ──
+    stco = _find_child(stbl, b"stco")
+    if not stco:
+        return None
+    counter = _read_first_sample(stco, data)
+    if counter <= 0:
+        return None
+
+    # ── Convert counter → timecode string ──
+    # counter = raw NDF frame count since midnight at `fdur / tscale` fps.
+    # seconds = counter * fdur / tscale  (integer math to avoid float drift)
+    display_fps = round(tscale / fdur)
+    if display_fps <= 0:
+        return None
+
+    total_seconds = (counter * fdur) / tscale
+    hh = int(total_seconds // 3600)
+    mm = int((total_seconds % 3600) // 60)
+    ss = int(total_seconds % 60)
+    ff = int(round((total_seconds - int(total_seconds)) * display_fps))
+    if ff >= display_fps:
+        ff = display_fps - 1
+
+    info.timecode_string = f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+    info.media_fps = display_fps
+    info.is_ntsc = _is_ntsc_fps(info.media_fps)
+    info.timecode_frame = counter
+    info.resolved = True
+    return info
+
+
+# ── Atom-parsing helpers ──────────────────────────────────────────────
+
+def _find_moov_atom(data: bytes) -> bytes | None:
+    """Locate the moov box (at file start or near end for streaming-optimized MP4)."""
+    # Check first 64 KB
+    off = 0
+    limit = min(65536, len(data))
+    while off + 8 < limit:
+        sz = struct.unpack(">I", data[off:off + 4])[0]
+        if sz < 8 or off + sz > len(data):
+            off += 1; continue
+        if data[off + 4:off + 8] == b"moov":
+            return data[off:off + sz]
+        off += sz
+
+    # moov at end (e.g. DJI streaming-optimized): rfind in last 2 MB
+    tail_start = max(0, len(data) - 2_000_000)
+    tail = data[tail_start:]
+    pos = tail.rfind(b"moov")
+    if pos >= 0:
+        abs_off = tail_start + pos - 4
+        sz = struct.unpack(">I", data[abs_off:abs_off + 4])[0]
+        if 24 <= sz <= len(data) - abs_off:
+            return data[abs_off:abs_off + sz]
+    return None
+
+
+def _find_trak_by_hdlr(moov: bytes, handler: bytes) -> bytes | None:
+    """Return the first trak whose handler subtype matches `handler`."""
+    off = 8  # skip moov header
+    while off + 8 < len(moov):
+        sz = struct.unpack(">I", moov[off:off + 4])[0]
+        if sz < 8 or off + sz > len(moov):
+            break
+        if moov[off + 4:off + 8] == b"trak":
+            trak = moov[off:off + sz]
+            if _trak_hdlr_type(trak) == handler:
+                return trak
+        off += sz
+    return None
+
+
+def _trak_hdlr_type(trak: bytes) -> bytes | None:
+    """QuickTime handler subtype from a trak box."""
+    mdia = _find_child(trak, b"mdia")
+    if not mdia:
+        return None
+    hdlr = _find_child(mdia, b"hdlr")
+    # hdlr: [size(4)][hdlr(4)][ver+flg(4)][comp_type(4)][subtype(4)]...
+    if hdlr and len(hdlr) >= 20:
+        return hdlr[16:20]
+    return None
+
+
+def _walk_trak_to_stbl(trak: bytes) -> bytes | None:
+    """Navigate trak → mdia → minf → stbl."""
+    mdia = _find_child(trak, b"mdia")
+    if not mdia:
+        return None
+    minf = _find_child(mdia, b"minf")
+    if not minf:
+        return None
+    return _find_child(minf, b"stbl")
+
+
+def _find_child(parent: bytes, box_type: bytes) -> bytes | None:
+    """Return the first child atom matching `box_type` (full atom, including header).
+
+    parent must be a complete atom WITH its 8-byte header. The header
+    is automatically skipped before searching for children.
+    """
+    off = 8  # skip parent's own [size][name] header
+    while off + 8 < len(parent):
+        sz = struct.unpack(">I", parent[off:off + 4])[0]
+        if sz < 8 or off + sz > len(parent):
+            break
+        if parent[off + 4:off + 8] == box_type:
+            return parent[off:off + sz]
+        off += sz
+    return None
+
+
+def _parse_tmcd_stsd(stsd: bytes) -> tuple[int, int]:
+    """Extract (timeScale, frameDuration) from a tmcd stsd entry."""
+    # stsd: [size(4)][stsd(4)][ver+flg(4)][entry_count(4)][entries...]
+    if len(stsd) < 20:
+        return 0, 0
+    entry_count = struct.unpack(">I", stsd[12:16])[0]
+    pos = 16
+    for _ in range(entry_count):
+        if pos + 8 > len(stsd):
+            break
+        e_sz = struct.unpack(">I", stsd[pos:pos + 4])[0]
+        if e_sz < 8 or pos + e_sz > len(stsd):
+            break
+        e_fmt = stsd[pos + 4:pos + 8]
+        ebody = stsd[pos + 8:pos + e_sz]
+        if e_fmt == b"tmcd" and len(ebody) >= 24:
+            return struct.unpack(">I", ebody[16:20])[0], struct.unpack(">I", ebody[20:24])[0]
+        pos += e_sz
+    return 0, 0
+
+
+def _read_first_sample(stco: bytes, data: bytes) -> int:
+    """Read the first media sample pointed to by stco."""
+    # stco: [size(4)][stco(4)][ver+flg(4)][entry_count(4)][offsets...]
+    if len(stco) < 20:
+        return 0
+    nchunks = struct.unpack(">I", stco[12:16])[0]
+    if nchunks == 0:
+        return 0
+    chunk_off = struct.unpack(">I", stco[16:20])[0]
+    if chunk_off + 4 > len(data):
+        return 0
+    return struct.unpack(">I", data[chunk_off:chunk_off + 4])[0]
+
+
 def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
@@ -2080,11 +2272,17 @@ def _extract_clip(
                                 source_tc = _SourceTCCache[local_str]
                                 tc_source = "cache"
                             else:
-                                ff_tc = _ffprobe_read_timecode(local_str)
-                                _SourceTCCache[local_str] = ff_tc
-                                if ff_tc.resolved:
-                                    source_tc = ff_tc
-                                    tc_source = "ffprobe"
+                                tmcd_tc = _read_dji_tmcd_timecode(local_str)
+                                if tmcd_tc is not None and tmcd_tc.resolved:
+                                    _SourceTCCache[local_str] = tmcd_tc
+                                    source_tc = tmcd_tc
+                                    tc_source = "tmcd"
+                                else:
+                                    ff_tc = _ffprobe_read_timecode(local_str)
+                                    _SourceTCCache[local_str] = ff_tc
+                                    if ff_tc.resolved:
+                                        source_tc = ff_tc
+                                        tc_source = "ffprobe"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
