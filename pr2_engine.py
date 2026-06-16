@@ -1880,6 +1880,97 @@ def _read_first_sample(stco: bytes, data: bytes) -> int:
     return struct.unpack(">I", data[chunk_off:chunk_off + 4])[0]
 
 
+def _read_mov_creation_time_tc(filepath: str) -> _SourceTCInfo | None:
+    """Pure-Python: read '©day' creation_time from MOV/MP4 moov.udta.
+
+    Blackmagic cameras write UTC creation time in the ©day atom inside
+    moov.udta.meta.ilst.  Convert UTC → local timezone, format as
+    hh:mm:ss:00 timecode.  This matches Resolve's Pool Start TC.
+
+    Returns a resolved _SourceTCInfo on success, or None.
+    """
+    info = _SourceTCInfo()
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        if len(data) < 64:
+            return None
+    except OSError:
+        return None
+
+    moov = _find_moov_atom(data)
+    if not moov:
+        return None
+
+    # Path A: moov → udta → meta → ilst → ©day (canonical QuickTime)
+    udta = _find_child(moov, b"udta")
+    if udta:
+        meta = _find_child(udta, b"meta")
+        if meta:
+            ilst = _find_child(meta, b"ilst")
+            if ilst:
+                _CDAY = bytes([0xA9, 0x64, 0x61, 0x79])
+                off = 8
+                while off + 12 < len(ilst):
+                    sz = struct.unpack(">I", ilst[off:off + 4])[0]
+                    if sz < 12 or off + sz > len(ilst):
+                        break
+                    fourcc = ilst[off + 4:off + 8]
+                    if fourcc == _CDAY:
+                        data_box = ilst[off + 8:off + sz]
+                        if len(data_box) >= 8:
+                            payload = data_box[8:]
+                            try:
+                                ct = payload.decode("utf-8", errors="ignore").rstrip("\x00").strip()
+                            except Exception:
+                                break
+                            if ct and _iso8601_to_tc_str(ct, info):
+                                return info
+                    off += sz
+
+    # Path B: mvhd creation_time (Blackmagic Camera)
+    return _read_mvhd_creation_time_tc(moov, info)
+
+
+def _iso8601_to_tc_str(ct: str, info: _SourceTCInfo) -> bool:
+    """Convert ISO 8601 UTC string to local timecode. Returns True on success."""
+    from datetime import datetime
+    try:
+        dt_str = ct.replace("Z", "+00:00")
+        dt_utc = datetime.fromisoformat(dt_str)
+        dt = dt_utc.astimezone()
+        info.timecode_string = f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}:00"
+        info.resolved = True
+        return True
+    except (ValueError, IndexError):
+        return False
+
+
+def _read_mvhd_creation_time_tc(moov: bytes, info: _SourceTCInfo) -> _SourceTCInfo | None:
+    """Read mvhd creation_time (Mac epoch, seconds since 1904-01-01)."""
+    from datetime import datetime, timezone
+    mvhd = _find_child(moov, b"mvhd")
+    if not mvhd:
+        return None
+    body = mvhd[8:]
+    if len(body) < 12:
+        return None
+    ver = body[0]
+    ct_off = 4 if ver == 0 else 12
+    if len(body) < ct_off + 4:
+        return None
+    mac_epoch = struct.unpack(">I", body[ct_off:ct_off + 4])[0]
+    if mac_epoch == 0:
+        return None
+    unix_ts = mac_epoch - 2082844800
+    if unix_ts <= 0:
+        return None
+    dt = datetime.fromtimestamp(unix_ts, tz=timezone.utc).astimezone()
+    info.timecode_string = f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}:00"
+    info.resolved = True
+    return info
+
+
 def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
@@ -2283,6 +2374,12 @@ def _extract_clip(
                                     if ff_tc.resolved:
                                         source_tc = ff_tc
                                         tc_source = "ffprobe"
+                                    else:
+                                        ct_tc = _read_mov_creation_time_tc(local_str)
+                                        if ct_tc is not None and ct_tc.resolved:
+                                            _SourceTCCache[local_str] = ct_tc
+                                            source_tc = ct_tc
+                                            tc_source = "creation_time"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:

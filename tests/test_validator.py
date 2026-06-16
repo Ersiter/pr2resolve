@@ -1028,6 +1028,23 @@ def test_dji_tmcd_direct_read():
     assert info.media_fps == 60.0, f"Expected 60.0 fps, got {info.media_fps}"
 
 
+def test_mov_creation_time_to_tc():
+    """PR4-C: _read_mov_creation_time_tc matches Pool TC for A001 files."""
+    from pr2_engine import _read_mov_creation_time_tc
+
+    a001path = r"E:\HW\2026.5.29 荷花\Video\Media\A001_05301301_C002.mov"
+    if not __import__("os").path.exists(a001path):
+        return
+
+    info = _read_mov_creation_time_tc(a001path)
+    assert info is not None, "creation_time read should succeed for A001 MOV"
+    assert info.resolved, "TC should be resolved from creation_time"
+    # Pool TC for A001_C002 = 13:01:15:00 (UTC 05:01:15 + 8h)
+    assert info.timecode_string == "13:01:15:00", (
+        f"Expected '13:01:15:00', got '{info.timecode_string}'"
+    )
+
+
 def test_ffprobe_tc_priority_over_mediainpoint():
     """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC.
 
@@ -1145,6 +1162,7 @@ def test_mvi_zero_tc_regression():
         return info
 
     with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_none), \
+         patch("pr2_engine._read_mov_creation_time_tc", return_value=None), \
          patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
 
@@ -1274,6 +1292,7 @@ def test_no_metadata_fallback():
         return info
 
     with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_no_metadata), \
+         patch("pr2_engine._read_mov_creation_time_tc", return_value=None), \
          patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
     found_mvi = False
