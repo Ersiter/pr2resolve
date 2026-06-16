@@ -1537,27 +1537,71 @@ def _prproj_get_source_resolution(
 def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bool) -> str:
     """Convert absolute frame count to timecode string at given frame rate.
 
-    Uses non-drop-frame (NDF) calculation. For fractional NTSC rates
-    (23.976, 29.97, 59.94), NDF is the standard FCP7 XML convention.
+    For 29.97 and 59.94 fps (is_ntsc=True), uses drop-frame (DF) labeling:
+    frame numbers 00 and 01 are skipped at the start of every minute except
+    every 10th minute.  23.976 (also is_ntsc=True) uses NDF with ';'
+    separator per convention.
 
     Args:
-        total_frames: Absolute frame number (0-based)
+        total_frames: Absolute (raw NDF) frame number (0-based)
         fps: Actual frames per second (e.g. 59.94)
-        is_ntsc: Use ';' separator for NTSC, ':' for integer rates
+        is_ntsc: Use ';' separator (see above for DF vs NDF logic)
 
     Returns:
-        Timecode string like '13:01:15:00' or '00;00;00;00'
+        Timecode string like '17:00:23:16' (DF) or '00;00;01;00' (23.976 NDF)
     """
     display_fps = int(round(fps))
     if display_fps <= 0:
         display_fps = 30
+    sep = ";" if is_ntsc else ":"
+
+    if total_frames == 0:
+        return f"00:00:00:00"
+
+    # ── Drop-frame: apply only to 29.97/59.94, NOT 23.976 ──
+    is_dropframe = is_ntsc and display_fps in (30, 60)
+
+    if is_dropframe:
+        # raw NDF frame count → DF label.
+        # Each non-10th minute drops 2 frames (labels 00 and 01).
+        # Per 10-minute block: 9 × (60×fps - 2) + 1 × (60×fps)
+        #                    = 10 × 60 × fps - 18 labeled raw frames
+        frames_per_minute = display_fps * 60
+        frames_per_10min = 10 * frames_per_minute - 9 * 2
+
+        total_minutes = 0
+        remaining = total_frames
+
+        blocks_10 = remaining // frames_per_10min
+        total_minutes += blocks_10 * 10
+        remaining = remaining % frames_per_10min
+
+        for _ in range(9):  # minutes 0–8 (non-10th)
+            needed = frames_per_minute - 2
+            if remaining >= needed:
+                remaining -= needed
+                total_minutes += 1
+            else:
+                break
+
+        if remaining >= frames_per_minute and total_minutes % 10 == 9:
+            remaining -= frames_per_minute
+            total_minutes += 1
+
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        seconds = remaining // display_fps
+        frames = remaining % display_fps
+
+        return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
+
+    # ── NDF: unchanged arithmetic ──
     hours = total_frames // (3600 * display_fps)
     remainder = total_frames % (3600 * display_fps)
     minutes = remainder // (60 * display_fps)
     remainder = remainder % (60 * display_fps)
     seconds = remainder // display_fps
     frames = remainder % display_fps
-    sep = ";" if is_ntsc else ":"
     return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
 
 
@@ -2970,21 +3014,33 @@ def _drp_export(
         # ── Step 3: Import timelines ──
         # importSourceClips=False — media already in pool from Step 1
         import_failed = False
+        failed_xmls: list[tuple[str, Path]] = []
         for xml_path, seq_name in zip(xml_paths, sequence_names):
+            print("=" * 60)
+            print(f"  SEQ_NAME: {seq_name}")
+            print(f"  XML: {xml_path}")
+            print(f"  SIZE: {xml_path.stat().st_size:,} bytes")
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
                 {"timelineName": seq_name, "importSourceClips": False,
                  "sourceClipsFolders": [media_pool.GetRootFolder()]},
             )
+            print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
-                print(f"  Timeline: {timeline.GetName()}")
+                print(f"  OK: {timeline.GetName()}")
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
                 except Exception:
                     pass
             else:
                 print(f"  Timeline import FAILED: {seq_name}")
+                failed_xmls.append((seq_name, xml_path))
                 import_failed = True
+        if failed_xmls:
+            print("=" * 60)
+            print(f"  FAILED {len(failed_xmls)}/{len(xml_paths)} sequences:")
+            for nm, xp in failed_xmls:
+                print(f"    {nm}  ({xp.stat().st_size:,} bytes)  {xp}")
 
         # ── Step 4: Export DRP ──
         if import_failed:
