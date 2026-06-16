@@ -1537,27 +1537,70 @@ def _prproj_get_source_resolution(
 def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bool) -> str:
     """Convert absolute frame count to timecode string at given frame rate.
 
-    Uses non-drop-frame (NDF) calculation. For fractional NTSC rates
-    (23.976, 29.97, 59.94), NDF is the standard FCP7 XML convention.
+    For NTSC rates (23.976, 29.97, 59.94), uses drop-frame (DF) labeling
+    which skips frame numbers 00 and 01 at the start of every minute except
+    minutes divisible by 10.  DC XML convention uses ALL-: separators
+    regardless of DF/NDF.
 
     Args:
         total_frames: Absolute frame number (0-based)
         fps: Actual frames per second (e.g. 59.94)
-        is_ntsc: Use ';' separator for NTSC, ':' for integer rates
+        is_ntsc: If True, produce DF timecode labels
 
     Returns:
-        Timecode string like '13:01:15:00' or '00;00;00;00'
+        Timecode string like '17:00:53:52' (DF) or '00:00:03:10' (NDF)
     """
     display_fps = int(round(fps))
     if display_fps <= 0:
         display_fps = 30
-    hours = total_frames // (3600 * display_fps)
-    remainder = total_frames % (3600 * display_fps)
-    minutes = remainder // (60 * display_fps)
-    remainder = remainder % (60 * display_fps)
-    seconds = remainder // display_fps
-    frames = remainder % display_fps
-    sep = ";" if is_ntsc else ":"
+    sep = ":"  # DC XML convention: always colon, Resolve ignores separators
+
+    if not is_ntsc:
+        hours = total_frames // (3600 * display_fps)
+        remainder = total_frames % (3600 * display_fps)
+        minutes = remainder // (60 * display_fps)
+        remainder = remainder % (60 * display_fps)
+        seconds = remainder // display_fps
+        frames = remainder % display_fps
+        return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
+
+    # ── Drop-frame labeling ──
+    # Each non-10th minute drops 2 frames (00, 01).
+    # Per 10-minute block: 9 × (60×fps - 2) + 1 × (60×fps) = 10×60×fps - 18
+    frames_per_minute = display_fps * 60
+    frames_per_10min = 10 * frames_per_minute - 9 * 2
+
+    if total_frames == 0:
+        return f"00:00:00:00"
+
+    total_minutes = 0
+    remaining = total_frames
+
+    # Count 10-minute blocks
+    blocks_10 = remaining // frames_per_10min
+    total_minutes += blocks_10 * 10
+    remaining = remaining % frames_per_10min
+
+    # Count individual minutes in the remaining partial block
+    # Minutes 0-8 have 2 dropped frames, minute 9 has 0 dropped
+    for minute_pos in range(9):  # minutes 0-8
+        needed = frames_per_minute - 2  # 3598 for 60fps
+        if remaining >= needed:
+            remaining -= needed
+            total_minutes += 1
+        else:
+            break
+
+    # Minute 9 (the 10th): full minute, no drops
+    if remaining >= frames_per_minute and total_minutes % 10 == 9:
+        remaining -= frames_per_minute
+        total_minutes += 1
+
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    seconds = remaining // display_fps
+    frames = remaining % display_fps
+
     return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
 
 
@@ -1722,10 +1765,9 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                     display_fps = int(round(info.media_fps)) or 30
                     tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
                     tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
-                    sep = ";" if info.is_ntsc else ":"
                     info.timecode_string = (
-                        f"{dt.hour:02d}{sep}{dt.minute:02d}{sep}"
-                        f"{dt.second:02d}{sep}{tc_frames:02d}"
+                        f"{dt.hour:02d}:{dt.minute:02d}:"
+                        f"{dt.second:02d}:{tc_frames:02d}"
                     )
                     info.resolved = True
                 except (ValueError, IndexError):
