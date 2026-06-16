@@ -29,6 +29,13 @@ from pr2_constants import (
 )
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Source TC lazy cache — avoids redundant ffprobe calls for shared media
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SourceTCCache: dict[str, _SourceTCInfo] = {}
+
+
 # ─── From pr2_utils.py ─────────────────────────────────────────────
 
 def _recycle(path: Path) -> None:
@@ -2068,10 +2075,16 @@ def _extract_clip(
                     if media_path:
                         local = Path(media_path)
                         if local.exists():
-                            ff_tc = _ffprobe_read_timecode(str(local))
-                            if ff_tc.resolved:
-                                source_tc = ff_tc
-                                tc_source = "ffprobe"
+                            local_str = str(local)
+                            if local_str in _SourceTCCache:
+                                source_tc = _SourceTCCache[local_str]
+                                tc_source = "cache"
+                            else:
+                                ff_tc = _ffprobe_read_timecode(local_str)
+                                _SourceTCCache[local_str] = ff_tc
+                                if ff_tc.resolved:
+                                    source_tc = ff_tc
+                                    tc_source = "ffprobe"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:

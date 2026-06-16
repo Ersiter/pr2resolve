@@ -988,6 +988,29 @@ def test_drp_import_source_clips_folders():
     )
 
 
+def test_source_tc_cache_hit():
+    """PR4-A: _SourceTCCache caches per file path, avoiding redundant probes."""
+    from pr2_engine import _SourceTCCache, _SourceTCInfo
+
+    _SourceTCCache.clear()
+
+    fake = _SourceTCInfo()
+    fake.timecode_string = "17:00:53:52"
+    fake.media_fps = 59.94
+    fake.is_ntsc = True
+    fake.resolved = True
+
+    path = r"D:\test\DJI_0208.MP4"
+    _SourceTCCache[path] = fake
+
+    assert path in _SourceTCCache
+    assert _SourceTCCache[path] is fake
+    assert _SourceTCCache[path].timecode_string == "17:00:53:52"
+    assert _SourceTCCache[path].resolved is True
+
+    _SourceTCCache.clear()
+
+
 def test_ffprobe_tc_priority_over_mediainpoint():
     """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC.
 
@@ -1081,8 +1104,10 @@ def test_mediainpoint_fallback_without_ffprobe():
 def test_mvi_zero_tc_regression():
     """PR2: MVI clips with MIP=0 must produce 00:00:00:00 TC (no SMPTE TC)."""
     from unittest.mock import patch
-    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence, _SourceTCCache
     from pr2_constants import load_prproj, _SourceTCInfo
+
+    _SourceTCCache.clear()
 
     test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
     if not test_proj.exists():
@@ -1102,7 +1127,8 @@ def test_mvi_zero_tc_regression():
         info.resolved = False
         return info
 
-    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_none):
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_none), \
+         patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
 
     for ci in fcp.iter("clipitem"):
@@ -1207,8 +1233,10 @@ def test_dji_timecode_priority():
 def test_no_metadata_fallback():
     """PR2: no SMPTE TC and no creation_time → fallback to MediaInPoint."""
     from unittest.mock import patch
-    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence, _SourceTCCache
     from pr2_constants import load_prproj, _SourceTCInfo
+
+    _SourceTCCache.clear()
 
     test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
     if not test_proj.exists():
@@ -1228,9 +1256,9 @@ def test_no_metadata_fallback():
         info.resolved = False
         return info
 
-    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_no_metadata):
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_no_metadata), \
+         patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
-
     found_mvi = False
     for ci in fcp.iter("clipitem"):
         fn = ci.find("file/name")
