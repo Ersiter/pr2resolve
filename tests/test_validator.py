@@ -989,7 +989,12 @@ def test_drp_import_source_clips_folders():
 
 
 def test_ffprobe_tc_priority_over_mediainpoint():
-    """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC."""
+    """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC.
+
+    Also patches Path.exists so the .prproj media path (from the author's
+    machine) appears to exist on the test machine, allowing the ffprobe
+    mock to be reached.
+    """
     from unittest.mock import patch
     from pr2_engine import _PrprojIndex, _prproj_parse_sequence
     from pr2_constants import load_prproj, _SourceTCInfo
@@ -1016,7 +1021,8 @@ def test_ffprobe_tc_priority_over_mediainpoint():
         info.resolved = True
         return info
 
-    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe):
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe), \
+         patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
 
     for ci in fcp.iter("clipitem"):
@@ -1109,9 +1115,27 @@ def test_mvi_zero_tc_regression():
 
 
 def test_creation_time_to_local_tc():
-    """PR2: creation_time (UTC) must be converted to local timezone TC."""
-    from unittest.mock import patch
+    """PR2: creation_time (UTC) must be converted to local timezone TC.
+
+    Monkey-patches pr2_engine.datetime (the module-level reference) so
+    that fromisoformat returns a UTC datetime whose astimezone() yields
+    a known UTC+8 local time.  This removes dependency on the test
+    machine's actual timezone.
+    """
+    from unittest.mock import patch, MagicMock
+    from datetime import datetime, timezone, timedelta
     from pr2_engine import _ffprobe_read_timecode
+
+    utc_dt = datetime(2026, 5, 30, 5, 3, 40, tzinfo=timezone.utc)
+    local_dt = datetime(2026, 5, 30, 13, 3, 40, tzinfo=timezone(timedelta(hours=8)))
+
+    # datetime.fromisoformat is a C-level classmethod — can't be patched
+    # directly.  Replace `pr2_engine.datetime` with a MagicMock whose
+    # .fromisoformat returns a mock that has astimezone → local_dt.
+    fake_dt = MagicMock()
+    mock_utc = MagicMock()
+    mock_utc.astimezone.return_value = local_dt
+    fake_dt.fromisoformat.return_value = mock_utc
 
     def fake_run(args, **_kw):
         from subprocess import CompletedProcess
@@ -1127,7 +1151,8 @@ def test_creation_time_to_local_tc():
             result.stdout = "5.000000"
         return result
 
-    with patch("pr2_engine.subprocess.run", side_effect=fake_run):
+    with patch("pr2_engine.subprocess.run", side_effect=fake_run), \
+         patch("pr2_engine.datetime", fake_dt):
         tc_info = _ffprobe_read_timecode("/fake/A001_C005.mov")
 
     assert tc_info.resolved, "creation_time should resolve to TC"
@@ -1163,7 +1188,8 @@ def test_dji_timecode_priority():
         info.resolved = True
         return info
 
-    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_dji):
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe_dji), \
+         patch("pathlib.Path.exists", return_value=True):
         fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
 
     for ci in fcp.iter("clipitem"):
