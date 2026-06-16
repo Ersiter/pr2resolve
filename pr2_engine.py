@@ -2374,12 +2374,11 @@ def _extract_clip(
                                     if ff_tc.resolved:
                                         source_tc = ff_tc
                                         tc_source = "ffprobe"
-                                    else:
-                                        ct_tc = _read_mov_creation_time_tc(local_str)
-                                        if ct_tc is not None and ct_tc.resolved:
-                                            _SourceTCCache[local_str] = ct_tc
-                                            source_tc = ct_tc
-                                            tc_source = "creation_time"
+                    if tc_source == "mediainpoint" and media_path and Path(media_path).exists():
+                        ct_tc = _read_mov_creation_time_tc(str(Path(media_path)))
+                        if ct_tc is not None and ct_tc.resolved:
+                            source_tc = ct_tc
+                            tc_source = "creation_time"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
