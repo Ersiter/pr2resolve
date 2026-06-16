@@ -1717,7 +1717,8 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
                 try:
                     dt_str = ct.replace("Z", "+00:00")
-                    dt = datetime.fromisoformat(dt_str)
+                    dt_utc = datetime.fromisoformat(dt_str)
+                    dt = dt_utc.astimezone()  # convert UTC → local time
                     display_fps = int(round(info.media_fps)) or 30
                     tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
                     tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
@@ -2019,10 +2020,15 @@ def _extract_clip(
                             media_path = mfp
                             break
                     source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                    if not source_tc.resolved and media_path:
+                    tc_source = "mediainpoint" if source_tc.resolved else "default"
+                    if media_path:
                         local = Path(media_path)
                         if local.exists():
-                            source_tc = _ffprobe_read_timecode(str(local))
+                            ff_tc = _ffprobe_read_timecode(str(local))
+                            if ff_tc.resolved:
+                                source_tc = ff_tc
+                                tc_source = "ffprobe"
+                    print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
                         src_w, src_h = sr
