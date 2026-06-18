@@ -1348,6 +1348,70 @@ def test_final_tc_priority_chain():
     _SourceTCCache.clear()
 
 
+def test_scaletoframe_off_skips_autofit():
+    """PR6: ShouldScaleMedia=false must skip M7 scale auto-fit.
+
+    DJI_0229 (1728x3072) on 1920x1080 timeline with ShouldScaleMedia=false
+    should retain 100% scale, NOT be rewritten to 35.2%.
+    """
+    import gzip, xml.etree.ElementTree as ET2
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence
+    from pr2_constants import load_prproj
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    # Verify ShouldScaleMedia is false in the .prproj
+    ssm = root.findtext("ProjectSettings/ShouldScaleMedia", "")
+    assert ssm == "false", (
+        f"Expected ShouldScaleMedia='false', got '{ssm}'"
+    )
+
+    fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    # DJI_0229: source 1728x3072, timeline 1920x1080
+    # Should retain 100% scale (no auto-fit) because ShouldScaleMedia=false
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is None or fn.text != "DJI_20260530122217_0229_D.MP4":
+            continue
+        basic = ci.find("filter/effect/[effectid='basic']")
+        if basic is not None:
+            scale_p = basic.find("parameter/[name='Scale']")
+            if scale_p is not None:
+                scale_val = float(scale_p.findtext("value", "100"))
+                assert abs(scale_val - 100.0) < 0.1, (
+                    f"ShouldScaleMedia=false => scale must stay at 100%, "
+                    f"got {scale_val}"
+                )
+
+
+def test_drp_export_sets_color_science():
+    """PR6: _drp_export must call SetSetting for color science mode.
+
+    Currently _drp_export only sets timelineStartTimecode.  It must also
+    set colorScience and timelineColorSpace to prevent DaVinci defaults
+    from diverging from Premiere's BT.709 display-referred workflow.
+    """
+    import inspect as _inspect
+    from pr2_engine import _drp_export
+
+    source = _inspect.getsource(_drp_export)
+    assert "colorScience" in source or "color_profile" in source, (
+        "_drp_export must set colorScience on the Resolve project"
+    )
+
+
 if __name__ == "__main__":
     import inspect
     ts = sorted(

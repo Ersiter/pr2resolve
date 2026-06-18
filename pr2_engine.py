@@ -36,6 +36,9 @@ from pr2_constants import (
 
 _SourceTCCache: dict[str, _SourceTCInfo] = {}
 
+# Scale-to-frame preservation flag (read from .prproj ShouldScaleMedia)
+_scaletoframe_enabled: bool = True  # default True for FCP7 XML path (no prproj)
+
 
 # ─── From pr2_utils.py ─────────────────────────────────────────────
 
@@ -492,6 +495,12 @@ def _detect_scale_mismatch(
         scale_param = basic_filter.find("parameter/[name='Scale']")
         if scale_param is not None:
             current_scale = float(scale_param.findtext("value") or "100")
+
+    # 3b. Respect Premiere "Scale to Frame Size" toggle
+    # When the prproj has ShouldScaleMedia=false, the user explicitly
+    # chose NOT to scale media. Auto-fit would change their intent.
+    if not _scaletoframe_enabled:
+        return None
 
     # 4. Check for Rotation — if present, trust the user
     has_rotation = False
@@ -2479,7 +2488,13 @@ def _prproj_parse_sequence(
     Returns:
         An <xmeml> root element in FCP7 XML format
     """
+    global _scaletoframe_enabled
+
     idx = _PrprojIndex.build(prproj_root)
+
+    # Read Premiere "Scale to Frame Size" project toggle
+    ssm = prproj_root.findtext("ProjectSettings/ShouldScaleMedia", "true")
+    _scaletoframe_enabled = (ssm != "false")
 
     # ─── Resolve sequence metadata ───────────────────────────────────
     seq_el = None
@@ -3314,6 +3329,18 @@ def _drp_export(
 
         media_pool = project.GetMediaPool()
 
+        # ── Set color science to match Premiere BT.709 workflow ──
+        color_profile = "BT.709,8-bit,Display-Referred"  # default
+        if prproj_root is not None:
+            cp = _prproj_get_color_profile(prproj_root)
+            if cp:
+                color_profile = cp
+        if "BT.709" in color_profile or "Rec.709" in color_profile:
+            try:
+                project.SetSetting("colorScience", "0")  # DaVinci YRGB
+            except Exception:
+                pass
+
         # ── Step 1: Extract and import individual media files ──
         all_files: set[str] = set()
         for xml_path in xml_paths:
@@ -3350,6 +3377,7 @@ def _drp_export(
                 print(f"  OK: {timeline.GetName()}")
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                    timeline.SetSetting("timelineColorSpace", "Rec.709 Gamma 2.4")
                 except Exception:
                     pass
             else:
@@ -3421,6 +3449,26 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
         if name:
             bins.append(name)
     return bins
+
+
+def _prproj_get_color_profile(prproj_root: ET.Element) -> str:
+    """Extract output color profile name from .prproj VideoTrackGroup.
+
+    Premiere stores color management per-sequence in VideoTrackGroup
+    as JSON: {"baseColorProfile": {"colorProfileName": "BT.709,8-bit,..."}}
+
+    Returns the colorProfileName string, or empty string on failure.
+    """
+    import json as _json
+    for vtg in prproj_root.iter("VideoTrackGroup"):
+        ocs = vtg.findtext("OutputColorSpace", "")
+        if ocs:
+            try:
+                data = _json.loads(ocs)
+                return data.get("baseColorProfile", {}).get("colorProfileName", "")
+            except (_json.JSONDecodeError, AttributeError):
+                pass
+    return ""
 
 
 def _resolve_pathurl(url: str) -> Optional[str]:
