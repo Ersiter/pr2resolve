@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import os
+import struct
 import subprocess
 import sys
 import time
@@ -27,6 +28,16 @@ from pr2_constants import (
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Source TC lazy cache — avoids redundant ffprobe calls for shared media
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SourceTCCache: dict[str, _SourceTCInfo] = {}
+
+# Scale-to-frame preservation flag (read from .prproj ShouldScaleMedia)
+_scaletoframe_enabled: bool = True  # default True for FCP7 XML path (no prproj)
 
 
 # ─── From pr2_utils.py ─────────────────────────────────────────────
@@ -484,6 +495,12 @@ def _detect_scale_mismatch(
         scale_param = basic_filter.find("parameter/[name='Scale']")
         if scale_param is not None:
             current_scale = float(scale_param.findtext("value") or "100")
+
+    # 3b. Respect Premiere "Scale to Frame Size" toggle
+    # When the prproj has ShouldScaleMedia=false, the user explicitly
+    # chose NOT to scale media. Auto-fit would change their intent.
+    if not _scaletoframe_enabled:
+        return None
 
     # 4. Check for Rotation — if present, trust the user
     has_rotation = False
@@ -1537,70 +1554,71 @@ def _prproj_get_source_resolution(
 def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bool) -> str:
     """Convert absolute frame count to timecode string at given frame rate.
 
-    For NTSC rates (23.976, 29.97, 59.94), uses drop-frame (DF) labeling
-    which skips frame numbers 00 and 01 at the start of every minute except
-    minutes divisible by 10.  DC XML convention uses ALL-: separators
-    regardless of DF/NDF.
+    For 29.97 and 59.94 fps (is_ntsc=True), uses drop-frame (DF) labeling:
+    frame numbers 00 and 01 are skipped at the start of every minute except
+    every 10th minute.  23.976 (also is_ntsc=True) uses NDF with ';'
+    separator per convention.
 
     Args:
-        total_frames: Absolute frame number (0-based)
+        total_frames: Absolute (raw NDF) frame number (0-based)
         fps: Actual frames per second (e.g. 59.94)
-        is_ntsc: If True, produce DF timecode labels
+        is_ntsc: Use ';' separator (see above for DF vs NDF logic)
 
     Returns:
-        Timecode string like '17:00:53:52' (DF) or '00:00:03:10' (NDF)
+        Timecode string like '17:00:23:16' (DF) or '00;00;01;00' (23.976 NDF)
     """
     display_fps = int(round(fps))
     if display_fps <= 0:
         display_fps = 30
-    sep = ":"  # DC XML convention: always colon, Resolve ignores separators
-
-    if not is_ntsc:
-        hours = total_frames // (3600 * display_fps)
-        remainder = total_frames % (3600 * display_fps)
-        minutes = remainder // (60 * display_fps)
-        remainder = remainder % (60 * display_fps)
-        seconds = remainder // display_fps
-        frames = remainder % display_fps
-        return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
-
-    # ── Drop-frame labeling ──
-    # Each non-10th minute drops 2 frames (00, 01).
-    # Per 10-minute block: 9 × (60×fps - 2) + 1 × (60×fps) = 10×60×fps - 18
-    frames_per_minute = display_fps * 60
-    frames_per_10min = 10 * frames_per_minute - 9 * 2
+    sep = ";" if is_ntsc else ":"
 
     if total_frames == 0:
         return f"00:00:00:00"
 
-    total_minutes = 0
-    remaining = total_frames
+    # ── Drop-frame: apply only to 29.97/59.94, NOT 23.976 ──
+    is_dropframe = is_ntsc and display_fps in (30, 60)
 
-    # Count 10-minute blocks
-    blocks_10 = remaining // frames_per_10min
-    total_minutes += blocks_10 * 10
-    remaining = remaining % frames_per_10min
+    if is_dropframe:
+        # raw NDF frame count → DF label.
+        # Each non-10th minute drops 2 frames (labels 00 and 01).
+        # Per 10-minute block: 9 × (60×fps - 2) + 1 × (60×fps)
+        #                    = 10 × 60 × fps - 18 labeled raw frames
+        frames_per_minute = display_fps * 60
+        frames_per_10min = 10 * frames_per_minute - 9 * 2
 
-    # Count individual minutes in the remaining partial block
-    # Minutes 0-8 have 2 dropped frames, minute 9 has 0 dropped
-    for minute_pos in range(9):  # minutes 0-8
-        needed = frames_per_minute - 2  # 3598 for 60fps
-        if remaining >= needed:
-            remaining -= needed
+        total_minutes = 0
+        remaining = total_frames
+
+        blocks_10 = remaining // frames_per_10min
+        total_minutes += blocks_10 * 10
+        remaining = remaining % frames_per_10min
+
+        for _ in range(9):  # minutes 0–8 (non-10th)
+            needed = frames_per_minute - 2
+            if remaining >= needed:
+                remaining -= needed
+                total_minutes += 1
+            else:
+                break
+
+        if remaining >= frames_per_minute and total_minutes % 10 == 9:
+            remaining -= frames_per_minute
             total_minutes += 1
-        else:
-            break
 
-    # Minute 9 (the 10th): full minute, no drops
-    if remaining >= frames_per_minute and total_minutes % 10 == 9:
-        remaining -= frames_per_minute
-        total_minutes += 1
+        hours = total_minutes // 60
+        minutes = total_minutes % 60
+        seconds = remaining // display_fps
+        frames = remaining % display_fps
 
-    hours = total_minutes // 60
-    minutes = total_minutes % 60
-    seconds = remaining // display_fps
-    frames = remaining % display_fps
+        return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
 
+    # ── NDF: unchanged arithmetic ──
+    hours = total_frames // (3600 * display_fps)
+    remainder = total_frames % (3600 * display_fps)
+    minutes = remainder // (60 * display_fps)
+    remainder = remainder % (60 * display_fps)
+    seconds = remainder // display_fps
+    frames = remainder % display_fps
     return f"{hours:02d}{sep}{minutes:02d}{sep}{seconds:02d}{sep}{frames:02d}"
 
 
@@ -1680,6 +1698,334 @@ def _prproj_extract_source_tc_info(
     return info
 
 
+def _read_dji_tmcd_timecode(filepath: str) -> _SourceTCInfo | None:
+    """Pure-Python: read timecode from DJI MP4 tmcd track sample.
+
+    DJI drones embed a tmcd handler track with one 4-byte sample
+    containing raw NDF frame count since midnight.  Reads moov box,
+    finds tmcd trak via handler type, locates the stco chunk offset,
+    and converts the sample value to an HH:MM:SS:FF timecode string.
+
+    Returns a resolved _SourceTCInfo on success, or None if the file
+    doesn't contain a parsable tmcd track.
+    """
+    info = _SourceTCInfo()
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        if len(data) < 64:
+            return None
+    except OSError:
+        return None
+
+    # ── Find moov box ──
+    moov = _find_moov_atom(data)
+    if not moov:
+        return None
+
+    # ── Find tmcd track ──
+    tmcd_trak = _find_trak_by_hdlr(moov, b"tmcd")
+    if not tmcd_trak:
+        return None
+
+    # ── Walk to stbl ──
+    stbl = _walk_trak_to_stbl(tmcd_trak)
+    if not stbl:
+        return None
+
+    # ── Read tmcd sample description (stsd) for timeScale + frameDuration ──
+    stsd = _find_child(stbl, b"stsd")
+    if not stsd:
+        return None
+    tscale, fdur = _parse_tmcd_stsd(stsd)
+    if not tscale or not fdur:
+        return None
+
+    # ── Read sample from stco ──
+    stco = _find_child(stbl, b"stco")
+    if not stco:
+        return None
+    counter = _read_first_sample(stco, data)
+    if counter <= 0:
+        return None
+
+    # ── Validate: tmcd stco must be BEFORE video stco ──
+    # A001 Blackmagic writes tmcd trak but stco points into video frame data
+    # (~16MB offset).  Valid DJI has tmcd counter at ~4B before video frame 0.
+    if not _is_tmcd_stco_valid(data, moov, stco):
+        return None
+
+    # ── Convert counter → timecode string ──
+    # counter = raw NDF frame count since midnight at `fdur / tscale` fps.
+    # seconds = counter * fdur / tscale  (integer math to avoid float drift)
+    display_fps = round(tscale / fdur)
+    if display_fps <= 0:
+        return None
+
+    total_seconds = (counter * fdur) / tscale
+    hh = int(total_seconds // 3600)
+    mm = int((total_seconds % 3600) // 60)
+    ss = int(total_seconds % 60)
+    ff = int(round((total_seconds - int(total_seconds)) * display_fps))
+    if ff >= display_fps:
+        ff = display_fps - 1
+
+    info.timecode_string = f"{hh:02d}:{mm:02d}:{ss:02d}:{ff:02d}"
+    info.media_fps = display_fps
+    info.is_ntsc = _is_ntsc_fps(info.media_fps)
+    info.timecode_frame = counter
+    info.resolved = True
+    return info
+
+
+def _is_tmcd_stco_valid(data: bytes, moov: bytes, tmcd_stco_atom: bytes) -> bool:
+    """Heuristic: tmcd stco must point BEFORE the first video frame's stco.
+
+    A001 Blackmagic Camera embeds a tmcd trak whose stco points deep
+    inside video mdat (~16MB).  Valid DJI places tmcd counter 4 bytes
+    before video frame 0.
+    """
+    # Get tmcd's own stco offset (first chunk)
+    from struct import unpack
+    tmcd_body = tmcd_stco_atom[8:]
+    if len(tmcd_body) < 12:
+        return False
+    nchunks = unpack(">I", tmcd_body[4:8])[0]
+    if nchunks == 0:
+        return False
+    tmcd_offset = unpack(">I", tmcd_body[8:12])[0]
+
+    # Find first video track's stco
+    off = 8
+    while off + 8 < len(moov):
+        sz = unpack(">I", moov[off:off + 4])[0]
+        if sz < 8 or off + sz > len(moov):
+            break
+        if moov[off + 4:off + 8] == b"trak":
+            trak = moov[off:off + sz]
+            if _trak_hdlr_type(trak) == b"vide":
+                stbl = _walk_trak_to_stbl(trak)
+                if stbl:
+                    vstco = _find_child(stbl, b"stco")
+                    if vstco:
+                        vbody = vstco[8:]
+                        if len(vbody) >= 12:
+                            vnc = unpack(">I", vbody[4:8])[0]
+                            if vnc > 0:
+                                v_offset = unpack(">I", vbody[8:12])[0]
+                                return tmcd_offset < v_offset
+        off += sz
+    return False  # No video track found → invalid
+
+
+# ── Atom-parsing helpers ──────────────────────────────────────────────
+
+def _find_moov_atom(data: bytes) -> bytes | None:
+    """Locate the moov box (at file start or near end for streaming-optimized MP4)."""
+    # Check first 64 KB
+    off = 0
+    limit = min(65536, len(data))
+    while off + 8 < limit:
+        sz = struct.unpack(">I", data[off:off + 4])[0]
+        if sz < 8 or off + sz > len(data):
+            off += 1; continue
+        if data[off + 4:off + 8] == b"moov":
+            return data[off:off + sz]
+        off += sz
+
+    # moov at end (e.g. DJI streaming-optimized): rfind in last 2 MB
+    tail_start = max(0, len(data) - 2_000_000)
+    tail = data[tail_start:]
+    pos = tail.rfind(b"moov")
+    if pos >= 0:
+        abs_off = tail_start + pos - 4
+        sz = struct.unpack(">I", data[abs_off:abs_off + 4])[0]
+        if 24 <= sz <= len(data) - abs_off:
+            return data[abs_off:abs_off + sz]
+    return None
+
+
+def _find_trak_by_hdlr(moov: bytes, handler: bytes) -> bytes | None:
+    """Return the first trak whose handler subtype matches `handler`."""
+    off = 8  # skip moov header
+    while off + 8 < len(moov):
+        sz = struct.unpack(">I", moov[off:off + 4])[0]
+        if sz < 8 or off + sz > len(moov):
+            break
+        if moov[off + 4:off + 8] == b"trak":
+            trak = moov[off:off + sz]
+            if _trak_hdlr_type(trak) == handler:
+                return trak
+        off += sz
+    return None
+
+
+def _trak_hdlr_type(trak: bytes) -> bytes | None:
+    """QuickTime handler subtype from a trak box."""
+    mdia = _find_child(trak, b"mdia")
+    if not mdia:
+        return None
+    hdlr = _find_child(mdia, b"hdlr")
+    # hdlr: [size(4)][hdlr(4)][ver+flg(4)][comp_type(4)][subtype(4)]...
+    if hdlr and len(hdlr) >= 20:
+        return hdlr[16:20]
+    return None
+
+
+def _walk_trak_to_stbl(trak: bytes) -> bytes | None:
+    """Navigate trak → mdia → minf → stbl."""
+    mdia = _find_child(trak, b"mdia")
+    if not mdia:
+        return None
+    minf = _find_child(mdia, b"minf")
+    if not minf:
+        return None
+    return _find_child(minf, b"stbl")
+
+
+def _find_child(parent: bytes, box_type: bytes) -> bytes | None:
+    """Return the first child atom matching `box_type` (full atom, including header).
+
+    parent must be a complete atom WITH its 8-byte header. The header
+    is automatically skipped before searching for children.
+    """
+    off = 8  # skip parent's own [size][name] header
+    while off + 8 < len(parent):
+        sz = struct.unpack(">I", parent[off:off + 4])[0]
+        if sz < 8 or off + sz > len(parent):
+            break
+        if parent[off + 4:off + 8] == box_type:
+            return parent[off:off + sz]
+        off += sz
+    return None
+
+
+def _parse_tmcd_stsd(stsd: bytes) -> tuple[int, int]:
+    """Extract (timeScale, frameDuration) from a tmcd stsd entry."""
+    # stsd: [size(4)][stsd(4)][ver+flg(4)][entry_count(4)][entries...]
+    if len(stsd) < 20:
+        return 0, 0
+    entry_count = struct.unpack(">I", stsd[12:16])[0]
+    pos = 16
+    for _ in range(entry_count):
+        if pos + 8 > len(stsd):
+            break
+        e_sz = struct.unpack(">I", stsd[pos:pos + 4])[0]
+        if e_sz < 8 or pos + e_sz > len(stsd):
+            break
+        e_fmt = stsd[pos + 4:pos + 8]
+        ebody = stsd[pos + 8:pos + e_sz]
+        if e_fmt == b"tmcd" and len(ebody) >= 24:
+            return struct.unpack(">I", ebody[16:20])[0], struct.unpack(">I", ebody[20:24])[0]
+        pos += e_sz
+    return 0, 0
+
+
+def _read_first_sample(stco: bytes, data: bytes) -> int:
+    """Read the first media sample pointed to by stco."""
+    # stco: [size(4)][stco(4)][ver+flg(4)][entry_count(4)][offsets...]
+    if len(stco) < 20:
+        return 0
+    nchunks = struct.unpack(">I", stco[12:16])[0]
+    if nchunks == 0:
+        return 0
+    chunk_off = struct.unpack(">I", stco[16:20])[0]
+    if chunk_off + 4 > len(data):
+        return 0
+    return struct.unpack(">I", data[chunk_off:chunk_off + 4])[0]
+
+
+def _read_mov_creation_time_tc(filepath: str) -> _SourceTCInfo | None:
+    """Pure-Python: read '©day' creation_time from MOV/MP4 moov.udta.
+
+    Blackmagic cameras write UTC creation time in the ©day atom inside
+    moov.udta.meta.ilst.  Convert UTC → local timezone, format as
+    hh:mm:ss:00 timecode.  This matches Resolve's Pool Start TC.
+
+    Returns a resolved _SourceTCInfo on success, or None.
+    """
+    info = _SourceTCInfo()
+    try:
+        with open(filepath, "rb") as f:
+            data = f.read()
+        if len(data) < 64:
+            return None
+    except OSError:
+        return None
+
+    moov = _find_moov_atom(data)
+    if not moov:
+        return None
+
+    # Path A: moov → udta → meta → ilst → ©day (canonical QuickTime)
+    udta = _find_child(moov, b"udta")
+    if udta:
+        meta = _find_child(udta, b"meta")
+        if meta:
+            ilst = _find_child(meta, b"ilst")
+            if ilst:
+                _CDAY = bytes([0xA9, 0x64, 0x61, 0x79])
+                off = 8
+                while off + 12 < len(ilst):
+                    sz = struct.unpack(">I", ilst[off:off + 4])[0]
+                    if sz < 12 or off + sz > len(ilst):
+                        break
+                    fourcc = ilst[off + 4:off + 8]
+                    if fourcc == _CDAY:
+                        data_box = ilst[off + 8:off + sz]
+                        if len(data_box) >= 8:
+                            payload = data_box[8:]
+                            try:
+                                ct = payload.decode("utf-8", errors="ignore").rstrip("\x00").strip()
+                            except Exception:
+                                break
+                            if ct and _iso8601_to_tc_str(ct, info):
+                                return info
+                    off += sz
+
+    # Path B: mvhd creation_time (Blackmagic Camera)
+    return _read_mvhd_creation_time_tc(moov, info)
+
+
+def _iso8601_to_tc_str(ct: str, info: _SourceTCInfo) -> bool:
+    """Convert ISO 8601 UTC string to local timecode. Returns True on success."""
+    from datetime import datetime
+    try:
+        dt_str = ct.replace("Z", "+00:00")
+        dt_utc = datetime.fromisoformat(dt_str)
+        dt = dt_utc.astimezone()
+        info.timecode_string = f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}:00"
+        info.resolved = True
+        return True
+    except (ValueError, IndexError):
+        return False
+
+
+def _read_mvhd_creation_time_tc(moov: bytes, info: _SourceTCInfo) -> _SourceTCInfo | None:
+    """Read mvhd creation_time (Mac epoch, seconds since 1904-01-01)."""
+    from datetime import datetime, timezone
+    mvhd = _find_child(moov, b"mvhd")
+    if not mvhd:
+        return None
+    body = mvhd[8:]
+    if len(body) < 12:
+        return None
+    ver = body[0]
+    ct_off = 4 if ver == 0 else 12
+    if len(body) < ct_off + 4:
+        return None
+    mac_epoch = struct.unpack(">I", body[ct_off:ct_off + 4])[0]
+    if mac_epoch == 0:
+        return None
+    unix_ts = mac_epoch - 2082844800
+    if unix_ts <= 0:
+        return None
+    dt = datetime.fromtimestamp(unix_ts, tz=timezone.utc).astimezone()
+    info.timecode_string = f"{dt.hour:02d}:{dt.minute:02d}:{dt.second:02d}:00"
+    info.resolved = True
+    return info
+
+
 def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
@@ -1746,34 +2092,7 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 info.timecode_string = tc_str2
                 info.resolved = True
 
-        # 4. Last resort: use creation_time as time-of-day TC
-        if not info.resolved:
-            result4 = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries",
-                 "format_tags=creation_time",
-                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-                capture_output=True, text=True, timeout=15
-            )
-            ct = result4.stdout.strip()
-            if ct:
-                # Parse ISO 8601 creation time → timecode string
-                # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
-                try:
-                    dt_str = ct.replace("Z", "+00:00")
-                    dt_utc = datetime.fromisoformat(dt_str)
-                    dt = dt_utc.astimezone()  # convert UTC → local time
-                    display_fps = int(round(info.media_fps)) or 30
-                    tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
-                    tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
-                    info.timecode_string = (
-                        f"{dt.hour:02d}:{dt.minute:02d}:"
-                        f"{dt.second:02d}:{tc_frames:02d}"
-                    )
-                    info.resolved = True
-                except (ValueError, IndexError):
-                    pass
-
-        # 5. Get duration
+        # 4. Get duration
         result5 = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
@@ -2066,10 +2385,22 @@ def _extract_clip(
                     if media_path:
                         local = Path(media_path)
                         if local.exists():
-                            ff_tc = _ffprobe_read_timecode(str(local))
-                            if ff_tc.resolved:
-                                source_tc = ff_tc
-                                tc_source = "ffprobe"
+                            local_str = str(local)
+                            if local_str in _SourceTCCache:
+                                source_tc = _SourceTCCache[local_str]
+                                tc_source = "cache"
+                            else:
+                                ff_tc = _ffprobe_read_timecode(local_str)
+                                if ff_tc.resolved:
+                                    _SourceTCCache[local_str] = ff_tc
+                                    source_tc = ff_tc
+                                    tc_source = "ffprobe"
+                                else:
+                                    tmcd_tc = _read_dji_tmcd_timecode(local_str)
+                                    if tmcd_tc is not None and tmcd_tc.resolved:
+                                        _SourceTCCache[local_str] = tmcd_tc
+                                        source_tc = tmcd_tc
+                                        tc_source = "tmcd"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
@@ -2157,7 +2488,13 @@ def _prproj_parse_sequence(
     Returns:
         An <xmeml> root element in FCP7 XML format
     """
+    global _scaletoframe_enabled
+
     idx = _PrprojIndex.build(prproj_root)
+
+    # Read Premiere "Scale to Frame Size" project toggle
+    ssm = prproj_root.findtext("ProjectSettings/ShouldScaleMedia", "true")
+    _scaletoframe_enabled = (ssm != "false")
 
     # ─── Resolve sequence metadata ───────────────────────────────────
     seq_el = None
@@ -2992,6 +3329,18 @@ def _drp_export(
 
         media_pool = project.GetMediaPool()
 
+        # ── Set color science to match Premiere BT.709 workflow ──
+        color_profile = "BT.709,8-bit,Display-Referred"  # default
+        if prproj_root is not None:
+            cp = _prproj_get_color_profile(prproj_root)
+            if cp:
+                color_profile = cp
+        if "BT.709" in color_profile or "Rec.709" in color_profile:
+            try:
+                project.SetSetting("colorScience", "0")  # DaVinci YRGB
+            except Exception:
+                pass
+
         # ── Step 1: Extract and import individual media files ──
         all_files: set[str] = set()
         for xml_path in xml_paths:
@@ -3012,21 +3361,34 @@ def _drp_export(
         # ── Step 3: Import timelines ──
         # importSourceClips=False — media already in pool from Step 1
         import_failed = False
+        failed_xmls: list[tuple[str, Path]] = []
         for xml_path, seq_name in zip(xml_paths, sequence_names):
+            print("=" * 60)
+            print(f"  SEQ_NAME: {seq_name}")
+            print(f"  XML: {xml_path}")
+            print(f"  SIZE: {xml_path.stat().st_size:,} bytes")
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
                 {"timelineName": seq_name, "importSourceClips": False,
                  "sourceClipsFolders": [media_pool.GetRootFolder()]},
             )
+            print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
-                print(f"  Timeline: {timeline.GetName()}")
+                print(f"  OK: {timeline.GetName()}")
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
+                    timeline.SetSetting("timelineColorSpace", "Rec.709 Gamma 2.4")
                 except Exception:
                     pass
             else:
                 print(f"  Timeline import FAILED: {seq_name}")
+                failed_xmls.append((seq_name, xml_path))
                 import_failed = True
+        if failed_xmls:
+            print("=" * 60)
+            print(f"  FAILED {len(failed_xmls)}/{len(xml_paths)} sequences:")
+            for nm, xp in failed_xmls:
+                print(f"    {nm}  ({xp.stat().st_size:,} bytes)  {xp}")
 
         # ── Step 4: Export DRP ──
         if import_failed:
@@ -3087,6 +3449,26 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
         if name:
             bins.append(name)
     return bins
+
+
+def _prproj_get_color_profile(prproj_root: ET.Element) -> str:
+    """Extract output color profile name from .prproj VideoTrackGroup.
+
+    Premiere stores color management per-sequence in VideoTrackGroup
+    as JSON: {"baseColorProfile": {"colorProfileName": "BT.709,8-bit,..."}}
+
+    Returns the colorProfileName string, or empty string on failure.
+    """
+    import json as _json
+    for vtg in prproj_root.iter("VideoTrackGroup"):
+        ocs = vtg.findtext("OutputColorSpace", "")
+        if ocs:
+            try:
+                data = _json.loads(ocs)
+                return data.get("baseColorProfile", {}).get("colorProfileName", "")
+            except (_json.JSONDecodeError, AttributeError):
+                pass
+    return ""
 
 
 def _resolve_pathurl(url: str) -> Optional[str]:
