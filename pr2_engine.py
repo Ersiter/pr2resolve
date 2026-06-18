@@ -1740,6 +1740,12 @@ def _read_dji_tmcd_timecode(filepath: str) -> _SourceTCInfo | None:
     if counter <= 0:
         return None
 
+    # ── Validate: tmcd stco must be BEFORE video stco ──
+    # A001 Blackmagic writes tmcd trak but stco points into video frame data
+    # (~16MB offset).  Valid DJI has tmcd counter at ~4B before video frame 0.
+    if not _is_tmcd_stco_valid(data, moov, stco):
+        return None
+
     # ── Convert counter → timecode string ──
     # counter = raw NDF frame count since midnight at `fdur / tscale` fps.
     # seconds = counter * fdur / tscale  (integer math to avoid float drift)
@@ -1761,6 +1767,46 @@ def _read_dji_tmcd_timecode(filepath: str) -> _SourceTCInfo | None:
     info.timecode_frame = counter
     info.resolved = True
     return info
+
+
+def _is_tmcd_stco_valid(data: bytes, moov: bytes, tmcd_stco_atom: bytes) -> bool:
+    """Heuristic: tmcd stco must point BEFORE the first video frame's stco.
+
+    A001 Blackmagic Camera embeds a tmcd trak whose stco points deep
+    inside video mdat (~16MB).  Valid DJI places tmcd counter 4 bytes
+    before video frame 0.
+    """
+    # Get tmcd's own stco offset (first chunk)
+    from struct import unpack
+    tmcd_body = tmcd_stco_atom[8:]
+    if len(tmcd_body) < 12:
+        return False
+    nchunks = unpack(">I", tmcd_body[4:8])[0]
+    if nchunks == 0:
+        return False
+    tmcd_offset = unpack(">I", tmcd_body[8:12])[0]
+
+    # Find first video track's stco
+    off = 8
+    while off + 8 < len(moov):
+        sz = unpack(">I", moov[off:off + 4])[0]
+        if sz < 8 or off + sz > len(moov):
+            break
+        if moov[off + 4:off + 8] == b"trak":
+            trak = moov[off:off + sz]
+            if _trak_hdlr_type(trak) == b"vide":
+                stbl = _walk_trak_to_stbl(trak)
+                if stbl:
+                    vstco = _find_child(stbl, b"stco")
+                    if vstco:
+                        vbody = vstco[8:]
+                        if len(vbody) >= 12:
+                            vnc = unpack(">I", vbody[4:8])[0]
+                            if vnc > 0:
+                                v_offset = unpack(">I", vbody[8:12])[0]
+                                return tmcd_offset < v_offset
+        off += sz
+    return False  # No video track found → invalid
 
 
 # ── Atom-parsing helpers ──────────────────────────────────────────────
@@ -2037,35 +2083,7 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 info.timecode_string = tc_str2
                 info.resolved = True
 
-        # 4. Last resort: use creation_time as time-of-day TC
-        if not info.resolved:
-            result4 = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries",
-                 "format_tags=creation_time",
-                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-                capture_output=True, text=True, timeout=15
-            )
-            ct = result4.stdout.strip()
-            if ct:
-                # Parse ISO 8601 creation time → timecode string
-                # e.g. "2026-05-30T11:57:12.000000Z" → "11:57:12:00"
-                try:
-                    dt_str = ct.replace("Z", "+00:00")
-                    dt_utc = datetime.fromisoformat(dt_str)
-                    dt = dt_utc.astimezone()  # convert UTC → local time
-                    display_fps = int(round(info.media_fps)) or 30
-                    tc_seconds = dt.hour * 3600 + dt.minute * 60 + dt.second
-                    tc_frames = int(round(dt.microsecond / 1_000_000 * display_fps))
-                    sep = ";" if info.is_ntsc else ":"
-                    info.timecode_string = (
-                        f"{dt.hour:02d}{sep}{dt.minute:02d}{sep}"
-                        f"{dt.second:02d}{sep}{tc_frames:02d}"
-                    )
-                    info.resolved = True
-                except (ValueError, IndexError):
-                    pass
-
-        # 5. Get duration
+        # 4. Get duration
         result5 = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "stream=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
@@ -2363,22 +2381,17 @@ def _extract_clip(
                                 source_tc = _SourceTCCache[local_str]
                                 tc_source = "cache"
                             else:
-                                tmcd_tc = _read_dji_tmcd_timecode(local_str)
-                                if tmcd_tc is not None and tmcd_tc.resolved:
-                                    _SourceTCCache[local_str] = tmcd_tc
-                                    source_tc = tmcd_tc
-                                    tc_source = "tmcd"
-                                else:
-                                    ff_tc = _ffprobe_read_timecode(local_str)
+                                ff_tc = _ffprobe_read_timecode(local_str)
+                                if ff_tc.resolved:
                                     _SourceTCCache[local_str] = ff_tc
-                                    if ff_tc.resolved:
-                                        source_tc = ff_tc
-                                        tc_source = "ffprobe"
-                    if tc_source == "mediainpoint" and media_path and Path(media_path).exists():
-                        ct_tc = _read_mov_creation_time_tc(str(Path(media_path)))
-                        if ct_tc is not None and ct_tc.resolved:
-                            source_tc = ct_tc
-                            tc_source = "creation_time"
+                                    source_tc = ff_tc
+                                    tc_source = "ffprobe"
+                                else:
+                                    tmcd_tc = _read_dji_tmcd_timecode(local_str)
+                                    if tmcd_tc is not None and tmcd_tc.resolved:
+                                        _SourceTCCache[local_str] = tmcd_tc
+                                        source_tc = tmcd_tc
+                                        tc_source = "tmcd"
                     print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:

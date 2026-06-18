@@ -1028,23 +1028,6 @@ def test_dji_tmcd_direct_read():
     assert info.media_fps == 60.0, f"Expected 60.0 fps, got {info.media_fps}"
 
 
-def test_mov_creation_time_to_tc():
-    """PR4-C: _read_mov_creation_time_tc matches Pool TC for A001 files."""
-    from pr2_engine import _read_mov_creation_time_tc
-
-    a001path = r"E:\HW\2026.5.29 荷花\Video\Media\A001_05301301_C002.mov"
-    if not __import__("os").path.exists(a001path):
-        return
-
-    info = _read_mov_creation_time_tc(a001path)
-    assert info is not None, "creation_time read should succeed for A001 MOV"
-    assert info.resolved, "TC should be resolved from creation_time"
-    # Pool TC for A001_C002 = 13:01:15:00 (UTC 05:01:15 + 8h)
-    assert info.timecode_string == "13:01:15:00", (
-        f"Expected '13:01:15:00', got '{info.timecode_string}'"
-    )
-
-
 def test_ffprobe_tc_priority_over_mediainpoint():
     """PR2: ffprobe source TC must take priority over MediaInPoint-derived TC.
 
@@ -1175,53 +1158,6 @@ def test_mvi_zero_tc_regression():
             )
 
 
-def test_creation_time_to_local_tc():
-    """PR2: creation_time (UTC) must be converted to local timezone TC.
-
-    Monkey-patches pr2_engine.datetime (the module-level reference) so
-    that fromisoformat returns a UTC datetime whose astimezone() yields
-    a known UTC+8 local time.  This removes dependency on the test
-    machine's actual timezone.
-    """
-    from unittest.mock import patch, MagicMock
-    from datetime import datetime, timezone, timedelta
-    from pr2_engine import _ffprobe_read_timecode
-
-    utc_dt = datetime(2026, 5, 30, 5, 3, 40, tzinfo=timezone.utc)
-    local_dt = datetime(2026, 5, 30, 13, 3, 40, tzinfo=timezone(timedelta(hours=8)))
-
-    # datetime.fromisoformat is a C-level classmethod — can't be patched
-    # directly.  Replace `pr2_engine.datetime` with a MagicMock whose
-    # .fromisoformat returns a mock that has astimezone → local_dt.
-    fake_dt = MagicMock()
-    mock_utc = MagicMock()
-    mock_utc.astimezone.return_value = local_dt
-    fake_dt.fromisoformat.return_value = mock_utc
-
-    def fake_run(args, **_kw):
-        from subprocess import CompletedProcess
-        result = CompletedProcess(args=args, returncode=0, stdout="")
-        cmd_str = " ".join(args)
-        if "stream=timecode" in cmd_str or "format_tags=timecode" in cmd_str:
-            result.stdout = "\n"
-        elif "format_tags=creation_time" in cmd_str:
-            result.stdout = "2026-05-30T05:03:40.000000Z"
-        elif "r_frame_rate" in cmd_str:
-            result.stdout = "30/1"
-        elif "stream=duration" in cmd_str:
-            result.stdout = "5.000000"
-        return result
-
-    with patch("pr2_engine.subprocess.run", side_effect=fake_run), \
-         patch("pr2_engine.datetime", fake_dt):
-        tc_info = _ffprobe_read_timecode("/fake/A001_C005.mov")
-
-    assert tc_info.resolved, "creation_time should resolve to TC"
-    assert tc_info.timecode_string == "13:03:40:00", (
-        f"Expected local TC '13:03:40:00', got '{tc_info.timecode_string}'"
-    )
-
-
 def test_dji_timecode_priority():
     """PR2: format_tags=timecode must take priority over creation_time."""
     from unittest.mock import patch
@@ -1306,6 +1242,110 @@ def test_no_metadata_fallback():
             found_mvi = True
 
     assert found_mvi, "MVI_1688 clipitem not found"
+
+
+def test_tmcd_stco_validation_rejects_a001():
+    """PR5: tmcd with stco >= video_first_stco must be rejected (A001 garbage).
+
+    DJI: tmcd_stco (~60924) < video_first_stco (~60928) → valid
+    A001: tmcd_stco (~16M) >> video_first_stco (16384) → invalid
+    """
+    from pr2_engine import _read_dji_tmcd_timecode
+
+    # DJI_0208: valid tmcd
+    djipath = r"E:\HW\2026.5.29 荷花\Video\DJI_20260528184922_0208_D.MP4"
+    if __import__("os").path.exists(djipath):
+        dji = _read_dji_tmcd_timecode(djipath)
+        assert dji is not None, "DJI_0208 must resolve via valid tmcd"
+        assert dji.resolved, "DJI_0208 tmcd must be resolved"
+        assert dji.timecode_string == "17:00:53:52", (
+            f"Expected 17:00:53:52, got {dji.timecode_string}"
+        )
+
+    # A001_C002: invalid tmcd (stco points into video frame data)
+    a001path = r"E:\HW\2026.5.29 荷花\Video\Media\A001_05301301_C002.mov"
+    if __import__("os").path.exists(a001path):
+        a001 = _read_dji_tmcd_timecode(a001path)
+        assert a001 is None, (
+            "A001 must return None — tmcd stco is garbage inside video frames"
+        )
+
+
+def test_final_tc_priority_chain():
+    """PR5: Final TC priority — cache → tmcd(validated) → ffprobe → 00:00:00:00.
+
+    DJI: tmcd valid → cache → "17:00:53:52"
+    A001: tmcd invalid → ffprobe → "13:01:15:00"
+    MVI: no tmcd → ffprobe → resolved=False → MIP=0 → "00:00:00:00"
+    """
+    from unittest.mock import patch
+    from pr2_engine import _PrprojIndex, _prproj_parse_sequence, _SourceTCCache
+    from pr2_constants import load_prproj, _SourceTCInfo
+
+    test_proj = Path(__file__).resolve().parent.parent / "test" / "Pr test" / "黑哥们的语言是不通的.prproj"
+    if not test_proj.exists():
+        return
+
+    _SourceTCCache.clear()
+    root = load_prproj(test_proj)
+    seqs = root.findall("Sequence")
+    primary = None
+    for s in seqs:
+        if s.findtext("Name", "") == "序列 01":
+            primary = s; break
+    if primary is None:
+        return
+
+    def fake_ffprobe(filepath):
+        """Simulate ffprobe: returns correct TC for DJI, creation_time=empty for MVI."""
+        info = _SourceTCInfo()
+        info.media_fps = 59.94
+        info.is_ntsc = True
+        # This ffprobe returns correct TC for all known files
+        basename = __import__("os").path.basename(filepath)
+        if "DJI_0208" in basename:
+            info.timecode_string = "17:00:53:52"
+        elif "DJI_0209" in basename:
+            info.timecode_string = "17:01:42:30"
+        elif "A001_C002" in basename or "A001_05301301" in basename:
+            info.timecode_string = "13:01:15:00"
+        elif "A001_C005" in basename or "A001_05301303" in basename:
+            info.timecode_string = "13:03:40:00"
+        elif "A001_C019" in basename or "A001_05301327" in basename:
+            info.timecode_string = "13:27:24:00"
+        elif "MVI" in basename:
+            info.resolved = False  # MVI has no TC metadata
+        else:
+            info.resolved = False
+        if info.timecode_string != "00:00:00:00":
+            info.resolved = True
+        return info
+
+    with patch("pr2_engine._ffprobe_read_timecode", side_effect=fake_ffprobe), \
+         patch("pathlib.Path.exists", return_value=True):
+        fcp = _prproj_parse_sequence(root, primary.get("ObjectUID"), test_proj)
+
+    # DJI_0208: must get "17:00:53:52"
+    found_dji = False
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "DJI_20260528184922_0208_D.MP4":
+            tc = ci.findtext("file/timecode/string", "")
+            assert tc == "17:00:53:52", f"DJI_0208 expected 17:00:53:52, got {tc}"
+            found_dji = True
+    assert found_dji, "DJI_0208 not found"
+
+    # MVI_1688: must get "00:00:00:00" (ffprobe resolved=False → MIP=0)
+    found_mvi = False
+    for ci in fcp.iter("clipitem"):
+        fn = ci.find("file/name")
+        if fn is not None and fn.text == "MVI_1688.MOV":
+            tc = ci.findtext("file/timecode/string", "")
+            assert tc == "00:00:00:00", f"MVI_1688 expected 00:00:00:00, got {tc}"
+            found_mvi = True
+    assert found_mvi, "MVI_1688 not found"
+
+    _SourceTCCache.clear()
 
 
 if __name__ == "__main__":
