@@ -2030,7 +2030,7 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
     Tries three approaches in order:
-    1. stream=timecode (professional cameras write this)
+    1. stream=timecode / stream_tags=timecode (professional cameras write this)
     2. format_tags=timecode (DJI MOV wrapper)
     3. format_tags=creation_time → time-of-day TC (DJI MP4)
 
@@ -2052,10 +2052,23 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
              "-of", "default=noprint_wrappers=1:nokey=1", filepath],
             capture_output=True, text=True, timeout=15
         )
-        tc_str = result.stdout.strip()
+        tc_str = next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
         if tc_str and result.returncode == 0:
             info.timecode_string = tc_str
             info.resolved = True
+
+        if not info.resolved:
+            result_tags = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "stream_tags=timecode",
+                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+                capture_output=True, text=True, timeout=15
+            )
+            tc_str_tags = next(
+                (line.strip() for line in result_tags.stdout.splitlines() if line.strip()), ""
+            )
+            if tc_str_tags and result_tags.returncode == 0:
+                info.timecode_string = tc_str_tags
+                info.resolved = True
 
         # 2. Get frame rate
         result2 = subprocess.run(
@@ -2094,17 +2107,30 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
 
         # 4. Get duration
         result5 = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=duration,nb_frames",
+             "-of", "default=noprint_wrappers=1", filepath],
             capture_output=True, text=True, timeout=15
         )
-        dur_str = result5.stdout.strip()
-        if dur_str:
-            try:
-                dur_secs = float(dur_str)
-                info.full_duration_frames = int(round(dur_secs * info.media_fps))
-            except ValueError:
-                pass
+        dur_secs = 0.0
+        for line in result5.stdout.splitlines():
+            if line.startswith("nb_frames="):
+                try:
+                    info.full_duration_frames = int(line.split("=", 1)[1])
+                except ValueError:
+                    pass
+            elif line.startswith("duration="):
+                try:
+                    dur_secs = float(line.split("=", 1)[1])
+                except ValueError:
+                    pass
+        if info.full_duration_frames <= 0 and dur_secs > 0:
+            info.full_duration_frames = int(round(dur_secs * info.media_fps))
+
+        if info.resolved:
+            info.is_ntsc = ";" in info.timecode_string
+            if info.timecode_string in ("00:00:00:00", "00;00;00;00"):
+                info.resolved = False
 
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         # ffprobe not installed, or file inaccessible
@@ -2381,27 +2407,26 @@ def _extract_clip(
                             media_path = mfp
                             break
                     source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                    tc_source = "mediainpoint" if source_tc.resolved else "default"
                     if media_path:
                         local = Path(media_path)
                         if local.exists():
                             local_str = str(local)
                             if local_str in _SourceTCCache:
                                 source_tc = _SourceTCCache[local_str]
-                                tc_source = "cache"
                             else:
                                 ff_tc = _ffprobe_read_timecode(local_str)
                                 if ff_tc.resolved:
                                     _SourceTCCache[local_str] = ff_tc
                                     source_tc = ff_tc
-                                    tc_source = "ffprobe"
                                 else:
                                     tmcd_tc = _read_dji_tmcd_timecode(local_str)
                                     if tmcd_tc is not None and tmcd_tc.resolved:
                                         _SourceTCCache[local_str] = tmcd_tc
                                         source_tc = tmcd_tc
-                                        tc_source = "tmcd"
-                    print(f"  TC: {mc_name} source={tc_source} value={source_tc.timecode_string}") if tc_source != "default" else None
+                                    elif ff_tc.full_duration_frames > 0 or ff_tc.media_fps != 30.0:
+                                        ff_tc.is_ntsc = ";" in ff_tc.timecode_string
+                                        _SourceTCCache[local_str] = ff_tc
+                                        source_tc = ff_tc
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
                         src_w, src_h = sr
@@ -2420,10 +2445,16 @@ def _extract_clip(
                         if op is not None:
                             clip_fps = source_tc.media_fps if source_tc.resolved else fps
                             out_point = _prproj_ticks_to_frames(op, clip_fps)
-                    ps = clip_el.findtext("PlaybackSpeed")
+                        if source_tc.resolved and source_tc.full_duration_frames > 0:
+                            in_point = min(in_point, source_tc.full_duration_frames)
+                            out_point = min(out_point, source_tc.full_duration_frames)
+                    ps = inner.findtext("PlaybackSpeed") if inner is not None else None
+                    if ps is None:
+                        ps = clip_el.findtext("PlaybackSpeed")
                     if ps:
                         try:
-                            playback_speed = int(float(ps))
+                            raw_speed = float(ps)
+                            playback_speed = int(round(raw_speed * 100 if abs(raw_speed) <= 10 else raw_speed))
                         except ValueError:
                             pass
 
@@ -2770,7 +2801,6 @@ def _prproj_parse_sequence(
                     continue
                 track_data = TrackData(type="video", index=vt_idx)
                 fcp_track = ET.SubElement(video_section, "track")
-                track_start = 0
                 for vc_idx, ti_ref in enumerate(track_items, 1):
                     ti_el = idx.resolve_ref(ti_ref.get("ObjectRef", ""))
                     if ti_el is None:
@@ -2779,8 +2809,7 @@ def _prproj_parse_sequence(
                     if cti is None:
                         continue
                     cl = _extract_clip(cti, idx, prproj_root, w, h, fps)
-                    start = track_start  # override with contiguous track position
-                    track_start = cl.end
+                    start = cl.start
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
                     file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
@@ -2821,7 +2850,6 @@ def _prproj_parse_sequence(
                     continue
                 a_track_data = TrackData(type="audio", index=at_idx)
                 fcp_a_track = ET.SubElement(audio_section, "track")
-                a_track_start = 0
                 for ac_idx, a_ti_ref in enumerate(a_track_items, 1):
                     a_ti_el = idx.resolve_ref(a_ti_ref.get("ObjectRef", ""))
                     if a_ti_el is None:
@@ -2830,8 +2858,7 @@ def _prproj_parse_sequence(
                     if a_cti is None:
                         continue
                     cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps)
-                    start = a_track_start
-                    a_track_start = cl.end
+                    start = cl.start
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
 

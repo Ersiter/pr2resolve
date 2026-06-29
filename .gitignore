@@ -36,6 +36,15 @@ CLAUDE.md
 docs/
 test/
 tests/
+_test_output/
+
+# Local audit/debug artifacts
+_*.py
+_*.xml
+_ffmpeg_src/
+_key_tests/
+_tc_lab_xmls/
+temp_project.xml
 
 # Output
 output/
