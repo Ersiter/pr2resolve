@@ -488,7 +488,7 @@ def _run_pipeline(
         _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path, root)
         print(f"  Report: {report_path}")
 
-    # DRP — always exports ALL timelines (project-level, not sequence-level)
+    # DRP — project export always includes every non-empty sequence.
     # Generate XML for all non-empty sequences if not already in batch mode
     ran_drp = False
     if (drp_path or drp_gui) and prproj_root is None:
@@ -635,10 +635,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--report", action="store_true", help="Generate fix report (.md)")
     parser.add_argument("--drt", action="store_true", help="Generate DRT via DaVinci Scripting API")
     parser.add_argument("--drp", nargs="?", const=True, type=Path, default=None,
-                        help="DRP background export (no GUI interaction)")
+                        help="DRP background export for all non-empty sequences")
     parser.add_argument("--drp-gui", nargs="?", const=True, type=Path, default=None,
                         dest="drp_gui",
-                        help="DRP interactive export (keeps project open in DaVinci GUI)")
+                        help="DRP interactive export for all non-empty sequences")
     parser.add_argument("--all-sequences", action="store_true",
                         help="Export all non-empty sequences (.prproj)")
     parser.add_argument("--nogui", action="store_true", dest="nogui",

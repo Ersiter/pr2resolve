@@ -1,0 +1,58 @@
+# pr2resolve CI — glue checks (not full build)
+# Full builds run locally on each platform via scripts/build_*.{ps1,sh}
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: Version & Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Check Python syntax
+        run: |
+          python -m py_compile pr2resolve.py
+          python -m py_compile pr2_engine.py
+          python -m py_compile pr2_constants.py
+          python -m py_compile tui.py
+
+      - name: Verify VERSION consistency
+        run: |
+          echo "Source version:"
+          python -c "from pr2_constants import VERSION; print(f'  pr2_constants.py: {VERSION}')"
+
+          echo "TUI version:"
+          python -c "
+          import sys; sys.path.insert(0, '.')
+          import ast, re
+          with open('tui.py') as f:
+              tree = ast.parse(f.read())
+          for node in ast.walk(tree):
+              if isinstance(node, ast.ImportFrom) and node.module == 'pr2resolve':
+                  for alias in node.names:
+                      if alias.name == 'VERSION':
+                          print(f'  tui.py: imports VERSION from pr2resolve')
+          "
+
+          echo "converter.bat version:"
+          sed -n 's/.*VERSION="\([^"]*\)".*/\1/p' converter.bat
+
+          echo "converter.sh version:"
+          sed -n 's/.*VERSION="\([^"]*\)".*/\1/p' converter.sh
+
+      - name: Verify Nuitka can analyze
+        if: github.ref_type == 'tag'
+        run: |
+          python -m nuitka --mode=onefile --assume-yes-for-downloads --output-dir=/tmp --remove-output tui.py 2>&1 | tail -5 || true

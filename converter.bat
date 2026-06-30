@@ -5,14 +5,13 @@ setlocal enabledelayedexpansion
 :: pr2resolve - Windows TUI Launcher
 :: ============================================================
 
-set "VERSION=1.0.1"
+set "VERSION=1.0.3"
 set "SCRIPT=%~dp0pr2resolve.py"
 set "PYTHONIOENCODING=utf-8"
 
 :: State
 set "INPUT_FILE="
 set "OUTPUT_DIR="
-set "SEQ_NAME="
 set "OPT_DRT=[OFF]"
 set "OPT_REPORT=[OFF]"
 set "OPT_XML=[ON]"
@@ -41,7 +40,8 @@ if not exist "%SCRIPT%" (
 cls
 echo.
 echo  ============================================================
-echo   pr2resolve v%VERSION%  -  PR XML to FCP7 XML Fixer
+echo   pr2resolve v%VERSION%
+echo   Premiere Pro to DaVinci Resolve Converter
 echo  ============================================================
 echo.
 echo  ------------------------------------------------------------
@@ -55,23 +55,18 @@ if defined OUTPUT_DIR (
 ) else (
     echo  [OUTPUT] (same as input^)
 )
-if defined SEQ_NAME (
-    echo  [SEQ]    !SEQ_NAME!
-) else (
-    echo  [SEQ]    (auto^)
-)
 echo.
 echo  XML:     !OPT_XML!   FCP7 XML output
 echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
 if "!OPT_DRP!"=="[ON]" goto _SHOW_DRP_ON
 if "!OPT_DRP!"=="[BG]" goto _SHOW_DRP_BG
-echo  DRP:     !OPT_DRP!  DaVinci DRP project export (needs Resolve GUI^)
+echo  DRP:     !OPT_DRP!  DaVinci DRP project export
 goto _AFTER_DRP
 :_SHOW_DRP_ON
-echo  DRP:     [ON]  DaVinci DRP interactive (needs Resolve GUI^)
+echo  DRP:     [ON]  DaVinci DRP interactive (all sequences^)
 goto _AFTER_DRP
 :_SHOW_DRP_BG
-echo  DRP:     [BG]  DaVinci DRP background export
+echo  DRP:     [BG]  DaVinci DRP background export (all sequences^)
 :_AFTER_DRP
 echo  Mode:    !OPT_MODE!  Sequence: AUTO=smart / ALL=batch / MAN=choose
 echo  Suffix:  !OPT_SUFFIX!   _pr2resolve name tag
@@ -171,19 +166,19 @@ echo   Output Options
 echo  ============================================================
 echo.
 echo  [1] FCP7 XML       !OPT_XML!
-echo  [2] DRT            !OPT_DRT!  (needs DaVinci Resolve Studio^)
-echo  [3] Export Mode    !OPT_MODE!  AUTO/ALL/MAN (.prproj^)
-echo  [4] Fix report     !OPT_REPORT!
+echo  [2] DRT            !OPT_DRT!  (needs Resolve Studio^)
+echo  [3] DRP project    !OPT_DRP!  OFF/BG(no GUI^)/ON - all sequences
+echo  [4] Export Mode    !OPT_MODE!  AUTO/ALL/MAN (.prproj^)
 echo  [5] Name suffix    !OPT_SUFFIX!  _pr2resolve tag
-echo  [6] DRP project    !OPT_DRP!  OFF/BG(no GUI)/ON(needs GUI^)
+echo  [6] Fix report     !OPT_REPORT!
 echo  [0] Back
 echo.
 choice /c 1234560 /n /m "  Select [1-6, 0]: "
 if errorlevel 7 goto MENU
-if errorlevel 6 goto _TOG_DRP
+if errorlevel 6 goto _TOG_REPORT
 if errorlevel 5 goto _TOG_SUFFIX
-if errorlevel 4 goto _TOG_REPORT
-if errorlevel 3 goto _TOG_MODE
+if errorlevel 4 goto _TOG_MODE
+if errorlevel 3 goto _TOG_DRP
 if errorlevel 2 goto _TOG_DRT
 if "!OPT_XML!"=="[ON]" (set "OPT_XML=[OFF]") else (set "OPT_XML=[ON]")
 goto OPTIONS
@@ -197,7 +192,6 @@ if "!OPT_MODE!"=="[ALL]" (
     goto OPTIONS
 )
 set "OPT_MODE=[AUTO]"
-goto OPTIONS
 goto OPTIONS
 :_TOG_REPORT
 if "!OPT_REPORT!"=="[ON]" (set "OPT_REPORT=[OFF]") else (set "OPT_REPORT=[ON]")
@@ -232,7 +226,6 @@ echo  Running...
 echo.
 set "CMD=!PYTHON_CMD! "!SCRIPT!" "!INPUT_FILE!""
 if defined OUTPUT_DIR set "CMD=!CMD! -o "!OUTPUT_DIR!""
-if defined SEQ_NAME set "CMD=!CMD! --sequence "!SEQ_NAME!""
 if "!OPT_REPORT!"=="[ON]" set "CMD=!CMD! --report"
 if "!OPT_DRT!"=="[ON]" set "CMD=!CMD! --drt"
 if "!OPT_MODE!"=="[ALL]" set "CMD=!CMD! --all-sequences"

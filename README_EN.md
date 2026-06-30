@@ -1,11 +1,11 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.0.1 — try/finally orphan cleanup*
+> *v1.0.3 — native PRPROJ timelines, source timecode, DRP, and TUI entry polish*
 
 # .PRPROJ-.DRT Converter
 
-Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML and DRT.
+Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and DRP.
 
 [**中文 README**](README.md)
 
@@ -37,6 +37,10 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML and DRT.
 
 ## Prerequisites
 
+**Windows users**: Download the latest `pr2resolve-v*-windows-x86_64.zip` from [Releases](https://github.com/Ersiter/pr2resolve/releases), extract, and run `pr2resolve.exe`. No Python required.
+
+**macOS / Linux users (and Windows users running from source)**:
+
 1. **Install Python 3.8+**  
    - Download from [python.org](https://www.python.org/downloads/)  
    - **Important**: Check `Add Python to PATH` during installation  
@@ -52,11 +56,13 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML and DRT.
 
 ## Quick Start
 
-Download the [latest source archive]() and extract it.
+Download the [latest Release](https://github.com/Ersiter/pr2resolve/releases) or clone the source.
 
 ### Windows
 
-Double-click `converter.bat`.
+**Standalone executable (recommended)**: Download `pr2resolve-v*-windows-x86_64.zip` from Releases, extract, then double-click `pr2resolve.exe` for the interactive TUI.
+
+**From source**: Double-click `converter.bat`.
 
 ### macOS / Linux
 
@@ -68,12 +74,13 @@ chmod +x converter.sh
 
 ### TUI
 
-```bash
+```
 Pick a number:
 [1] Select input file (.xml or .prproj)
 [2] Set output directory
-[3] Configure options (XML / DRT / Report)
+[3] Configure options (XML / DRT / DRP / Mode / Suffix / Report)
 [4] Start conversion
+[0] Quit
 ```
 
 ### CLI
@@ -88,8 +95,17 @@ python pr2resolve.py "project.prproj" -o ./output
 # Pick a specific sequence
 python pr2resolve.py "project.prproj" --sequence "Sequence 01"
 
+# Export all non-empty sequences
+python pr2resolve.py "project.prproj" --all-sequences
+
 # DRT output (DaVinci Studio must be running)
 python pr2resolve.py "input.xml" --drt
+
+# DRP background export (all non-empty sequences, headless)
+python pr2resolve.py "project.prproj" --drp
+
+# DRP interactive export (all non-empty sequences, keeps project open)
+python pr2resolve.py "project.prproj" --drp-gui
 
 # Generate a fix report
 python pr2resolve.py "input.xml" --report
@@ -114,9 +130,10 @@ Two input formats:
 - PR-exported FCP7 XML (.xml)
 - PR native project files (.prproj) — **use this one**, it has more data
 
-Two output formats:
+Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
 - DRT — needs DaVinci Studio; preserves Lumetri grades, speed curves, and other data XML can't hold
+- DRP — project export with all non-empty sequences
 
 ---
 
@@ -156,7 +173,12 @@ Two output formats:
 | `-o`, `--output` | Path | Output directory (default: same as input) |
 | `--report` | flag | Generate fix report (.md) |
 | `--drt` | flag | Generate DRT (requires DaVinci Studio) |
-| `--sequence` | str | Sequence name in .prproj (default: auto) |
+| `--drp` | flag/path | Background DRP export (all non-empty sequences) |
+| `--drp-gui` | flag/path | Interactive DRP export (all non-empty sequences) |
+| `--all-sequences` | flag | Export all non-empty sequences from .prproj |
+| `--sequence` | str | Sequence name in .prproj |
+| `--no-suffix` | flag | Omit `_pr2resolve` suffix from output filename |
+| `--no-xml` | flag | Skip FCP7 XML output (use with --drt or --drp) |
 | `--diagnose-only` | flag | Diagnose only, no fixes |
 | `--version` | flag | Show version |
 
@@ -175,9 +197,10 @@ Scan 21 known issues → Auto-fix by severity → Validate 23 checks
     │
     ▼
 Output:
-    ├─ output.xml   ← fixed FCP7 XML (always)
+    ├─ output.xml   ← fixed FCP7 XML (default)
     ├─ output.md    ← fix report (--report)
-    └─ output.drt   ← DaVinci native timeline (--drt, needs DaVinci running)
+    ├─ output.drt   ← DaVinci native timeline (--drt, needs DaVinci running)
+    └─ output.drp   ← DaVinci project export (--drp / --drp-gui)
 ```
 
 ---
@@ -209,7 +232,7 @@ All rules apply automatically. They're not optional — skip them and the import
 2. **Nested sequences** — Frequently flattened or import fails.
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
-5. **Free DaVinci** — Scripting API is Studio-only. DRT won't work. XML is fine.
+5. **Free DaVinci** — Scripting API is Studio-only. DRT/DRP won't work. XML is fine.
 6. **Lumetri isn't perfect** — XML path: removed. DRT path: basic params (Exposure, Contrast, Highlights, Shadows, Temperature, etc.) map to Color nodes. Vignette and Sharpen are approximate.
 
 ---
@@ -220,6 +243,7 @@ All rules apply automatically. They're not optional — skip them and the import
 - [prproj_downgrade](https://github.com/snorkem/prproj_downgrade) — .prproj version downgrade tool
 - [ppro-scripting](https://ppro-scripting.docsforadobe.dev) — Adobe object model docs
 - [DaVinci Resolve Scripting API](https://resolvedevdoc.readthedocs.io/) — DaVinci API reference
+- [DaVinci Resolve MCP](https://github.com/samuelgursky/davinci-resolve-mcp) — DaVinci MCP open-source project
 
 ---
 

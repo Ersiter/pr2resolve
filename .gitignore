@@ -12,6 +12,12 @@ dist/
 build/
 *.egg
 
+# Nuitka artifacts
+*.onefile-build/
+*.build/
+*.dist/
+nuitka-crash-report.xml
+
 # Virtual environment
 .venv/
 venv/
@@ -31,6 +37,7 @@ desktop.ini
 # Claude Code
 .claude/
 CLAUDE.md
+AGENTS.md
 
 # Docs & test samples (local only)
 docs/
@@ -42,9 +49,6 @@ _test_output/
 _*.py
 _*.xml
 _ffmpeg_src/
-_key_tests/
-_tc_lab_xmls/
-temp_project.xml
 
 # Output
 output/
