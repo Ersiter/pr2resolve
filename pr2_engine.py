@@ -35,6 +35,7 @@ from pr2_constants import (
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _SourceTCCache: dict[str, _SourceTCInfo] = {}
+_ffprobe_missing_warned: bool = False
 
 # Scale-to-frame preservation flag (read from .prproj ShouldScaleMedia)
 _scaletoframe_enabled: bool = True  # default True for FCP7 XML path (no prproj)
@@ -116,6 +117,50 @@ def _is_ntsc_fps(fps: float) -> bool:
 
 
 # _is_ntsc imported from pr2_constants — single source of truth
+
+
+def _warn_ffprobe_missing_once() -> None:
+    """Emit one warning per process when ffprobe is unavailable."""
+    global _ffprobe_missing_warned
+    if _ffprobe_missing_warned:
+        return
+    _ffprobe_missing_warned = True
+    print("  Warning: ffprobe not found on PATH.")
+    print("           .prproj source media detection is degraded.")
+    print("           Source fps, duration, and timecode may be inaccurate.")
+    print("           This can cause shifted clips, red media, or broken timelines.")
+
+
+def _effective_source_fps(source_tc: _SourceTCInfo, timeline_fps: float) -> float:
+    """Choose the most reliable fps for pproTicks -> frame conversion."""
+    return source_tc.media_fps if source_tc.media_fps_resolved else timeline_fps
+
+
+def _has_resolved_source_duration(source_tc: _SourceTCInfo) -> bool:
+    """Check whether source duration is reliable enough for clamping/output."""
+    return source_tc.duration_resolved and source_tc.full_duration_frames > 0
+
+
+def _merge_source_tc_info(base: _SourceTCInfo, overlay: _SourceTCInfo) -> _SourceTCInfo:
+    """Overlay resolved source metadata without discarding unrelated fields."""
+    merged = copy.deepcopy(base)
+
+    if overlay.media_fps_resolved:
+        merged.media_fps = overlay.media_fps
+        merged.media_fps_resolved = True
+        merged.is_ntsc = overlay.is_ntsc
+
+    if overlay.duration_resolved:
+        merged.full_duration_frames = overlay.full_duration_frames
+        merged.duration_resolved = True
+
+    if overlay.resolved:
+        merged.timecode_frame = overlay.timecode_frame
+        merged.timecode_string = overlay.timecode_string
+        merged.resolved = True
+        merged.is_ntsc = overlay.is_ntsc
+
+    return merged
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1662,6 +1707,7 @@ def _prproj_extract_source_tc_info(
             # Skip sentinel values (max int64 = generated/nested sequences)
             if 0 < mfr_ticks < 9_000_000_000_000_000_000:
                 info.media_fps = _prproj_adobe_timebase_to_fps(mfr_ticks)
+                info.media_fps_resolved = True
         except (ValueError, TypeError):
             pass
     info.is_ntsc = _is_ntsc_fps(info.media_fps)
@@ -1692,6 +1738,7 @@ def _prproj_extract_source_tc_info(
                 info.full_duration_frames = _prproj_ticks_to_frames(
                     str(mop_ticks - mip_ticks), info.media_fps
                 )
+                info.duration_resolved = True
         except (ValueError, TypeError):
             pass
 
@@ -2032,11 +2079,10 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     Tries three approaches in order:
     1. stream=timecode / stream_tags=timecode (professional cameras write this)
     2. format_tags=timecode (DJI MOV wrapper)
-    3. format_tags=creation_time → time-of-day TC (DJI MP4)
 
     Also reads r_frame_rate for actual source FPS and duration for
-    full file length. All errors/timeouts are silently caught — the
-    caller checks info.resolved to decide whether to use the result.
+    full file length. Callers merge these fields independently so
+    missing source timecode does not discard valid fps/duration data.
 
     Args:
         filepath: Absolute path to the media file
@@ -2083,11 +2129,13 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                 num, den = fps_str.split("/", 1)
                 if int(den) > 0:
                     info.media_fps = round(int(num) / int(den), 3)
+                    info.media_fps_resolved = True
             except (ValueError, ZeroDivisionError):
                 pass
         elif fps_str:
             try:
                 info.media_fps = float(fps_str)
+                info.media_fps_resolved = True
             except ValueError:
                 pass
         info.is_ntsc = _is_ntsc_fps(info.media_fps)
@@ -2117,6 +2165,7 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
             if line.startswith("nb_frames="):
                 try:
                     info.full_duration_frames = int(line.split("=", 1)[1])
+                    info.duration_resolved = info.full_duration_frames > 0
                 except ValueError:
                     pass
             elif line.startswith("duration="):
@@ -2124,16 +2173,19 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
                     dur_secs = float(line.split("=", 1)[1])
                 except ValueError:
                     pass
-        if info.full_duration_frames <= 0 and dur_secs > 0:
+        if info.full_duration_frames <= 0 and dur_secs > 0 and info.media_fps_resolved:
             info.full_duration_frames = int(round(dur_secs * info.media_fps))
+            info.duration_resolved = info.full_duration_frames > 0
 
         if info.resolved:
             info.is_ntsc = ";" in info.timecode_string
             if info.timecode_string in ("00:00:00:00", "00;00;00;00"):
                 info.resolved = False
 
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        # ffprobe not installed, or file inaccessible
+    except FileNotFoundError:
+        _warn_ffprobe_missing_once()
+    except (subprocess.TimeoutExpired, OSError):
+        # ffprobe timed out, or file inaccessible
         pass
 
     return info
@@ -2412,21 +2464,20 @@ def _extract_clip(
                         if local.exists():
                             local_str = str(local)
                             if local_str in _SourceTCCache:
-                                source_tc = _SourceTCCache[local_str]
+                                source_tc = _merge_source_tc_info(source_tc, _SourceTCCache[local_str])
                             else:
                                 ff_tc = _ffprobe_read_timecode(local_str)
-                                if ff_tc.resolved:
-                                    _SourceTCCache[local_str] = ff_tc
-                                    source_tc = ff_tc
-                                else:
+                                merged_tc = _merge_source_tc_info(source_tc, ff_tc)
+                                if not merged_tc.resolved:
                                     tmcd_tc = _read_dji_tmcd_timecode(local_str)
-                                    if tmcd_tc is not None and tmcd_tc.resolved:
-                                        _SourceTCCache[local_str] = tmcd_tc
-                                        source_tc = tmcd_tc
-                                    elif ff_tc.full_duration_frames > 0 or ff_tc.media_fps != 30.0:
-                                        ff_tc.is_ntsc = ";" in ff_tc.timecode_string
-                                        _SourceTCCache[local_str] = ff_tc
-                                        source_tc = ff_tc
+                                    if tmcd_tc is not None:
+                                        merged_tc = _merge_source_tc_info(merged_tc, tmcd_tc)
+                                if not merged_tc.resolved:
+                                    mov_tc = _read_mov_creation_time_tc(local_str)
+                                    if mov_tc is not None:
+                                        merged_tc = _merge_source_tc_info(merged_tc, mov_tc)
+                                _SourceTCCache[local_str] = copy.deepcopy(merged_tc)
+                                source_tc = merged_tc
                     sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
                     if sr[0] > 0 and sr[1] > 0:
                         src_w, src_h = sr
@@ -2440,12 +2491,12 @@ def _extract_clip(
                         ip = inner.findtext("InPoint")
                         op = inner.findtext("OutPoint")
                         if ip is not None:
-                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            clip_fps = _effective_source_fps(source_tc, fps)
                             in_point = _prproj_ticks_to_frames(ip, clip_fps)
                         if op is not None:
-                            clip_fps = source_tc.media_fps if source_tc.resolved else fps
+                            clip_fps = _effective_source_fps(source_tc, fps)
                             out_point = _prproj_ticks_to_frames(op, clip_fps)
-                        if source_tc.resolved and source_tc.full_duration_frames > 0:
+                        if _has_resolved_source_duration(source_tc):
                             in_point = min(in_point, source_tc.full_duration_frames)
                             out_point = min(out_point, source_tc.full_duration_frames)
                     ps = inner.findtext("PlaybackSpeed") if inner is not None else None
@@ -2812,7 +2863,7 @@ def _prproj_parse_sequence(
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
-                    file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
+                    file_dur_val = cl.source_tc.full_duration_frames if _has_resolved_source_duration(cl.source_tc) else clip_dur
                     fd = FileData(
                         id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
                         duration=file_dur_val, timecode=cl.source_tc,
@@ -2872,7 +2923,7 @@ def _prproj_parse_sequence(
                         fd = existing_fd
                         is_shared = True
                     else:
-                        file_dur_val = cl.source_tc.full_duration_frames if cl.source_tc.full_duration_frames > 0 else clip_dur
+                        file_dur_val = cl.source_tc.full_duration_frames if _has_resolved_source_duration(cl.source_tc) else clip_dur
                         fd = FileData(
                             id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
                             duration=file_dur_val, timecode=cl.source_tc,

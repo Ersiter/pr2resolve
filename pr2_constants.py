@@ -54,10 +54,12 @@ class _SourceTCInfo:
     """Extracted source media timecode and frame rate info."""
 
     media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
+    media_fps_resolved: bool = False      # True if source FPS is known
     is_ntsc: bool = False                  # whether source rate is NTSC
     timecode_frame: int = 0                # timecode start in source-rate frames
     timecode_string: str = "00:00:00:00"   # formatted TC string
     full_duration_frames: int = 0          # full file duration in source-rate frames
+    duration_resolved: bool = False        # True if source duration is known
     resolved: bool = False                 # True if real TC data was found
 
 
