@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr2resolve — Release publisher
+# pr2resolve - Release publisher
 # Maintainer fallback; the primary release path is .github/workflows/release.yml.
 # Aggregates dist/*/ artifacts from all 3 platforms and creates a GitHub Release.
 #
@@ -16,11 +16,11 @@ cd "$(dirname "$0")/.."
 VERSION=$(python3 -c "from pr2_constants import VERSION; print(VERSION)")
 TAG="v${VERSION}"
 
-# ── Check gh CLI ──────────────────────────────────────────────────────
+# Check gh CLI
 command -v gh >/dev/null 2>&1 || { echo "FATAL: gh CLI not installed (https://cli.github.com)"; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "FATAL: gh not authenticated. Run: gh auth login"; exit 1; }
 
-# ── Collect artifacts from per-platform subdirectories ─────────────────
+# Collect artifacts from per-platform subdirectories
 shopt -s nullglob
 FILES=(dist/*/pr2resolve-v"${VERSION}"-*.zip dist/*/pr2resolve-v"${VERSION}"-*.tar.gz)
 shopt -u nullglob
@@ -38,7 +38,7 @@ for f in "${FILES[@]}"; do
     echo "  $f ($(du -h "$f" | cut -f1))"
 done
 
-# ── Generate combined SHA256SUMS ──────────────────────────────────────
+# Generate combined SHA256SUMS
 SUMS="dist/SHA256SUMS.txt"
 echo "Generating ${SUMS}..."
 > "${SUMS}"
@@ -51,7 +51,7 @@ for f in "${FILES[@]}"; do
 done
 FILES+=("${SUMS}")
 
-# ── Release notes ─────────────────────────────────────────────────────
+# Release notes
 # docs/releases/ is maintainer-local and ignored by git. It is intentionally
 # used for release publishing notes without distributing personal archives.
 NOTES_FILE="docs/releases/RELEASE_NOTES_v${VERSION}.md"
@@ -67,19 +67,20 @@ else
     exit 1
 fi
 
-# ── Create release ────────────────────────────────────────────────────
-FLAGS="--title \"pr2resolve v${VERSION} — Premiere Pro to DaVinci Resolve 转换器\""
-FLAGS="$FLAGS --notes-file \"$NOTES_FILE\""
+# Create release
+FLAGS=(
+    --title "pr2resolve v${VERSION} - Premiere Pro to DaVinci Resolve converter"
+    --notes-file "$NOTES_FILE"
+)
 if [[ "${1:-}" == "--draft" ]]; then
-    FLAGS="$FLAGS --draft"
+    FLAGS+=(--draft)
 fi
 
 echo "Creating GitHub Release ${TAG}..."
 echo ""
 
-# shellcheck disable=SC2086
-gh release create "$TAG" "${FILES[@]}" $FLAGS
+gh release create "$TAG" "${FILES[@]}" "${FLAGS[@]}"
 
 echo ""
-echo "══ Published ══"
+echo "== Published =="
 echo "  https://github.com/Ersiter/pr2resolve/releases/tag/${TAG}"

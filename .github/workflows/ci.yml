@@ -1,4 +1,4 @@
-# pr2resolve CI — glue checks (not full release build)
+# pr2resolve CI - glue checks (not full release build)
 # Full release builds still run locally on each platform via scripts/build_*.{ps1,sh}
 name: CI
 

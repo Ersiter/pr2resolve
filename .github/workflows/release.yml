@@ -272,7 +272,7 @@ jobs:
             SHA256SUMS.txt \
             --draft \
             --verify-tag \
-            --title "pr2resolve ${TAG} — Premiere Pro to DaVinci Resolve converter" \
+            --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve converter" \
             --notes-file RELEASE_NOTES.md
 
       - name: Publish release

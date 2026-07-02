@@ -1,4 +1,4 @@
-# pr2resolve — Windows build script
+# pr2resolve - Windows build script
 # Usage: powershell -File scripts/build_windows.ps1
 # Prerequisites: python 3.14, requirements-build.txt, upx (PATH), MSVC Build Tools 2022
 # Output: dist/pr2resolve-v{VERSION}-windows-x86_64.zip
@@ -7,11 +7,11 @@
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot\..
 
-# ── Read version from source ──────────────────────────────────────────
+# Read version from source
 $VERSION = (python -c "from pr2_constants import VERSION; print(VERSION)").Trim()
-Write-Host "pr2resolve v$VERSION — Windows x86_64 build" -ForegroundColor Cyan
+Write-Host "pr2resolve v$VERSION - Windows x86_64 build" -ForegroundColor Cyan
 
-# ── Pre-flight checks ─────────────────────────────────────────────────
+# Pre-flight checks
 $missing = @()
 
 # python + Python build dependencies
@@ -24,7 +24,7 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     }
 }
 
-# UPX — try PATH, then known location
+# UPX - try PATH, then known location
 $UPX_BIN = "upx"
 if ((Get-Command upx -ErrorAction SilentlyContinue) -eq $null) {
     $known = "$env:LOCALAPPDATA\upx\upx.exe"
@@ -58,12 +58,12 @@ function Assert-BuildArtifactPath {
     }
 }
 
-# ── Clean previous build ──────────────────────────────────────────────
+# Clean previous build
 Assert-BuildArtifactPath -Path $DIST_DIR -ExpectedRelative "dist\$PLATFORM"
 if (Test-Path $DIST_DIR) { Remove-Item -Recurse -Force $DIST_DIR }
 New-Item -ItemType Directory -Force -Path $DIST_DIR | Out-Null
 
-# ── Nuitka onefile compile ────────────────────────────────────────────
+# Nuitka onefile compile
 $EXE_PATH = "$DIST_DIR\pr2resolve.exe"
 Write-Host "[1/4] Nuitka onefile compile..." -ForegroundColor Yellow
 python -m nuitka `
@@ -92,31 +92,31 @@ if (-not (Test-Path $EXE_PATH)) {
     exit 1
 }
 
-# ── UPX compression ───────────────────────────────────────────────────
+# UPX compression
 Write-Host "[2/4] UPX compression..." -ForegroundColor Yellow
 & $UPX_BIN --best --lzma $EXE_PATH
 if ($LASTEXITCODE -ne 0) {
     Write-Host "WARNING: UPX failed, continuing with uncompressed binary" -ForegroundColor Yellow
 }
 
-# ── Package ───────────────────────────────────────────────────────────
+# Package
 Write-Host "[3/4] Packaging $ARCHIVE_NAME.zip..." -ForegroundColor Yellow
 Compress-Archive -Path $EXE_PATH -DestinationPath $ARCHIVE_PATH
 
-# ── Clean up bare binary (only the zip is distributed) ────────────────
+# Clean up bare binary (only the zip is distributed)
 Write-Host "[4/4] Cleaning up..." -ForegroundColor Yellow
 Assert-BuildArtifactPath -Path $EXE_PATH -ExpectedRelative "dist\$PLATFORM\pr2resolve.exe"
 Remove-Item $EXE_PATH
 
-# ── SHA256 ────────────────────────────────────────────────────────────
+# SHA256
 $hash = (Get-FileHash -Algorithm SHA256 $ARCHIVE_PATH).Hash.ToLower()
 $SUM_FILE = "$DIST_DIR\SHA256SUMS.txt"
 "$hash  $ARCHIVE_NAME.zip" | Out-File -Append -Encoding ascii $SUM_FILE
 
-# ── Report ────────────────────────────────────────────────────────────
+# Report
 $size = [math]::Round((Get-Item $ARCHIVE_PATH).Length / 1MB, 2)
 Write-Host ""
-Write-Host "══ Build complete ══" -ForegroundColor Green
+Write-Host "== Build complete ==" -ForegroundColor Green
 Write-Host "  $ARCHIVE_PATH  ($size MB)"
 Write-Host "  SHA256: $hash"
 Write-Host ""
