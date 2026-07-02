@@ -1984,11 +1984,11 @@ def _read_first_sample(stco: bytes, data: bytes) -> int:
 
 
 def _read_mov_creation_time_tc(filepath: str) -> _SourceTCInfo | None:
-    """Pure-Python: read '©day' creation_time from MOV/MP4 moov.udta.
+    """Pure-Python fallback for MOV/MP4 creation-time metadata.
 
-    Blackmagic cameras write UTC creation time in the ©day atom inside
-    moov.udta.meta.ilst.  Convert UTC → local timezone, format as
-    hh:mm:ss:00 timecode.  This matches Resolve's Pool Start TC.
+    Reads QuickTime '©day' or mvhd creation_time metadata and converts the
+    local time of day to hh:mm:ss:00. This is a time-of-day fallback, not a
+    real embedded source timecode track.
 
     Returns a resolved _SourceTCInfo on success, or None.
     """
@@ -2195,9 +2195,11 @@ def _ffprobe_json_to_source_info(payload: dict[str, Any]) -> _SourceTCInfo:
 def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
-    Reads stream timecode, stream tags, source FPS, and duration through
-    one JSON query. Callers merge these fields independently so
-    missing source timecode does not discard valid fps/duration data.
+    Runs one JSON ffprobe query for explicit stream timecode, stream/format
+    timecode tags, source FPS, and duration. Callers merge these fields
+    independently so missing source timecode does not discard valid
+    fps/duration data. MOV/MP4 creation_time is handled later by the
+    pure-Python fallback path, not by this ffprobe query.
 
     Args:
         filepath: Absolute path to the media file
@@ -2211,7 +2213,7 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
             ["ffprobe", "-v", "error", "-of", "json",
              "-show_entries",
              "stream=index,codec_type,r_frame_rate,avg_frame_rate,duration,nb_frames,timecode:"
-             "stream_tags=timecode:format=duration:format_tags=timecode,creation_time",
+             "stream_tags=timecode:format=duration:format_tags=timecode",
              filepath],
             capture_output=True, text=True, timeout=15
         )

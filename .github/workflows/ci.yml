@@ -32,6 +32,9 @@ jobs:
           python -m py_compile pr2_constants.py
           python -m py_compile tui.py
 
+      - name: Run public smoke tests
+        run: python .github/scripts/ci_smoke_tests.py
+
       - name: Verify VERSION consistency
         run: |
           echo "Source version:"
