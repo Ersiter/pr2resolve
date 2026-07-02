@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
 r"""pr2resolve TUI — interactive menu launcher (like converter.sh).
 
-Compiled via Nuitka into a single .exe. All work files stay in this directory.
-Does NOT modify E:\pr2resolve.
+Compiled via Nuitka into a single executable. All work files stay in this directory.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import msvcrt
 from pathlib import Path
-
-# Let Nuitka find pr2resolve source at compile time.
-# At runtime the modules are bundled into the exe so the path insert is harmless.
-_PR2RESOLVE_SRC = r"E:\pr2resolve"
-if _PR2RESOLVE_SRC not in sys.path:
-    sys.path.insert(0, _PR2RESOLVE_SRC)
 
 from pr2resolve import _run_pipeline, VERSION  # type: ignore[import-not-found]
 from pr2resolve import main as pr2resolve_main  # type: ignore[import-not-found]
@@ -46,6 +38,17 @@ OPT_REPORT = False
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════════
 
+def _default_output_dir() -> Path:
+    configured = os.environ.get("PR2RESOLVE_OUTPUT_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / "pr2resolve_output"
+
+
+def _clear_screen() -> None:
+    os.system("cls" if sys.platform == "win32" else "clear")
+
+
 def _clr(on: bool) -> str:
     """Return GREEN if on, else empty (for ON/OFF display)."""
     return GREEN if on else ""
@@ -70,13 +73,31 @@ def _onoff(on: bool) -> str:
 
 
 def _getch() -> str:
-    """Read a single keypress (Windows only)."""
+    """Read a single keypress without importing platform-only modules globally."""
+    if sys.platform != "win32":
+        return _getch_unix()
+
+    import msvcrt
+
     ch = msvcrt.getch()
     # Decode bytes; handle special keys that return 2-byte sequences
     try:
         return ch.decode("utf-8", errors="replace")
     except UnicodeDecodeError:
         return "?"
+
+
+def _getch_unix() -> str:
+    import termios
+    import tty
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _pause(msg: str = "Press Enter to return to menu...") -> None:
@@ -101,7 +122,7 @@ def _strip_input(raw: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════════════
 
 def _print_header() -> None:
-    os.system("cls")
+    _clear_screen()
     print()
     print(f"  {PR_PURPLE}{'=' * 60}{NC}")
     print(f"  {BOLD}{PR_PURPLE}  pr2resolve v{VERSION}{NC}")
@@ -164,7 +185,8 @@ def select_input() -> None:
 
 def set_output() -> None:
     global OUTPUT_DIR
-    os.system("cls")
+    _clear_screen()
+    default_output = _default_output_dir()
     print()
     print(f"  {PR_PURPLE}{'=' * 60}{NC}")
     print(f"  {BOLD}  Set Output Directory{NC}")
@@ -176,7 +198,7 @@ def set_output() -> None:
         print("  Current: (same as input)")
     print()
     print("  [1] Keep current")
-    print("  [2] E:\\tmp\\pr2resolve_pack\\output")
+    print(f"  [2] {default_output}")
     print("  [3] Same as input file folder")
     print("  [4] Custom path")
     print()
@@ -185,7 +207,7 @@ def set_output() -> None:
     if ch == "1":
         return
     elif ch == "2":
-        out = Path(r"E:\tmp\pr2resolve_pack\output")
+        out = default_output
         out.mkdir(parents=True, exist_ok=True)
         OUTPUT_DIR = str(out)
         print(f"\n  {GREEN}Set to: {OUTPUT_DIR}{NC}")
@@ -211,7 +233,7 @@ def set_output() -> None:
 def options_menu() -> None:
     global OPT_XML, OPT_DRT, OPT_DRP, OPT_MODE, OPT_SUFFIX, OPT_REPORT
     while True:
-        os.system("cls")
+        _clear_screen()
         print()
         print(f"  {PR_PURPLE}{'=' * 60}{NC}")
         print(f"  {BOLD}  Output Options{NC}")
