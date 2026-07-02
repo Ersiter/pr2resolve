@@ -2,6 +2,26 @@
 
 All notable changes to pr2resolve.
 
+## [v1.0.4] — 2026-07-02
+
+### Added
+- **GitHub Actions release workflow** — manual semver tag triggers three-platform build, checksums, and GitHub Release publishing
+- **Public CI smoke tests** — synthetic ffprobe metadata tests run without private fixtures or media files
+- **Community files** — contributing guide, security policy, pull request template, and issue forms for conversion problems, bugs, and feature requests
+
+### Fixed
+- Source media fps and duration reliability no longer depends on source timecode being resolved
+- PRPROJ baseline timecode is preserved while ffprobe and local fallbacks merge additional metadata
+- Missing ffprobe now emits a one-time degradation warning instead of silently lowering conversion reliability
+- TUI launcher no longer leaks workstation-specific Windows paths into release builds
+- TUI keypress and screen clearing now avoid Windows-only assumptions on macOS and Linux
+
+### Changed
+- ffprobe source metadata probing now uses a single JSON query for timecode, fps, frame count, and duration
+- README quick start now presents Windows, macOS, and Linux release packages before source mode
+- Build and release scripts now use ASCII-only logs and release titles for cross-platform terminal output
+- Local release publishing now requires explicit release notes instead of generating minimal placeholder notes
+
 ## [v1.0.3] — 2026-06-30
 
 ### Added
@@ -42,7 +62,8 @@ All notable changes to pr2resolve.
 
 First production release. Architecture refactor complete — domain model separated from XML rendering. Dual-entry: FCP7 XML and `.prproj`.
 
-[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.0.3...HEAD
+[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.0.4...HEAD
+[v1.0.4]: https://github.com/Ersiter/pr2resolve/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/Ersiter/pr2resolve/compare/v1.0.1...v1.0.3
 [v1.0.1]: https://github.com/Ersiter/pr2resolve/compare/v1.0.0...v1.0.1
 [v1.0.0]: https://github.com/Ersiter/pr2resolve/releases/tag/v1.0.0
