@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pr2resolve - Linux build script
 # Usage: bash scripts/build_linux.sh
-# Prerequisites: python 3.14, requirements-build.txt, upx (apt), gcc (apt build-essential)
+# Prerequisites: python 3.13, requirements-build.txt, upx (apt), gcc (apt build-essential)
 # Output: dist/pr2resolve-v{VERSION}-linux-x86_64.tar.gz
 # Cleanup exception: this script may directly remove only its own dist/<platform> artifacts.
 set -euo pipefail
@@ -39,7 +39,7 @@ if [ ${#missing[@]} -gt 0 ]; then
     echo "FATAL: Missing dependencies: ${missing[*]}"
     echo ""
     echo "Install guide (Ubuntu):"
-    echo "  sudo apt install -y python3.14 python3.14-venv build-essential upx-ucl"
+    echo "  sudo apt install -y python3.13 python3.13-venv build-essential upx-ucl"
     echo "  python3 -m pip install -r requirements-build.txt"
     exit 1
 fi
@@ -56,6 +56,7 @@ python3 -m nuitka \
   --mode=onefile \
   --output-dir="${DIST_DIR}" \
   --output-filename=pr2resolve \
+  --assume-yes-for-downloads \
   --lto=yes \
   --onefile-no-compression \
   --python-flag=no_docstrings \

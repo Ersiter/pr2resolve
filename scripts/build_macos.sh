@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pr2resolve - macOS build script
 # Usage: bash scripts/build_macos.sh
-# Prerequisites: python 3.14, requirements-build.txt, upx (brew), Xcode CLT (clang)
+# Prerequisites: python 3.13, requirements-build.txt, upx (brew), Xcode CLT (clang)
 # Output: dist/macos-{arch}/pr2resolve-v{VERSION}-macos-{arch}.tar.gz
 # Cleanup exception: this script may directly remove only its own dist/<platform> artifacts.
 set -euo pipefail
@@ -39,7 +39,7 @@ if [ ${#missing[@]} -gt 0 ]; then
     echo "FATAL: Missing dependencies: ${missing[*]}"
     echo ""
     echo "Install guide:"
-    echo "  brew install python@3.14 upx"
+    echo "  brew install python@3.13 upx"
     echo "  python3 -m pip install -r requirements-build.txt"
     echo "  xcode-select --install"
     exit 1
@@ -58,6 +58,7 @@ python3 -m nuitka \
   --output-dir="${DIST_DIR}" \
   --output-filename=pr2resolve \
   --clang \
+  --assume-yes-for-downloads \
   --lto=yes \
   --onefile-no-compression \
   --python-flag=no_docstrings \
