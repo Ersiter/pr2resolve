@@ -15,12 +15,14 @@ All notable changes to pr2resolve.
 - Missing ffprobe now emits a one-time degradation warning instead of silently lowering conversion reliability
 - TUI launcher no longer leaks workstation-specific Windows paths into release builds
 - TUI keypress and screen clearing now avoid Windows-only assumptions on macOS and Linux
+- Windows GitHub Actions release builds no longer fail on Nuitka Dependency Walker prompts in non-interactive CI
 
 ### Changed
 - ffprobe source metadata probing now uses a single JSON query for timecode, fps, frame count, and duration
 - README quick start now presents Windows, macOS, and Linux release packages before source mode
 - Build and release scripts now use ASCII-only logs and release titles for cross-platform terminal output
 - Local release publishing now requires explicit release notes instead of generating minimal placeholder notes
+- Release build jobs now use Python 3.13 for Nuitka 4.1.3 packaging stability
 
 ## [v1.0.3] — 2026-06-30
 
