@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # pr2resolve — Linux build script
 # Usage: bash scripts/build_linux.sh
-# Prerequisites: python 3.14, nuitka (pip), upx (apt), gcc (apt build-essential)
+# Prerequisites: python 3.14, requirements-build.txt, upx (apt), gcc (apt build-essential)
 # Output: dist/pr2resolve-v{VERSION}-linux-x86_64.tar.gz
+# Cleanup exception: this script may directly remove only its own dist/<platform> artifacts.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -16,23 +17,35 @@ ARCHIVE_NAME="pr2resolve-v${VERSION}-${PLATFORM}"
 DIST_DIR="dist/${PLATFORM}"
 ARCHIVE_PATH="${DIST_DIR}/${ARCHIVE_NAME}.tar.gz"
 
+guard_dist_cleanup() {
+    case "${DIST_DIR}" in
+        dist/*) ;;
+        *) echo "FATAL: unsafe DIST_DIR: ${DIST_DIR}"; exit 1 ;;
+    esac
+    if [[ "${DIST_DIR}" == *".."* || "${DIST_DIR}" == "dist/" || "${DIST_DIR}" == "dist" ]]; then
+        echo "FATAL: unsafe DIST_DIR: ${DIST_DIR}"
+        exit 1
+    fi
+}
+
 # ── Pre-flight checks ─────────────────────────────────────────────────
 missing=()
 command -v python3 >/dev/null 2>&1 || missing+=("python3")
 command -v gcc     >/dev/null 2>&1 || missing+=("gcc (apt install build-essential)")
 command -v upx     >/dev/null 2>&1 || missing+=("upx (apt install upx-ucl)")
-python3 -m nuitka --version >/dev/null 2>&1 || missing+=("nuitka (pip install nuitka)")
+python3 -m nuitka --version >/dev/null 2>&1 || missing+=("nuitka (python3 -m pip install -r requirements-build.txt)")
 
 if [ ${#missing[@]} -gt 0 ]; then
     echo "FATAL: Missing dependencies: ${missing[*]}"
     echo ""
     echo "Install guide (Ubuntu):"
     echo "  sudo apt install -y python3.14 python3.14-venv build-essential upx-ucl"
-    echo "  pip install nuitka"
+    echo "  python3 -m pip install -r requirements-build.txt"
     exit 1
 fi
 
 # ── Clean ─────────────────────────────────────────────────────────────
+guard_dist_cleanup
 rm -rf "${DIST_DIR}"
 mkdir -p "${DIST_DIR}"
 
@@ -73,6 +86,10 @@ tar -czf "${ARCHIVE_PATH}" -C "${DIST_DIR}" pr2resolve
 
 # ── Clean up bare binary ──────────────────────────────────────────────
 echo "[4/4] Cleaning up..."
+if [ "${BINARY}" != "${DIST_DIR}/pr2resolve" ]; then
+    echo "FATAL: unsafe binary cleanup path: ${BINARY}"
+    exit 1
+fi
 rm -f "${BINARY}"
 
 # ── SHA256 ────────────────────────────────────────────────────────────

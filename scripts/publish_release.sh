@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # pr2resolve — Release publisher
-# Aggregates dist/ artifacts from all 3 platforms and creates a GitHub Release.
+# Aggregates dist/*/ artifacts from all 3 platforms and creates a GitHub Release.
 #
 # Prerequisites:
 #   1. Run build_windows.ps1, build_macos.sh, build_linux.sh on each platform
-#   2. Copy all dist/pr2resolve-v*-*.{zip,tar.gz} into dist/ on one machine
+#   2. Copy each platform subdirectory into dist/ on one machine:
+#      dist/windows-x86_64/, dist/macos-*/, dist/linux-*/
 #   3. Run this script from repo root
 #
 # Usage: bash scripts/publish_release.sh [--draft]
@@ -50,12 +51,19 @@ done
 FILES+=("${SUMS}")
 
 # ── Release notes ─────────────────────────────────────────────────────
-NOTES_FILE="RELEASE_NOTES_v${VERSION}.md"
-if [ ! -f "$NOTES_FILE" ]; then
-    echo "WARNING: $NOTES_FILE not found. Generating minimal notes..."
-    echo "## pr2resolve v${VERSION}" > "$NOTES_FILE"
-    echo "" >> "$NOTES_FILE"
-    echo "See [CHANGELOG.md](CHANGELOG.md) for details." >> "$NOTES_FILE"
+# docs/releases/ is maintainer-local and ignored by git. It is intentionally
+# used for release publishing notes without distributing personal archives.
+NOTES_FILE="docs/releases/RELEASE_NOTES_v${VERSION}.md"
+LEGACY_NOTES_FILE="RELEASE_NOTES_v${VERSION}.md"
+if [ -f "$NOTES_FILE" ]; then
+    :
+elif [ -f "$LEGACY_NOTES_FILE" ]; then
+    NOTES_FILE="$LEGACY_NOTES_FILE"
+else
+    echo "FATAL: release notes not found."
+    echo "Expected: docs/releases/RELEASE_NOTES_v${VERSION}.md"
+    echo "     or: RELEASE_NOTES_v${VERSION}.md"
+    exit 1
 fi
 
 # ── Create release ────────────────────────────────────────────────────

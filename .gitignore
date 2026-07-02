@@ -39,10 +39,11 @@ desktop.ini
 CLAUDE.md
 AGENTS.md
 
-# Docs & test samples (local only)
+# Docs & local test samples
 docs/
 test/
 tests/
+test_samples/
 _test_output/
 
 # Local audit/debug artifacts

@@ -1,5 +1,5 @@
-# pr2resolve CI — glue checks (not full build)
-# Full builds run locally on each platform via scripts/build_*.{ps1,sh}
+# pr2resolve CI — glue checks (not full release build)
+# Full release builds still run locally on each platform via scripts/build_*.{ps1,sh}
 name: CI
 
 on:
@@ -11,15 +11,19 @@ on:
 
 jobs:
   check:
-    name: Version & Syntax
+    name: Python ${{ matrix.python-version }} checks
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
 
       - name: Check Python syntax
         run: |
@@ -52,7 +56,43 @@ jobs:
           echo "converter.sh version:"
           sed -n 's/.*VERSION="\([^"]*\)".*/\1/p' converter.sh
 
-      - name: Verify Nuitka can analyze
-        if: github.ref_type == 'tag'
+      - name: Verify community files
         run: |
-          python -m nuitka --mode=onefile --assume-yes-for-downloads --output-dir=/tmp --remove-output tui.py 2>&1 | tail -5 || true
+          test -f .github/CONTRIBUTING.md
+          test -f .github/SECURITY.md
+          test -f .github/pull_request_template.md
+          test ! -f .github/CODE_OF_CONDUCT.md
+          python -m pip install PyYAML
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          forms = sorted(Path(".github/ISSUE_TEMPLATE").glob("*.yml"))
+          if {p.name for p in forms} != {
+              "bug_report.yml",
+              "config.yml",
+              "conversion_problem.yml",
+              "feature_request.yml",
+          }:
+              raise SystemExit("Unexpected issue template set")
+          for path in forms:
+              yaml.safe_load(path.read_text(encoding="utf-8"))
+
+          checked = [
+              Path(".github/CONTRIBUTING.md"),
+              Path(".github/SECURITY.md"),
+              Path(".github/pull_request_template.md"),
+              *forms,
+          ]
+          for path in checked:
+              for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                  if line.rstrip(" \t") != line:
+                      raise SystemExit(f"Trailing whitespace: {path}:{lineno}")
+          print(f"Checked {len(checked)} community files")
+          PY
+
+      - name: Verify Nuitka can analyze
+        if: github.ref_type == 'tag' && matrix.python-version == '3.14'
+        run: |
+          python -m pip install -r requirements-build.txt
+          python -m nuitka --mode=onefile --assume-yes-for-downloads --output-dir=/tmp --remove-output tui.py
