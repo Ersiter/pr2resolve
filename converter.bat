@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 :: pr2resolve - Windows TUI Launcher
 :: ============================================================
 
-set "VERSION=1.0.3"
+set "VERSION=1.0.4"
 set "SCRIPT=%~dp0pr2resolve.py"
 set "PYTHONIOENCODING=utf-8"
 

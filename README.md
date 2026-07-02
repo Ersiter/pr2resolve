@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.0.3 — native PRPROJ timelines, source timecode, DRP, and TUI entry polish*
+> *v1.0.4 — metadata reliability, release automation, and TUI portability*
 
 # .PRPROJ-.DRT Converter
 
