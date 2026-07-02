@@ -7,6 +7,7 @@ prproj parser, and DRT bridge.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import struct
 import subprocess
@@ -2073,15 +2074,129 @@ def _read_mvhd_creation_time_tc(moov: bytes, info: _SourceTCInfo) -> _SourceTCIn
     return info
 
 
+def _parse_ffprobe_fps(rate: Any) -> float | None:
+    """Parse an ffprobe frame-rate string such as 30000/1001."""
+    if not isinstance(rate, str):
+        return None
+    rate = rate.strip()
+    if not rate or rate in ("0/0", "N/A"):
+        return None
+    try:
+        if "/" in rate:
+            num, den = rate.split("/", 1)
+            den_val = float(den)
+            if den_val <= 0:
+                return None
+            fps = float(num) / den_val
+        else:
+            fps = float(rate)
+    except (ValueError, ZeroDivisionError):
+        return None
+    if fps <= 0:
+        return None
+    return round(fps, 3)
+
+
+def _parse_ffprobe_int(value: Any) -> int | None:
+    """Parse an integer field from ffprobe JSON."""
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _parse_ffprobe_float(value: Any) -> float | None:
+    """Parse a positive float field from ffprobe JSON."""
+    try:
+        parsed = float(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _valid_ffprobe_timecode(value: Any) -> str | None:
+    """Return a non-zero ffprobe timecode string."""
+    if not isinstance(value, str):
+        return None
+    tc = value.strip()
+    if not tc or tc in ("00:00:00:00", "00;00;00;00"):
+        return None
+    return tc
+
+
+def _extract_ffprobe_timecode(payload: dict[str, Any], video_stream: dict[str, Any] | None) -> str | None:
+    """Choose the best source timecode from ffprobe JSON."""
+    if video_stream is not None:
+        tc = _valid_ffprobe_timecode(video_stream.get("timecode"))
+        if tc is not None:
+            return tc
+
+    for stream in payload.get("streams", []):
+        if not isinstance(stream, dict):
+            continue
+        tags = stream.get("tags")
+        if isinstance(tags, dict):
+            tc = _valid_ffprobe_timecode(tags.get("timecode"))
+            if tc is not None:
+                return tc
+
+    fmt = payload.get("format")
+    if isinstance(fmt, dict):
+        tags = fmt.get("tags")
+        if isinstance(tags, dict):
+            return _valid_ffprobe_timecode(tags.get("timecode"))
+
+    return None
+
+
+def _ffprobe_json_to_source_info(payload: dict[str, Any]) -> _SourceTCInfo:
+    """Convert one ffprobe JSON result into independent source metadata flags."""
+    info = _SourceTCInfo()
+    streams = payload.get("streams", [])
+    video_stream = next(
+        (stream for stream in streams
+         if isinstance(stream, dict) and stream.get("codec_type") == "video"),
+        None,
+    )
+
+    if video_stream is not None:
+        fps = _parse_ffprobe_fps(video_stream.get("r_frame_rate"))
+        if fps is None:
+            fps = _parse_ffprobe_fps(video_stream.get("avg_frame_rate"))
+        if fps is not None:
+            info.media_fps = fps
+            info.media_fps_resolved = True
+            info.is_ntsc = _is_ntsc_fps(info.media_fps)
+
+        frame_count = _parse_ffprobe_int(video_stream.get("nb_frames"))
+        if frame_count is not None:
+            info.full_duration_frames = frame_count
+            info.duration_resolved = True
+        elif info.media_fps_resolved:
+            duration_secs = _parse_ffprobe_float(video_stream.get("duration"))
+            if duration_secs is None:
+                fmt = payload.get("format")
+                if isinstance(fmt, dict):
+                    duration_secs = _parse_ffprobe_float(fmt.get("duration"))
+            if duration_secs is not None:
+                info.full_duration_frames = int(round(duration_secs * info.media_fps))
+                info.duration_resolved = info.full_duration_frames > 0
+
+    tc = _extract_ffprobe_timecode(payload, video_stream)
+    if tc is not None:
+        info.timecode_string = tc
+        info.resolved = True
+        info.is_ntsc = ";" in tc
+
+    return info
+
+
 def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """Read source timecode and frame rate from a media file using ffprobe.
 
-    Tries three approaches in order:
-    1. stream=timecode / stream_tags=timecode (professional cameras write this)
-    2. format_tags=timecode (DJI MOV wrapper)
-
-    Also reads r_frame_rate for actual source FPS and duration for
-    full file length. Callers merge these fields independently so
+    Reads stream timecode, stream tags, source FPS, and duration through
+    one JSON query. Callers merge these fields independently so
     missing source timecode does not discard valid fps/duration data.
 
     Args:
@@ -2092,99 +2207,22 @@ def _ffprobe_read_timecode(filepath: str) -> _SourceTCInfo:
     """
     info = _SourceTCInfo()
     try:
-        # 1. Try stream-level timecode first
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=timecode",
-             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
+            ["ffprobe", "-v", "error", "-of", "json",
+             "-show_entries",
+             "stream=index,codec_type,r_frame_rate,avg_frame_rate,duration,nb_frames,timecode:"
+             "stream_tags=timecode:format=duration:format_tags=timecode,creation_time",
+             filepath],
             capture_output=True, text=True, timeout=15
         )
-        tc_str = next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
-        if tc_str and result.returncode == 0:
-            info.timecode_string = tc_str
-            info.resolved = True
-
-        if not info.resolved:
-            result_tags = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "stream_tags=timecode",
-                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-                capture_output=True, text=True, timeout=15
-            )
-            tc_str_tags = next(
-                (line.strip() for line in result_tags.stdout.splitlines() if line.strip()), ""
-            )
-            if tc_str_tags and result_tags.returncode == 0:
-                info.timecode_string = tc_str_tags
-                info.resolved = True
-
-        # 2. Get frame rate
-        result2 = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=r_frame_rate",
-             "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-            capture_output=True, text=True, timeout=15
-        )
-        fps_str = result2.stdout.strip()
-        if fps_str and "/" in fps_str:
-            try:
-                num, den = fps_str.split("/", 1)
-                if int(den) > 0:
-                    info.media_fps = round(int(num) / int(den), 3)
-                    info.media_fps_resolved = True
-            except (ValueError, ZeroDivisionError):
-                pass
-        elif fps_str:
-            try:
-                info.media_fps = float(fps_str)
-                info.media_fps_resolved = True
-            except ValueError:
-                pass
-        info.is_ntsc = _is_ntsc_fps(info.media_fps)
-
-        # 3. If stream timecode not found, try format tags
-        if not info.resolved:
-            result3 = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries",
-                 "format_tags=timecode",
-                 "-of", "default=noprint_wrappers=1:nokey=1", filepath],
-                capture_output=True, text=True, timeout=15
-            )
-            tc_str2 = result3.stdout.strip()
-            if tc_str2:
-                info.timecode_string = tc_str2
-                info.resolved = True
-
-        # 4. Get duration
-        result5 = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=duration,nb_frames",
-             "-of", "default=noprint_wrappers=1", filepath],
-            capture_output=True, text=True, timeout=15
-        )
-        dur_secs = 0.0
-        for line in result5.stdout.splitlines():
-            if line.startswith("nb_frames="):
-                try:
-                    info.full_duration_frames = int(line.split("=", 1)[1])
-                    info.duration_resolved = info.full_duration_frames > 0
-                except ValueError:
-                    pass
-            elif line.startswith("duration="):
-                try:
-                    dur_secs = float(line.split("=", 1)[1])
-                except ValueError:
-                    pass
-        if info.full_duration_frames <= 0 and dur_secs > 0 and info.media_fps_resolved:
-            info.full_duration_frames = int(round(dur_secs * info.media_fps))
-            info.duration_resolved = info.full_duration_frames > 0
-
-        if info.resolved:
-            info.is_ntsc = ";" in info.timecode_string
-            if info.timecode_string in ("00:00:00:00", "00;00;00;00"):
-                info.resolved = False
+        if result.returncode == 0:
+            payload = json.loads(result.stdout or "{}")
+            if isinstance(payload, dict):
+                info = _ffprobe_json_to_source_info(payload)
 
     except FileNotFoundError:
         _warn_ffprobe_missing_once()
-    except (subprocess.TimeoutExpired, OSError):
+    except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
         # ffprobe timed out, or file inaccessible
         pass
 
