@@ -1,0 +1,125 @@
+name: Conversion Problem / 转换问题
+description: Report a PRPROJ/XML to Resolve conversion problem.
+title: "[Conversion]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a conversion problem.
+
+        Please do not upload private `.prproj`, XML, reports, logs, or media files
+        without checking them first. They may contain user names, absolute local
+        paths, project names, media paths, or client metadata.
+
+        感谢反馈转换问题。上传 `.prproj`、XML、报告、日志或素材前，请先检查并脱敏。
+        这些文件可能包含用户名、本地绝对路径、项目名、素材路径或客户信息。
+  - type: input
+    id: pr2resolve-version
+    attributes:
+      label: pr2resolve version / pr2resolve 版本
+      placeholder: "Example: 1.0.3"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / 操作系统
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: premiere-version
+    attributes:
+      label: Premiere Pro version / Premiere Pro 版本
+      placeholder: "Example: Premiere Pro 2025"
+    validations:
+      required: true
+  - type: input
+    id: resolve-version
+    attributes:
+      label: DaVinci Resolve version / DaVinci Resolve 版本
+      placeholder: "Example: DaVinci Resolve Studio 20"
+    validations:
+      required: false
+  - type: dropdown
+    id: input-format
+    attributes:
+      label: Input format / 输入格式
+      options:
+        - .prproj
+        - FCP7 XML exported from Premiere Pro
+        - Other XML
+    validations:
+      required: true
+  - type: dropdown
+    id: output-format
+    attributes:
+      label: Output format / 输出格式
+      options:
+        - FCP7 XML
+        - DRT
+        - DRP background
+        - DRP GUI
+        - Multiple outputs
+    validations:
+      required: true
+  - type: input
+    id: timeline-fps
+    attributes:
+      label: Timeline frame rate / 时间线帧率
+      placeholder: "Example: 23.976, 24, 25, 29.97 DF, 30, 50, 59.94"
+    validations:
+      required: true
+  - type: dropdown
+    id: reproducible
+    attributes:
+      label: Reproducibility / 是否稳定复现
+      options:
+        - Always / 总是
+        - Sometimes / 偶尔
+        - Only with one project / 仅这个工程
+        - Not sure / 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Minimal reproduction steps / 最小复现步骤
+      description: Include the exact CLI flags or TUI options used.
+      placeholder: |
+        1. Run ...
+        2. Import/open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result / 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result / 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or report excerpt / 日志或报告片段
+      description: Paste only the relevant excerpt. Remove private paths and project names.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check / 隐私检查
+      options:
+        - label: I removed private paths, project names, media paths, and client metadata.
+          required: true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and workflow discussion / 使用问题与流程讨论
+    url: https://github.com/Ersiter/pr2resolve/discussions
+    about: Ask usage questions, share workflow examples, or discuss unclear ideas.
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/Ersiter/pr2resolve/security/policy
+    about: Please do not report security vulnerabilities in public issues.

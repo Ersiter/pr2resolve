@@ -1,0 +1,54 @@
+name: Feature Request / 功能请求
+description: Suggest a focused improvement for pr2resolve.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the real editing or conversion workflow you want to improve.
+
+        请描述你想改善的真实剪辑或转换流程。
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Workflow or problem / 使用场景或问题
+      placeholder: What are you trying to do, and what blocks you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 期望行为
+      placeholder: Describe the smallest useful behavior change.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 涉及区域
+      options:
+        - .prproj parsing
+        - FCP7 XML output
+        - DRT output
+        - DRP output
+        - TUI
+        - CLI
+        - Build or release
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 考虑过的替代方案
+      description: Optional, but useful when the feature has tradeoffs.
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check / 范围确认
+      options:
+        - label: This request is focused on pr2resolve, not general Premiere Pro or DaVinci Resolve support.
+          required: true
