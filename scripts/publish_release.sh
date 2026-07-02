@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # pr2resolve — Release publisher
+# Maintainer fallback; the primary release path is .github/workflows/release.yml.
 # Aggregates dist/*/ artifacts from all 3 platforms and creates a GitHub Release.
 #
 # Prerequisites:
