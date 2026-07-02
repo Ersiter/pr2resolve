@@ -36,7 +36,7 @@ for cmd in python3 python; do
     fi
 done
 if [ -z "$PYTHON_CMD" ]; then
-    echo -e "${RED}ERROR: Python not found. Please install Python 3.8+${NC}"
+    echo -e "${RED}ERROR: Python not found. Please install Python 3.10+${NC}"
     exit 1
 fi
 

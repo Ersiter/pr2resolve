@@ -18,10 +18,12 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and D
 <!-- omit from toc -->
 ## Table of Contents
 
-- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
   - [Windows](#windows)
-  - [macOS / Linux](#macos--linux)
+  - [macOS](#macos)
+  - [Linux](#linux)
+  - [From Source](#from-source)
+- [Prerequisites](#prerequisites)
   - [TUI](#tui)
   - [CLI](#cli)
 - [What Can I Do](#what-can-i-do)
@@ -33,44 +35,78 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and D
 - [References](#references)
 - [License](#license)
 
----
-
-## Prerequisites
-
-**Windows users**: Download the latest `pr2resolve-v*-windows-x86_64.zip` from [Releases](https://github.com/Ersiter/pr2resolve/releases), extract, and run `pr2resolve.exe`. No Python required.
-
-**macOS / Linux users (and Windows users running from source)**:
-
-1. **Install Python 3.8+**  
-   - Download from [python.org](https://www.python.org/downloads/)  
-   - **Important**: Check `Add Python to PATH` during installation  
-   - Already installed but PATH is missing? Re-run the installer and check it this time
-
-2. **Verify**  
-   Open a terminal (cmd or bash) and run:
-   ```bash
-   python --version
-   ```
-
----
-
 ## Quick Start
 
-Download the [latest Release](https://github.com/Ersiter/pr2resolve/releases) or clone the source.
+Most users should download the matching package from the [latest Release](https://github.com/Ersiter/pr2resolve/releases/latest). Release packages include the executable and do not require Python.
 
 ### Windows
 
-**Standalone executable (recommended)**: Download `pr2resolve-v*-windows-x86_64.zip` from Releases, extract, then double-click `pr2resolve.exe` for the interactive TUI.
+Download `pr2resolve-v*-windows-x86_64.zip`, extract it, then double-click `pr2resolve.exe` for the interactive TUI.
 
-**From source**: Double-click `converter.bat`.
+### macOS
 
-### macOS / Linux
+Download `pr2resolve-v*-macos-*.tar.gz`, extract it, then run:
+
+```bash
+tar -xzf pr2resolve-v*-macos-*.tar.gz
+chmod +x pr2resolve
+./pr2resolve
+```
+
+If macOS blocks the unsigned binary, allow it in System Settings for this run or follow your local security policy.
+
+### Linux
+
+Download `pr2resolve-v*-linux-*.tar.gz`, extract it, then run:
+
+```bash
+tar -xzf pr2resolve-v*-linux-*.tar.gz
+chmod +x pr2resolve
+./pr2resolve
+```
+
+### From Source
+
+Use source mode when you need to edit, debug, or avoid release packages. Source mode requires Python 3.10+.
+
+Windows:
+
+```bat
+converter.bat
+```
+
+macOS / Linux:
 
 ```bash
 chmod +x converter.sh
 ./converter.sh
 ```
 
+You can also call the CLI directly:
+
+```bash
+python pr2resolve.py "project.prproj" -o ./output
+```
+
+---
+
+## Prerequisites
+
+- **Release package users**: Python is not required.
+- **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
+- **Reliable `.prproj` conversion**: FFmpeg is recommended on all three platforms, and `ffprobe` should be available on `PATH`. `ffprobe` is not a Python package.
+- **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
+
+pr2resolve can still export without `ffprobe`, but `.prproj` source media timecode, frame rate, and duration detection may be incomplete. That can produce shifted clips, offline-looking media, or broken timelines.
+
+Verify source-mode and `ffprobe` setup:
+
+```bash
+python --version
+ffprobe -version
+```
+
+---
 
 ### TUI
 
@@ -132,7 +168,7 @@ Two input formats:
 
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
-- DRT — needs DaVinci Studio; preserves Lumetri grades, speed curves, and other data XML can't hold
+- DRT — needs DaVinci Studio; exports timelines through the Resolve API and can supplement some Lumetri parameters
 - DRP — project export with all non-empty sequences
 
 ---
@@ -157,7 +193,7 @@ Three output formats:
 
 - **Why .prproj instead of XML export?**
 
-    PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with Lumetri params, speed curves, and keyframes intact. Feed it .prproj directly, no need to export XML first.
+    PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with richer timeline, media, and effect context. Feed it .prproj directly, no need to export XML first.
 
 - **When to use DRT?**
 
@@ -232,7 +268,7 @@ All rules apply automatically. They're not optional — skip them and the import
 2. **Nested sequences** — Frequently flattened or import fails.
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
-5. **Free DaVinci** — Scripting API is Studio-only. DRT/DRP won't work. XML is fine.
+5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
 6. **Lumetri isn't perfect** — XML path: removed. DRT path: basic params (Exposure, Contrast, Highlights, Shadows, Temperature, etc.) map to Color nodes. Vignette and Sharpen are approximate.
 
 ---

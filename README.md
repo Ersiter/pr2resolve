@@ -18,10 +18,12 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 <!-- omit from toc -->
 ## 目录
 
-- [使用前准备工作](#使用前准备工作)
 - [快速开始](#快速开始)
   - [Windows](#windows)
-  - [macOS / Linux](#macos--linux)
+  - [macOS](#macos)
+  - [Linux](#linux)
+  - [源码运行](#源码运行)
+- [使用前准备工作](#使用前准备工作)
   - [TUI内操作](#tui内操作)
   - [CLI](#cli)
 - [主要功能](#主要功能)
@@ -33,44 +35,78 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 - [参考](#参考)
 - [License](#license)
 
----
-
-## 使用前准备工作
-
-**Windows 用户**：下载 [最新 Release](https://github.com/Ersiter/pr2resolve/releases) 中的 `pr2resolve-v*-windows-x86_64.zip`，解压后双击 `pr2resolve.exe`，无需安装 Python。
-
-**macOS / Linux 用户（以及需要运行源码的 Windows 用户）**：
-
-1. **安装 Python 3**（要求 3.8 及以上）  
-   - 从 [python.org](https://www.python.org/downloads/) 下载安装包  
-   - **关键**：安装时务必勾选 `Add Python to PATH`（添加到环境变量）  
-   - 若已安装但未加 PATH，可重新运行安装程序勾选修复
-
-2. **验证安装**  
-   打开终端（cmd 或 bash），输入以下命令不报错即可：
-   ```bash
-   python --version
-   ```
-
----
-
 ## 快速开始
 
-下载[最新 Release](https://github.com/Ersiter/pr2resolve/releases) 或克隆源码。
+普通用户优先下载 [最新 Release](https://github.com/Ersiter/pr2resolve/releases/latest) 中对应平台的压缩包。Release 包自带可执行文件，不需要安装 Python。
 
 ### Windows
 
-**独立可执行文件（推荐）**：下载 Release 中的 `pr2resolve-v*-windows-x86_64.zip`，解压后双击 `pr2resolve.exe`，进入交互式 TUI。
+下载 `pr2resolve-v*-windows-x86_64.zip`，解压后双击 `pr2resolve.exe`，进入交互式 TUI。
 
-**源码运行**：双击 `converter.bat`。
+### macOS
 
-### macOS / Linux
+下载 `pr2resolve-v*-macos-*.tar.gz`，解压后运行：
+
+```bash
+tar -xzf pr2resolve-v*-macos-*.tar.gz
+chmod +x pr2resolve
+./pr2resolve
+```
+
+如果 macOS 阻止未签名二进制，请在系统安全设置中允许本次运行，或按你的本机安全策略处理。
+
+### Linux
+
+下载 `pr2resolve-v*-linux-*.tar.gz`，解压后运行：
+
+```bash
+tar -xzf pr2resolve-v*-linux-*.tar.gz
+chmod +x pr2resolve
+./pr2resolve
+```
+
+### 源码运行
+
+需要改代码、调试或不使用 Release 包时，再使用源码运行。源码运行需要 Python 3.10+。
+
+Windows：
+
+```bat
+converter.bat
+```
+
+macOS / Linux：
 
 ```bash
 chmod +x converter.sh
 ./converter.sh
 ```
 
+也可以直接使用 CLI：
+
+```bash
+python pr2resolve.py "project.prproj" -o ./output
+```
+
+---
+
+## 使用前准备工作
+
+- **Release 包用户**：不需要安装 Python。
+- **源码运行用户**：需要 Python 3.10+。Windows 安装时建议勾选 `Add Python to PATH`。
+- **可靠 `.prproj` 转换**：三平台都建议安装 FFmpeg，并确保 `ffprobe` 在 `PATH` 中可用。`ffprobe` 不是 Python 包。
+- **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
+
+`ffprobe` 缺失时 pr2resolve 仍会尝试导出，但 `.prproj` 源素材 timecode、帧率和完整时长检测可能不完整，容易导致片段错位、素材离线或时间线异常。
+
+验证源码和 `ffprobe` 环境：
+
+```bash
+python --version
+ffprobe -version
+```
+
+---
 
 ### TUI内操作
 
@@ -132,7 +168,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 三种输出格式：
 - FCP7 XML — 零依赖，所有达芬奇版本均可导入
-- DRT — 需达芬奇 Studio，可保留 Lumetri 调色、变速曲线等 FCP7 XML 无法承载的数据
+- DRT — 需达芬奇 Studio，可通过 Resolve API 导出时间线并补充部分 Lumetri 参数
 - DRP — 达芬奇工程导出，包含所有非空序列的完整项目结构
 
 ---
@@ -157,7 +193,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **为什么推荐 .prproj 而非导出 XML？**
 
-    PR 自带的 XML 导出是二次加工——先生成删减版 XML 再输出，数据已失真。.prproj 是 PR 原生工程文件（gzip 压缩的 XML），Lumetri 参数、变速曲线、关键帧均完整保留。直接提供 .prproj 即可，无需先导出 XML 再修正。
+    PR 自带的 XML 导出是二次加工——先生成删减版 XML 再输出，数据已失真。.prproj 是 PR 原生工程文件（gzip 压缩的 XML），可提供更多时间线、素材和效果上下文。直接提供 .prproj 即可，无需先导出 XML 再修正。
 
 - **DRT 的使用场景？**
 
@@ -232,7 +268,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 2. **嵌套序列** — 经常被展平或导入失败。
 3. **素材移动** — XML 存储绝对路径，素材搬移后需在达芬奇 relink。
 4. **达芬奇导入设置** — 建议取消 "Use sizing information"，避免双重缩放。
-5. **免费版达芬奇** — Scripting API 为 Studio 专属，DRT/DRP 不可用。XML 不受影响。
+5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
 6. **Lumetri 不能完美还原** — XML 路径直接删除 Lumetri。DRT 路径可映射基本参数（曝光/对比度/高光/阴影/色温等）到 Color 节点；Vignette、Sharpen 等仅能近似。
 
 ---
