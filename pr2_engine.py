@@ -32,10 +32,10 @@ from pr2_constants import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Source TC lazy cache — avoids redundant ffprobe calls for shared media
+# Source metadata is read from the .prproj object graph.  A project conversion
+# must remain useful when the referenced media is offline or on another machine.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_SourceTCCache: dict[str, _SourceTCInfo] = {}
 _ffprobe_missing_warned: bool = False
 
 # Scale-to-frame preservation flag (read from .prproj ShouldScaleMedia)
@@ -1543,7 +1543,7 @@ def _prproj_ticks_to_frames(ticks_str: str, fps: float) -> int:
         ticks = int(ticks_str)
     except (ValueError, TypeError):
         return 0
-    if ticks <= 0:
+    if ticks < 0:
         return 0
     # pproTicks per second = 254016000000
     ppro_ticks_per_sec = 254016000000
@@ -1571,10 +1571,14 @@ def _prproj_get_source_resolution(
     """
     mc_lower = mc_name.lower()
     for media_el in prproj_root.findall("Media"):
-        fp = media_el.findtext("FilePath", "")
-        if not fp:
-            continue
-        if Path(fp.replace("\\", "/")).name.lower() != mc_lower:
+        media_names = (
+            media_el.findtext("FilePath", ""),
+            media_el.findtext("ActualMediaFilePath", ""),
+            media_el.findtext("RelativePath", ""),
+            media_el.findtext("Title", ""),
+        )
+        if not any(Path(value.replace("\\", "/")).name.lower() == mc_lower
+                   for value in media_names if value):
             continue
         vs_el = media_el.find("VideoStream")
         if vs_el is None:
@@ -1589,8 +1593,11 @@ def _prproj_get_source_resolution(
         if frame_rect:
             parts = frame_rect.split(",")
             if len(parts) == 4:
-                w = int(parts[2])
-                h = int(parts[3])
+                try:
+                    w = int(parts[2])
+                    h = int(parts[3])
+                except ValueError:
+                    continue
                 if w > 0 and h > 0:
                     return (w, h)
         break
@@ -1617,9 +1624,6 @@ def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bo
     if display_fps <= 0:
         display_fps = 30
     sep = ";" if is_ntsc else ":"
-
-    if total_frames == 0:
-        return f"00:00:00:00"
 
     # ── Drop-frame: apply only to 29.97/59.94, NOT 23.976 ──
     is_dropframe = is_ntsc and display_fps in (30, 60)
@@ -1694,9 +1698,11 @@ def _prproj_extract_source_tc_info(
     if li is None:
         return info
     li_ref = li.get("ObjectRef")
-    if not li_ref:
-        return info
-    cli = idx.resolve_ref(li_ref)
+    if li_ref:
+        cli = idx.resolve_ref(li_ref)
+    else:
+        li_ref = li.get("ObjectURef")
+        cli = idx.resolve_uref(li_ref) if li_ref else None
     if cli is None:
         return info
 
@@ -1718,7 +1724,9 @@ def _prproj_extract_source_tc_info(
     if mip_text and mip_text.strip():
         try:
             mip_ticks = int(mip_text)
-            if mip_ticks > 0:
+            # Zero is a valid project timecode (for example camera clips
+            # recorded from midnight); only a negative value is invalid.
+            if mip_ticks >= 0:
                 info.timecode_frame = _prproj_ticks_to_frames(
                     str(mip_ticks), info.media_fps
                 )
@@ -2447,6 +2455,32 @@ def _prproj_extract_all_lumetri(
     return lumetri_data
 
 
+def _prproj_find_media_for_clip(
+    clip_el: ET.Element,
+    idx: _PrprojIndex,
+) -> tuple[str, str, ET.Element | None]:
+    """Resolve a clip's media through its project object graph.
+
+    VideoClip/AudioClip → Clip/Source → *MediaSource/Media* is the stable
+    identity chain.  It remains valid when a file has been renamed or moved.
+    """
+    inner = clip_el.find("Clip")
+    source_ref = inner.find("Source") if inner is not None else None
+    source = idx.resolve_ref(source_ref.get("ObjectRef", "")) if source_ref is not None else None
+    media_ref = source.find("MediaSource/Media") if source is not None else None
+    if media_ref is None and source is not None:
+        media_ref = source.find("Media/Media")
+    media = None
+    if media_ref is not None:
+        media = idx.resolve_uref(media_ref.get("ObjectURef", ""))
+        if media is None:
+            media = idx.resolve_ref(media_ref.get("ObjectRef", ""))
+    if media is None:
+        return "", "", None
+    path = media.findtext("FilePath") or media.findtext("ActualMediaFilePath")
+    return path or media.findtext("RelativePath", ""), media.get("ObjectUID", ""), media
+
+
 def _extract_clip(
     cti: ET.Element,
     idx: _PrprojIndex,
@@ -2463,6 +2497,7 @@ def _extract_clip(
     subclip = cti.find("SubClip")
     mc_name = "(unknown)"
     media_path = ""
+    media_id = ""
     in_point = 0
     out_point = 0
     playback_speed = 100
@@ -2491,41 +2526,26 @@ def _extract_clip(
                 mc_uref = mc_uref_el.get("ObjectURef")
                 mc_el = idx.resolve_uref(mc_uref) if mc_uref else None
                 if mc_el is not None:
-                    for media_el in prproj_root.findall("Media"):
-                        mfp = media_el.findtext("FilePath")
-                        if not mfp:
-                            continue
-                        if Path(mfp.replace("\\", "/")).name.lower() == mc_name.lower():
-                            media_path = mfp
-                            break
                     source_tc = _prproj_extract_source_tc_info(mc_el, idx)
-                    if media_path:
-                        local = Path(media_path)
-                        if local.exists():
-                            local_str = str(local)
-                            if local_str in _SourceTCCache:
-                                source_tc = _merge_source_tc_info(source_tc, _SourceTCCache[local_str])
-                            else:
-                                ff_tc = _ffprobe_read_timecode(local_str)
-                                merged_tc = _merge_source_tc_info(source_tc, ff_tc)
-                                if not merged_tc.resolved:
-                                    tmcd_tc = _read_dji_tmcd_timecode(local_str)
-                                    if tmcd_tc is not None:
-                                        merged_tc = _merge_source_tc_info(merged_tc, tmcd_tc)
-                                if not merged_tc.resolved:
-                                    mov_tc = _read_mov_creation_time_tc(local_str)
-                                    if mov_tc is not None:
-                                        merged_tc = _merge_source_tc_info(merged_tc, mov_tc)
-                                _SourceTCCache[local_str] = copy.deepcopy(merged_tc)
-                                source_tc = merged_tc
-                    sr = _prproj_get_source_resolution(prproj_root, mc_name, idx)
-                    if sr[0] > 0 and sr[1] > 0:
-                        src_w, src_h = sr
             clip_ref_el = sc_el.find("Clip")
             if clip_ref_el is not None:
                 clip_ref = clip_ref_el.get("ObjectRef")
                 clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
                 if clip_el is not None:
+                    graph_path, graph_id, graph_media = _prproj_find_media_for_clip(clip_el, idx)
+                    if graph_path:
+                        media_path = graph_path
+                    media_id = graph_id
+                    if graph_media is not None:
+                        vs_ref = graph_media.find("VideoStream")
+                        vs = idx.resolve_ref(vs_ref.get("ObjectRef", "")) if vs_ref is not None else None
+                        rect = vs.findtext("FrameRect", "") if vs is not None else ""
+                        parts = rect.split(",")
+                        if len(parts) == 4:
+                            try:
+                                src_w, src_h = int(parts[2]), int(parts[3])
+                            except ValueError:
+                                pass
                     inner = clip_el.find("Clip")
                     if inner is not None:
                         ip = inner.findtext("InPoint")
@@ -2586,7 +2606,7 @@ def _extract_clip(
                                 rotation_val = val
 
     return ClipData(
-        name=mc_name, media_path=media_path,
+        name=mc_name, media_path=media_path, media_id=media_id,
         start=start, end=end, in_pt=in_point, out_pt=out_point,
         playback_speed=playback_speed, source_tc=source_tc,
         source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
@@ -2692,7 +2712,7 @@ def _prproj_parse_sequence(
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
     _file_ids: dict[str, FileData] = {}  # media_name → FileData
-    _link_groups: dict[str, list[LinkMember]] = {}
+    _clipitem_by_track_item: dict[str, LinkMember] = {}
 
     def _next_ci_id(name: str) -> str:
         cid = f"{name} {_id_counter[0]}"
@@ -2909,10 +2929,12 @@ def _prproj_parse_sequence(
                         duration=file_dur_val, timecode=cl.source_tc,
                         source_w=cl.source_w, source_h=cl.source_h,
                     )
-                    _file_ids.setdefault(cl.name, fd)
+                    file_key = cl.media_id or cl.media_path or cl.name
+                    _file_ids.setdefault(file_key, fd)
                     ci_id = _next_ci_id(cl.name)
-                    _link_groups.setdefault(cl.name, []).append(
-                        LinkMember(clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx))
+                    if ti_el.get("ObjectID"):
+                        _clipitem_by_track_item[ti_el.get("ObjectID", "")] = LinkMember(
+                            clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx)
                     ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
                     fcp_track.append(ci)
 
@@ -2954,11 +2976,13 @@ def _prproj_parse_sequence(
                     clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
 
                     ci_id = _next_ci_id(cl.name)
-                    _link_groups.setdefault(cl.name, []).append(
-                        LinkMember(clipitem_id=ci_id, mediatype="audio", track_index=at_idx, clip_index=ac_idx))
+                    if a_ti_el.get("ObjectID"):
+                        _clipitem_by_track_item[a_ti_el.get("ObjectID", "")] = LinkMember(
+                            clipitem_id=ci_id, mediatype="audio", track_index=at_idx, clip_index=ac_idx)
 
                     # File: shared ref or full standalone
-                    existing_fd = _file_ids.get(cl.name)
+                    file_key = cl.media_id or cl.media_path or cl.name
+                    existing_fd = _file_ids.get(file_key)
                     if existing_fd is not None:
                         fd = existing_fd
                         is_shared = True
@@ -2969,7 +2993,7 @@ def _prproj_parse_sequence(
                             duration=file_dur_val, timecode=cl.source_tc,
                             source_w=cl.source_w, source_h=cl.source_h, for_audio_only=True,
                         )
-                        _file_ids[cl.name] = fd
+                        _file_ids[file_key] = fd
                         is_shared = False
 
                     a_ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "audio", is_shared_file=is_shared)
@@ -2981,20 +3005,39 @@ def _prproj_parse_sequence(
     # ═══════════════════════════════════════════════════════════════════
     # PASS 3: Link elements (DC convention: linkclipref + mediatype for audio)
     # ═══════════════════════════════════════════════════════════════════
-    def _resolve_links(
-        groups: dict[str, list[LinkMember]],
-    ) -> list[LinkGroup]:
-        """Resolve link groups from raw registrations. Pure data, no ET."""
-        result = []
-        for name, members in groups.items():
+    def _resolve_project_links() -> list[LinkGroup]:
+        """Resolve Premiere Link objects using their TrackItem references.
+
+        Name based grouping is unsafe: two independently edited clips may
+        share a filename.  The project Link object is the authoritative sync
+        relationship, and only links whose track items are in this sequence
+        are emitted.
+        """
+        result: list[LinkGroup] = []
+        for link_el in prproj_root.findall("Link"):
+            link_ref = link_el.get("ObjectRef")
+            link = link_el
+            if link.find("TrackItemGroup") is None:
+                link = idx.resolve_ref(link_ref) if link_ref else None
+            if link is None:
+                continue
+            members: list[LinkMember] = []
+            tracks = link.find("TrackItemGroup/TrackItems")
+            if tracks is None:
+                continue
+            for track_ref in tracks.findall("TrackItem"):
+                ti_ref = track_ref.get("ObjectRef")
+                member = _clipitem_by_track_item.get(ti_ref or "")
+                if member is not None and member not in members:
+                    members.append(member)
             if len(members) < 2:
                 continue
-            first_vid = None
-            for m in members:
-                if m.mediatype == "video":
-                    first_vid = m.clipitem_id
-                    break
-            result.append(LinkGroup(media_name=name, members=list(members), first_video_id=first_vid))
+            first_video = next((m.clipitem_id for m in members if m.mediatype == "video"), None)
+            result.append(LinkGroup(
+                media_name=f"project-link-{link_ref or len(result)}",
+                members=members,
+                first_video_id=first_video,
+            ))
         return result
 
     def _render_links_for_clipitem(
@@ -3027,7 +3070,7 @@ def _prproj_parse_sequence(
             ci.insert(ins_pos, el)
             ins_pos += 1
 
-    for group in _resolve_links(_link_groups):
+    for group in _resolve_project_links():
         for m in group.members:
             ci = None
             if m.mediatype == "video":

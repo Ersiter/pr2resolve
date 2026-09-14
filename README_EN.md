@@ -94,16 +94,13 @@ python pr2resolve.py "project.prproj" -o ./output
 
 - **Release package users**: Python is not required.
 - **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
-- **Reliable `.prproj` conversion**: FFmpeg is recommended on all three platforms, and `ffprobe` should be available on `PATH`. `ffprobe` is not a Python package.
+- **Pure-data `.prproj` conversion**: media paths, frame rates, timecode, duration, and resolution are read from the `.prproj` object graph, so source media may be offline or unavailable on the current machine.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
-pr2resolve can still export without `ffprobe`, but `.prproj` source media timecode, frame rate, and duration detection may be incomplete. That can produce shifted clips, offline-looking media, or broken timelines.
-
-Verify source-mode and `ffprobe` setup:
+Verify source-mode setup:
 
 ```bash
 python --version
-ffprobe -version
 ```
 
 ---

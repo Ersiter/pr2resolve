@@ -73,6 +73,7 @@ class ClipData:
 
     name: str                             # SubClip→MasterClip→Name
     media_path: str = ""                  # full local path to media file
+    media_id: str = ""                    # stable project Media ObjectUID
     start: int = 0                        # timeline start (ticks→frames)
     end: int = 0                          # timeline end (ticks→frames)
     in_pt: int = 0                        # source in-point (Clip→InPoint)

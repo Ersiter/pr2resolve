@@ -94,16 +94,13 @@ python pr2resolve.py "project.prproj" -o ./output
 
 - **Release 包用户**：不需要安装 Python。
 - **源码运行用户**：需要 Python 3.10+。Windows 安装时建议勾选 `Add Python to PATH`。
-- **可靠 `.prproj` 转换**：三平台都建议安装 FFmpeg，并确保 `ffprobe` 在 `PATH` 中可用。`ffprobe` 不是 Python 包。
+- **纯数据 `.prproj` 转换**：工程中的素材路径、帧率、时码、时长和分辨率直接从 `.prproj` 对象图读取，源素材可以离线或不在本机。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
-`ffprobe` 缺失时 pr2resolve 仍会尝试导出，但 `.prproj` 源素材 timecode、帧率和完整时长检测可能不完整，容易导致片段错位、素材离线或时间线异常。
-
-验证源码和 `ffprobe` 环境：
+验证源码环境：
 
 ```bash
 python --version
-ffprobe -version
 ```
 
 ---
