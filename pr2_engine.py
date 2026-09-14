@@ -1675,6 +1675,7 @@ def _prproj_frames_to_timecode_string(total_frames: int, fps: float, is_ntsc: bo
 def _prproj_extract_source_tc_info(
     mc_el: ET.Element,
     idx: _PrprojIndex,
+    timing_fps: float | None = None,
 ) -> _SourceTCInfo:
     """Extract source media timecode and frame rate from a MasterClip element.
 
@@ -1717,6 +1718,13 @@ def _prproj_extract_source_tc_info(
                 info.media_fps_resolved = True
         except (ValueError, TypeError):
             pass
+    if timing_fps is not None and info.media_fps_resolved:
+        # Audio-only LoggingInfo can report its sample clock as MediaFrameRate.
+        # Decode all tick-based metadata in the sequence time domain while
+        # retaining the original clock separately for audio metadata output.
+        info.sample_rate = int(round(info.media_fps))
+        info.media_fps = timing_fps
+        info.media_fps_resolved = False
     info.is_ntsc = _is_ntsc_fps(info.media_fps)
 
     # Extract MediaInPoint (pproTicks → timecode)
@@ -2488,6 +2496,8 @@ def _extract_clip(
     default_w: int,
     default_h: int,
     fps: float,
+    *,
+    is_audio: bool = False,
 ) -> ClipData:
     """Extract ClipData from a .prproj ClipTrackItem chain.
 
@@ -2536,6 +2546,15 @@ def _extract_clip(
                     if graph_path:
                         media_path = graph_path
                     media_id = graph_id
+                    pure_audio = (
+                        is_audio
+                        and graph_media is not None
+                        and graph_media.find("VideoStream") is None
+                    )
+                    if pure_audio and source_tc.media_fps_resolved:
+                        # Only audio-only media uses MediaFrameRate as a sample
+                        # clock; linked audio keeps the video's source timing.
+                        source_tc = _prproj_extract_source_tc_info(mc_el, idx, timing_fps=fps)
                     if graph_media is not None:
                         vs_ref = graph_media.find("VideoStream")
                         vs = idx.resolve_ref(vs_ref.get("ObjectRef", "")) if vs_ref is not None else None
@@ -2556,7 +2575,7 @@ def _extract_clip(
                         if op is not None:
                             clip_fps = _effective_source_fps(source_tc, fps)
                             out_point = _prproj_ticks_to_frames(op, clip_fps)
-                        if _has_resolved_source_duration(source_tc):
+                        if not is_audio and _has_resolved_source_duration(source_tc):
                             in_point = min(in_point, source_tc.full_duration_frames)
                             out_point = min(out_point, source_tc.full_duration_frames)
                     ps = inner.findtext("PlaybackSpeed") if inner is not None else None
@@ -2670,6 +2689,18 @@ def _prproj_parse_sequence(
                 if tg_el is not None:
                     if tg_el.tag == "VideoTrackGroup":
                         video_tg = tg_el
+                        # PreviewFrameSize describes the monitor/render preview,
+                        # while FrameRect is the actual sequence raster used by
+                        # Premiere's VideoTrackGroup.
+                        frame_rect = tg_el.findtext("FrameRect", "")
+                        rect_parts = frame_rect.split(",")
+                        if len(rect_parts) == 4:
+                            try:
+                                rect_w, rect_h = int(rect_parts[2]), int(rect_parts[3])
+                                if rect_w > 0 and rect_h > 0:
+                                    w, h = rect_w, rect_h
+                            except ValueError:
+                                pass
                         fr = tg_el.find(".//FrameRate")
                         if fr is not None and fr.text:
                             try:
@@ -2703,6 +2734,14 @@ def _prproj_parse_sequence(
         ET.SubElement(tc_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
         media = ET.SubElement(sequence, "media")
         video_section = ET.SubElement(media, "video")
+        video_format = ET.SubElement(video_section, "format")
+        sample_chars = ET.SubElement(video_format, "samplecharacteristics")
+        sample_rate = ET.SubElement(sample_chars, "rate")
+        ET.SubElement(sample_rate, "timebase").text = str(timebase)
+        ET.SubElement(sample_rate, "ntsc").text = "TRUE" if is_ntsc else "FALSE"
+        ET.SubElement(sample_chars, "width").text = str(w)
+        ET.SubElement(sample_chars, "height").text = str(h)
+        ET.SubElement(sample_chars, "pixelaspectratio").text = "square"
         audio_section = ET.SubElement(media, "audio")
         return xmeml, dur_elem, video_section, audio_section
 
@@ -2754,6 +2793,9 @@ def _prproj_parse_sequence(
             ET.SubElement(fvsc, "height").text = str(fd.source_h)
         fa = ET.SubElement(fmedia, "audio")
         ET.SubElement(fa, "channelcount").text = "2"
+        if fd.for_audio_only and tc_info.sample_rate > 0:
+            f_audio_sc = ET.SubElement(fa, "samplecharacteristics")
+            ET.SubElement(f_audio_sc, "samplerate").text = str(tc_info.sample_rate)
         return fe
 
     # ─── Helper: build DC-format filters ────────────────────────────
@@ -2830,6 +2872,12 @@ def _prproj_parse_sequence(
                                 media_type="audio", effect_category="audiopan", start="0", end=dur_s,
                                 params=[FilterParam("Pan", "pan", "0", "-1", "1")]))
         return specs
+
+    def _file_duration(cl: ClipData, timeline_duration: int) -> int:
+        """Return a source-rate file duration covering the trimmed clip."""
+        source_fps = _effective_source_fps(cl.source_tc, fps)
+        source_span = int(round(timeline_duration * source_fps / fps)) if fps > 0 else 0
+        return max(cl.in_pt, cl.out_pt, source_span, 0)
 
     # ─── Helper: build DC-format transition ─────────────────────────
     def _render_transition(td: TransitionData) -> ET.Element:
@@ -2922,8 +2970,11 @@ def _prproj_parse_sequence(
                     cl = _extract_clip(cti, idx, prproj_root, w, h, fps)
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
-                    clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
-                    file_dur_val = cl.source_tc.full_duration_frames if _has_resolved_source_duration(cl.source_tc) else clip_dur
+                    # Duration follows sequence-rate timeline coordinates; in/out remain source-rate.
+                    clip_dur = max(cl.end - start, 0)
+                    file_dur_val = (cl.source_tc.full_duration_frames
+                                    if _has_resolved_source_duration(cl.source_tc)
+                                    else _file_duration(cl, clip_dur))
                     fd = FileData(
                         id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
                         duration=file_dur_val, timecode=cl.source_tc,
@@ -2970,10 +3021,10 @@ def _prproj_parse_sequence(
                     a_cti = a_ti_el.find("ClipTrackItem")
                     if a_cti is None:
                         continue
-                    cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps)
+                    cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps, is_audio=True)
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
-                    clip_dur = cl.out_pt - cl.in_pt if cl.out_pt > cl.in_pt else cl.end - start
+                    clip_dur = max(cl.end - start, 0)
 
                     ci_id = _next_ci_id(cl.name)
                     if a_ti_el.get("ObjectID"):
@@ -2987,7 +3038,9 @@ def _prproj_parse_sequence(
                         fd = existing_fd
                         is_shared = True
                     else:
-                        file_dur_val = cl.source_tc.full_duration_frames if _has_resolved_source_duration(cl.source_tc) else clip_dur
+                        file_dur_val = (cl.source_tc.full_duration_frames
+                                        if _has_resolved_source_duration(cl.source_tc)
+                                        else _file_duration(cl, clip_dur))
                         fd = FileData(
                             id=_next_fi_id(cl.name), name=cl.name, path=cl.media_path,
                             duration=file_dur_val, timecode=cl.source_tc,

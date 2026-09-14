@@ -55,6 +55,7 @@ class _SourceTCInfo:
 
     media_fps: float = 30.0               # actual source FPS (e.g. 59.94)
     media_fps_resolved: bool = False      # True if source FPS is known
+    sample_rate: int = 0                  # audio sample rate when source is audio-only
     is_ntsc: bool = False                  # whether source rate is NTSC
     timecode_frame: int = 0                # timecode start in source-rate frames
     timecode_string: str = "00:00:00:00"   # formatted TC string
