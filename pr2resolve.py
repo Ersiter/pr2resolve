@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """pr2resolve - Premiere Pro to DaVinci Resolve timeline converter.
 
-Dual-entry (FCP7 XML / .prproj) -> Unified Timeline Model -> FCP7 XML / DRT output.
+Dual-entry (FCP7 XML / .prproj) -> Unified Timeline Model -> FCP7 XML / DRT / DRP output.
 
 Thin CLI entry point. Core logic lives in pr2_engine.py.
 Constants and data models live in pr2_constants.py.
@@ -30,7 +30,7 @@ from pr2_engine import (
     _scan, _apply_fixes, _validate,
     _write_fixed_xml, _generate_report, _make_output_name,
     _PrprojIndex, _prproj_parse_sequence, _prproj_list_sequences,
-    _prproj_extract_all_lumetri, _lumetri_conversion_summary,
+    _prproj_extract_all_lumetri, _lumetri_conversion_summary, _prproj_get_color_profiles,
     _check_resolve_running, _ensure_resolve_running,
     _drt_sandbox_export,
     _drt_batch_export, _drp_export, _recycle,
@@ -496,17 +496,20 @@ def _run_pipeline(
                     _apply_fixes(fcp, issues_s)
                     native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
                     if native_grades:
-                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records; {_lumetri_conversion_summary(native_grades)}; bundled LUT approximation is applied")
+                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records; {_lumetri_conversion_summary(native_grades)}; static point operations are applied")
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
-                    export_native_drp(fcp, destination, input_path.stem, native_grades)
+                    profiles = _prproj_get_color_profiles(prproj_root, selected_sequence["uid"])
+                    export_native_drp(fcp, destination, input_path.stem, native_grades, profiles)
                     native_outputs.append(destination)
                     print(f"    Native DRP {index}: {destination}")
             else:
                 if lumetri_data:
-                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records; {_lumetri_conversion_summary(lumetri_data)}; bundled LUT approximation is applied")
-                export_native_drp(root, native_drp, input_path.stem, lumetri_data)
+                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records; {_lumetri_conversion_summary(lumetri_data)}; static point operations are applied")
+                profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
+                            if prproj_root is not None and selected_seqs else None)
+                export_native_drp(root, native_drp, input_path.stem, lumetri_data, profiles)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")
         except Exception as exc:

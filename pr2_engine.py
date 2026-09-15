@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from pr2_constants import (
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
     FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo, LumetriGrade, LumetriParameter,
+    LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -1196,7 +1198,7 @@ def _to_fcp7_pathurl(filepath: str) -> str:
       file://localhost/E:/path/to/file.mov
 
     Args:
-        filepath: Absolute Windows path (e.g. ``E:\\HW\\...``)
+        filepath: Native absolute media path
 
     Returns:
         DaVinci-compatible file://localhost/ URI
@@ -1829,7 +1831,7 @@ def _prproj_extract_lumetri(
             if start_value is not None and raw:
                 digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
                 try:
-                    decoded_digest = hashlib.sha256(base64.b64decode(raw, validate=True)).hexdigest()
+                    decoded_digest = hashlib.sha256(base64.b64decode(raw.strip(), validate=True)).hexdigest()
                 except (ValueError, TypeError):
                     decoded_digest = ""
             else:
@@ -1852,9 +1854,7 @@ def _prproj_extract_lumetri(
                 start_value_encoding=start_value.get("Encoding", "") if start_value is not None else "",
                 decoded_sha256=decoded_digest,
             ))
-            # These controls are decoded and retained, but only 11/12/20 have
-            # a verified Resolve representation in the current native path.
-            unsupported_defaults = {
+            defaults = {
                 "7": 0.0, "8": 0.0, "13": 0.0, "14": 0.0, "15": 0.0,
                 "16": 0.0, "26": 100.0, "28": 0.0, "29": 0.0, "30": 0.0,
                 "31": 100.0, "33": 0.0, "51": 0.0, "52": 50.0,
@@ -1863,55 +1863,46 @@ def _prproj_extract_lumetri(
                 "86": 0.0, "87": 0.0, "88": 0.0, "89": 0.0,
                 "90": 100.0, "123": 50.0,
             }
-            if parameter_id in unsupported_defaults:
-                if param.findtext("IsTimeVarying", "false").lower() == "true":
-                    warnings.append(f"animated unsupported parameter {parameter_id}")
-                    records[-1].conversion = "unsupported"
-                    records[-1].reason = "animated"
-                    continue
-                sk = param.findtext("StartKeyframe", "")
-                try:
-                    value = float(sk.split(",")[1])
-                except (IndexError, ValueError):
-                    records[-1].conversion = "invalid"
-                    records[-1].reason = "missing or non-numeric value"
-                    continue
-                if math.isfinite(value):
-                    params[parameter_id] = value
-                if math.isfinite(value) and abs(value - unsupported_defaults[parameter_id]) > 1e-9:
-                    warnings.append(f"unsupported parameter {parameter_id} changed")
-                    records[-1].conversion = "unsupported"
-                    records[-1].reason = "unsupported changed value"
-                elif not math.isfinite(value):
-                    records[-1].conversion = "invalid"
-                    records[-1].reason = "non-finite value"
-                continue
-            if parameter_id not in {"11", "12", "20"}:
-                records[-1].conversion = "preserved"
-                continue
-            sk = param.findtext("StartKeyframe", "")
-            if param.findtext("IsTimeVarying", "false").lower() == "true":
-                warnings.append(f"animated parameter {parameter_id}")
+            defaults.update({"11": 0.0, "12": 0.0, "20": 100.0})
+            if records[-1].is_time_varying:
+                warnings.append(f"animated parameter {parameter_id} preserved")
                 records[-1].conversion = "unsupported"
                 records[-1].reason = "animated"
                 continue
-            if not sk:
-                warnings.append(f"missing static value {parameter_id}")
-                records[-1].conversion = "invalid"
-                records[-1].reason = "missing static value"
-                continue
-
-            # Parse StartKeyframe: "ticks,value,..." — value is field[1]
-            parts = sk.split(",")
-            if len(parts) >= 2:
+            if encoding == "scalar":
+                parts = raw.split(",")
+                candidate = parts[1] if len(parts) >= 2 else raw
                 try:
-                    val = float(parts[1])
-                    params[parameter_id] = val
-                    records[-1].conversion = "candidate"
+                    normalized = candidate.strip().lower()
+                    value = {"true": 1.0, "false": 0.0}[normalized] if normalized in {"true", "false"} else float(candidate)
                 except ValueError:
-                    warnings.append(f"invalid value {parameter_id}")
+                    records[-1].conversion = "invalid" if parameter_id in LUMETRI_POINTWISE_IDS else "preserved"
+                    records[-1].reason = "non-numeric point value" if parameter_id in LUMETRI_POINTWISE_IDS else ""
+                    continue
+                if not math.isfinite(value):
                     records[-1].conversion = "invalid"
-                    records[-1].reason = "non-numeric value"
+                    records[-1].reason = "non-finite value"
+                    continue
+                params[parameter_id] = value
+                if parameter_id in LUMETRI_POINTWISE_IDS:
+                    records[-1].conversion = "candidate"
+                elif parameter_id in LUMETRI_SPATIAL_IDS and abs(value - defaults.get(parameter_id, value)) > 1e-9:
+                    records[-1].conversion = "unsupported"
+                    records[-1].reason = "spatial operation preserved"
+                    warnings.append(f"spatial parameter {parameter_id} preserved")
+                elif parameter_id in defaults:
+                    records[-1].conversion = "identity"
+                else:
+                    records[-1].conversion = "preserved"
+            elif not raw:
+                records[-1].conversion = "identity" if parameter_id in LUMETRI_POINTWISE_IDS else "preserved"
+            elif not decoded_digest:
+                records[-1].conversion = "invalid"
+                records[-1].reason = "invalid base64 payload"
+            elif parameter_id in LUMETRI_POINTWISE_IDS:
+                records[-1].conversion = "candidate"
+            else:
+                records[-1].conversion = "preserved"
 
     return params, warnings, records
 
@@ -3159,19 +3150,16 @@ def _drp_export(
 
         media_pool = project.GetMediaPool()
 
-        # ── Set color science to match Premiere BT.709 workflow ──
-        color_profile = "BT.709,8-bit,Display-Referred"  # default
+        # ── Set project color science from the first exported sequence ──
+        profiles_by_name: dict[str, dict[str, Any]] = {}
         if prproj_root is not None:
-            cp = _prproj_get_color_profile(prproj_root)
-            if cp:
-                color_profile = cp
-                profiles = _prproj_get_color_profiles(prproj_root)
-                print(f"  Premiere color profile: output={color_profile}; working={profiles.get('WorkingColorSpace', 'unknown')}; media={profiles.get('media', 'unknown')}")
-        if "BT.709" in color_profile or "Rec.709" in color_profile:
-            try:
-                project.SetSetting("colorScience", "0")  # DaVinci YRGB
-            except Exception:
-                pass
+            index = _PrprojIndex.build(prproj_root)
+            for sequence in _prproj_list_sequences(prproj_root, index):
+                profiles_by_name[sequence["name"]] = _prproj_get_color_profiles(prproj_root, sequence["uid"])
+        project_profiles = profiles_by_name.get(sequence_names[0], {}) if sequence_names else {}
+        if project_profiles:
+            print(f"  Premiere color profile: output={project_profiles.get('OutputColorSpace', 'unknown')}; working={project_profiles.get('WorkingColorSpace', 'unknown')}; media={project_profiles.get('media', 'unknown')}")
+        _apply_resolve_color_settings(project, project_profiles, "project")
 
         # ── Step 1: Extract and import individual media files ──
         all_files: set[str] = set()
@@ -3180,6 +3168,8 @@ def _drp_export(
         if all_files:
             imported = _import_media_to_pool(media_pool, sorted(all_files))
             print(f"  Media pool: {imported}/{len(all_files)} files imported")
+            media_profiles = [item for profiles in profiles_by_name.values() for item in profiles.get("media_profiles", [])]
+            _apply_media_color_profiles(media_pool, media_profiles)
         else:
             print("  Media pool: no local media found (offline mode)")
 
@@ -3204,6 +3194,11 @@ def _drp_export(
                 {"timelineName": seq_name, "importSourceClips": False,
                  "sourceClipsFolders": [media_pool.GetRootFolder()]},
             )
+            if timeline is not None and profiles_by_name.get(seq_name):
+                try:
+                    _apply_resolve_color_settings(timeline, profiles_by_name[seq_name], f'timeline "{seq_name}"')
+                except (AttributeError, TypeError):
+                    print(f"  Warning: timeline \"{seq_name}\" does not expose color settings in this Resolve version")
             print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
                 print(f"  OK: {timeline.GetName()}")
@@ -3288,59 +3283,107 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
     return bins
 
 
-def _prproj_get_color_profile(prproj_root: ET.Element) -> str:
-    """Extract output color profile name from .prproj VideoTrackGroup.
-
-    Premiere stores color management per-sequence in VideoTrackGroup
-    as JSON: {"baseColorProfile": {"colorProfileName": "BT.709,8-bit,..."}}
-
-    Returns the colorProfileName string, or empty string on failure.
-    """
+def _prproj_get_color_profiles(prproj_root: ET.Element, sequence_uid: str = "") -> dict[str, Any]:
+    """Read sequence-scoped Premiere profiles by following its object graph."""
     import json as _json
-    for vtg in prproj_root.iter("VideoTrackGroup"):
-        ocs = vtg.findtext("OutputColorSpace", "")
-        if ocs:
-            try:
-                data = _json.loads(ocs)
-                return data.get("baseColorProfile", {}).get("colorProfileName", "")
-            except (_json.JSONDecodeError, AttributeError):
-                pass
-    return ""
+    result: dict[str, Any] = {}
+    scope: list[ET.Element]
+    if sequence_uid:
+        idx = _PrprojIndex.build(prproj_root)
+        start = idx.by_uid.get(sequence_uid)
+        scope, queue, seen = [], deque([start] if start is not None else []), set()
+        while queue:
+            current = queue.popleft()
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            scope.append(current)
+            for child in current.iter():
+                target = None
+                if child.get("ObjectRef"):
+                    target = idx.resolve_ref(child.get("ObjectRef", ""))
+                elif child.get("ObjectURef"):
+                    target = idx.resolve_uref(child.get("ObjectURef", ""))
+                if target is not None and id(target) not in seen:
+                    queue.append(target)
+    else:
+        scope = [prproj_root]
 
+    def decoded_name(value: str, configuration: bool = False) -> str:
+        try:
+            data = _json.loads(value)
+            if configuration:
+                return str(data.get("workingSpaceID") or value)
+            return str(data.get("baseColorProfile", {}).get("colorProfileName") or value)
+        except (_json.JSONDecodeError, AttributeError):
+            return value
 
-def _prproj_get_color_profiles(prproj_root: ET.Element) -> dict[str, str]:
-    """Read Premiere color-management profiles without probing media files.
-
-    The JSON values are kept as names because Premiere and Resolve do not share
-    a complete profile vocabulary; callers must report an unmapped profile
-    rather than silently substituting a different transform.
-    """
-    import json as _json
-    result: dict[str, str] = {}
     for key in ("WorkingColorSpace", "OutputColorSpace", "WorkingColorSpaceConfiguration"):
-        value = next((element.text or "" for element in prproj_root.iter(key)), "")
+        value = next((element.text or "" for node in scope for element in node.iter(key) if element.text), "")
         if value:
-            try:
-                data = _json.loads(value)
-                result[key] = str(data.get("workingSpaceID") or data.get("baseColorProfile", {}).get("colorProfileName") or value)
-            except (_json.JSONDecodeError, AttributeError):
-                result[key] = value
-    media_index = 0
-    for media in prproj_root.iter("Media"):
-        override = media.findtext("OverriddenColorSpace", "")
-        original = media.findtext("OriginalColorSpace", "")
+            result[key] = decoded_name(value, key == "WorkingColorSpaceConfiguration")
+    media_profiles: list[dict[str, str]] = []
+    for node in scope:
+        override = node.findtext("OverriddenColorSpace", "")
+        original = node.findtext("OriginalColorSpace", "")
         chosen = override or original
         if chosen:
-            try:
-                data = _json.loads(chosen)
-                name = data.get("baseColorProfile", {}).get("colorProfileName", chosen)
-            except (_json.JSONDecodeError, AttributeError):
-                name = chosen
-            identity = media.get("ObjectUID") or media.get("ObjectID") or media.findtext("FilePath") or str(media_index)
-            result[f"media:{identity}"] = str(name)
-            result.setdefault("media", str(name))
-            media_index += 1
+            object_id, object_uid = node.get("ObjectID"), node.get("ObjectUID")
+            owner = next((candidate for candidate in scope if candidate.tag == "Media" and any(
+                (object_id is not None and child.get("ObjectRef") == object_id)
+                or (object_uid is not None and child.get("ObjectURef") == object_uid)
+                for child in candidate.iter()
+            )), None)
+            path = owner.findtext("FilePath", "") if owner is not None else ""
+            identity = ((owner.get("ObjectUID") or owner.get("ObjectID")) if owner is not None else None) or node.get("ObjectUID") or node.get("ObjectID") or ""
+            media_profiles.append({
+                "id": identity,
+                "path": path,
+                "name": Path(path).name if path else "",
+                "profile": decoded_name(chosen),
+                "source": "override" if override else "original",
+            })
+    if media_profiles:
+        unique = list({(item["id"], item["profile"], item["source"]): item for item in media_profiles}.values())
+        result["media_profiles"] = unique
+        result["media"] = unique[0]["profile"]
     return result
+
+
+def _resolve_color_settings(profiles: dict[str, Any]) -> dict[str, str]:
+    """Map only profile names verified against Resolve's public setting API."""
+    working = str(profiles.get("WorkingColorSpace") or profiles.get("WorkingColorSpaceConfiguration") or "").casefold()
+    output = str(profiles.get("OutputColorSpace") or "").casefold()
+    if "acescct" in working:
+        return {"colorScienceMode": "acescct"}
+    if "2100 hlg" in working or "2100 hlg" in output:
+        return {
+            "colorScienceMode": "davinciYRGBColorManaged",
+            "isAutoColorManage": "0",
+            "rcmPresetMode": "Custom",
+            "colorSpaceTimeline": "Rec.2100 HLG",
+            "colorSpaceOutput": "Rec.2100 HLG",
+        }
+    if not working or "709" in working or "display-referred" in working:
+        return {"colorScienceMode": "davinciYRGB"}
+    return {}
+
+
+def _apply_resolve_color_settings(target: Any, profiles: dict[str, Any], label: str) -> None:
+    settings = _resolve_color_settings(profiles)
+    if not settings:
+        print(f"  Warning: {label} color profile has no verified Resolve mapping: {profiles}")
+        return
+    failed = []
+    for key, value in settings.items():
+        try:
+            if target.SetSetting(key, value) is not True:
+                failed.append(key)
+        except Exception:
+            failed.append(key)
+    if failed:
+        print(f"  Warning: {label} rejected color setting(s): {', '.join(failed)}")
 
 
 def _resolve_pathurl(url: str) -> Optional[str]:
@@ -3409,6 +3452,49 @@ def _import_media_to_pool(media_pool: Any, files: list[str]) -> int:
     except Exception as e:
         print(f"  Warning: media import failed ({e})")
         return 0
+
+
+def _resolve_input_profile(name: str) -> str:
+    normalized = name.casefold().replace("rec. ", "rec.")
+    if "apple log" in normalized:
+        return "Apple Log"
+    if "2100 pq" in normalized or "st2084" in normalized:
+        return "Rec.2100 ST2084"
+    if "2100 hlg" in normalized:
+        return "Rec.2100 HLG"
+    if "display p3" in normalized or "p3-d65" in normalized:
+        return "P3-D65"
+    if "709" in normalized or "display-referred" in normalized:
+        return "Rec.709 Gamma 2.4"
+    return ""
+
+
+def _apply_media_color_profiles(media_pool: Any, profiles: list[dict[str, str]]) -> None:
+    """Apply Premiere media overrides after API import, keyed by full path."""
+    requested = {
+        os.path.normcase(os.path.normpath(item["path"])): _resolve_input_profile(item["profile"])
+        for item in profiles if item.get("path") and _resolve_input_profile(item.get("profile", ""))
+    }
+    if not requested:
+        return
+    try:
+        clips = media_pool.GetRootFolder().GetClipList() or []
+    except Exception:
+        print("  Warning: Resolve did not expose imported clips for input color-space assignment")
+        return
+    applied, rejected = 0, 0
+    for clip in clips:
+        try:
+            path = clip.GetClipProperty("File Path") or clip.GetClipProperty("FilePath") or ""
+            target = requested.get(os.path.normcase(os.path.normpath(path)))
+            if target:
+                if clip.SetClipProperty("Input Color Space", target) is True:
+                    applied += 1
+                else:
+                    rejected += 1
+        except Exception:
+            rejected += 1
+    print(f"  Media input color space: {applied} applied" + (f", {rejected} rejected" if rejected else ""))
 
 
 def _create_bin_structure(media_pool: Any, bins: list[str]) -> None:

@@ -27,6 +27,12 @@ FCP7_DOCTYPE = '<!DOCTYPE xmeml>'
 CRITICAL = "CRITICAL"
 MAJOR = "MAJOR"
 MINOR = "MINOR"
+LUMETRI_POINTWISE_IDS = frozenset({
+    "7", "8", "11", "12", "13", "14", "15", "16", "20", "28", "30", "31",
+    "32", "33", "39", "42", "47", "63", "64", "65", "66", "85", "86", "87",
+    "88", "89", "90", "106", "108", "110", "112",
+})
+LUMETRI_SPATIAL_IDS = frozenset({"29", "51", "52", "53", "54", "81", "82"})
 
 
 def _is_ntsc(timebase: float) -> bool:

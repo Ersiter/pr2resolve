@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 import base64
 import hashlib
+import colorsys
+import json
 import math
 import os
 import re
@@ -15,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
+
+from pr2_constants import LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS
 
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -41,78 +45,174 @@ _LUT_BODY_HEX = (
 )
 
 
-def _lumetri_cube_text(values: dict[str, float]) -> str:
-    """Return a deterministic approximate LUT for scalar Lumetri controls."""
-    stream = io.StringIO()
-    stream.write('TITLE "pr2resolve Lumetri approximation"\nLUT_3D_SIZE 33\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n')
+# Premiere's IDs are stable schema keys.  Values remain data-driven: every
+# encountered record is retained in the DRP even when Resolve cannot express
+# that operation in a 3D LUT.
+_CURVE_IDS = {"39", "42", "106", "108", "110", "112"}
+
+
+def _clamp(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _record_values(grade: Any) -> tuple[dict[str, float], dict[str, bytes]]:
+    """Decode all static records without relying on a particular fixture."""
+    scalars = dict(getattr(grade, "parameters", {}) or {})
+    blobs: dict[str, bytes] = {}
+    for record in getattr(grade, "parameter_records", []) or []:
+        parameter_id = str(record.parameter_id)
+        if record.is_time_varying:
+            continue
+        raw = record.start_keyframe or record.raw_value
+        if record.encoding == "scalar" and parameter_id not in scalars:
+            fields = raw.split(",")
+            candidate = fields[1] if len(fields) > 1 else raw
+            try:
+                value = float(candidate)
+                if math.isfinite(value):
+                    scalars[parameter_id] = value
+            except ValueError:
+                pass
+        encoded = record.start_keyframe_value or (record.raw_value if record.encoding == "blob" else "")
+        if encoded:
+            try:
+                blobs[parameter_id] = base64.b64decode(encoded.strip(), validate=True)
+            except (ValueError, TypeError):
+                pass
+    return scalars, blobs
+
+
+def _curve_blocks(data: bytes) -> list[list[tuple[float, float]]]:
+    """Decode Premiere's fixed 520-byte curve blocks."""
+    result = []
+    for offset in range(0, len(data), 520):
+        block = data[offset:offset + 520]
+        if len(block) != 520:
+            return []
+        _kind, count = struct.unpack_from("<II", block)
+        if count > 32:
+            return []
+        points = [struct.unpack_from("<dd", block, 8 + index * 16) for index in range(count)]
+        if all(math.isfinite(x) and math.isfinite(y) for x, y in points):
+            result.append(sorted(points))
+    return result
+
+
+def _curve(value: float, points: list[tuple[float, float]], identity: float | None = None) -> float:
+    if not points:
+        return value if identity is None else identity
+    if value <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if value <= x1:
+            return y0 + (value - x0) * (y1 - y0) / max(x1 - x0, 1e-12)
+    return points[-1][1]
+
+
+def _wheel_triplets(data: bytes) -> list[tuple[float, float, float]]:
+    if len(data) % 24:
+        return []
+    values = struct.unpack(f"<{len(data) // 8}d", data)
+    return [tuple(values[index:index + 3]) for index in range(0, len(values), 3)]
+
+
+def _wheel_offset(wheel: tuple[float, float, float]) -> tuple[float, float, float]:
+    hue, center, amount = wheel
+    rgb = colorsys.hsv_to_rgb((hue % 360.0) / 360.0, 1.0, 1.0)
+    strength = amount * (0.5 + abs(center - 0.5))
+    mean = sum(rgb) / 3.0
+    return tuple((channel - mean) * strength for channel in rgb)
+
+
+def _apply_lumetri(rgb: list[float], values: dict[str, float], blobs: dict[str, bytes]) -> list[float]:
+    """Apply static point operations in Lumetri panel order."""
     gain = 2.0 ** values.get("11", 0.0)
-    contrast = max(0.01, min(2.0, 1.0 + values.get("12", 0.0) / 100.0))
+    contrast = max(0.01, 1.0 + values.get("12", 0.0) / 100.0)
+    rgb = [((value - 0.18) * contrast + 0.18) * gain for value in rgb]
+    luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    shadow, highlight = values.get("14", 0.0) / 100.0, values.get("13", 0.0) / 100.0
+    black, white = values.get("16", 0.0) / 100.0, values.get("15", 0.0) / 100.0
+    rgb = [value + shadow * (1.0 - _clamp(luma)) ** 2 * 0.25 + highlight * _clamp(luma) ** 2 * 0.25
+           + black * (1.0 - _clamp(value)) ** 3 * 0.15 + white * _clamp(value) ** 3 * 0.15 for value in rgb]
+    temperature, tint = values.get("7", 0.0) / 300.0, values.get("8", 0.0) / 300.0
+    rgb[0] += temperature * 0.05 + tint * 0.015
+    rgb[1] += tint * 0.03
+    rgb[2] -= temperature * 0.05 + tint * 0.015
+
+    wheels = _wheel_triplets(blobs.get("47", b""))
+    if wheels:
+        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
+        weights = ((1.0 - luma) ** 2, 4.0 * luma * (1.0 - luma), luma ** 2, 1.0)
+        for wheel, weight in zip(wheels, weights):
+            offset = _wheel_offset(wheel)
+            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
+
+    creative = blobs.get("32", b"")
+    if len(creative) == 32:
+        shadow_hue, shadow_amount, highlight_hue, highlight_amount = struct.unpack("<4d", creative)
+        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
+        balance = _clamp(0.5 + values.get("33", 0.0) / 200.0)
+        for wheel, weight in (((shadow_hue, 0.5, shadow_amount), (1.0 - luma) * (1.0 - balance)),
+                              ((highlight_hue, 0.5, highlight_amount), luma * balance)):
+            offset = _wheel_offset(wheel)
+            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
+
+    hdr_wheels = _wheel_triplets(blobs.get("85", b""))
+    if hdr_wheels:
+        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
+        for index, wheel in enumerate(hdr_wheels):
+            center = index / max(len(hdr_wheels) - 1, 1)
+            weight = math.exp(-((luma - center) / 0.2) ** 2)
+            offset = _wheel_offset(wheel)
+            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
+
+    master = _curve_blocks(blobs.get("39", b""))
+    if master:
+        rgb = [_curve(_clamp(channel), master[0]) for channel in rgb]
+        for index, points in enumerate(master[1:4]):
+            rgb[index] = _curve(_clamp(rgb[index]), points)
+
+    fade = _clamp(values.get("28", 0.0) / 100.0)
+    rgb = [value * (1.0 - fade) + 0.12 * fade for value in rgb]
+    luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
     saturation = max(0.0, values.get("20", 100.0) / 100.0)
     saturation *= max(0.0, 1.0 + values.get("30", 0.0) / 100.0)
     saturation *= max(0.0, values.get("31", 100.0) / 100.0)
-    temp, tint = values.get("7", 0.0) / 300.0, values.get("8", 0.0) / 300.0
+    saturation *= max(0.0, values.get("63", 100.0) / 100.0)
+    saturation *= max(0.0, values.get("66", 100.0) / 100.0)
+    rgb = [luma + (value - luma) * saturation for value in rgb]
+
+    hdr_contrast = max(0.01, values.get("65", 100.0) / 100.0)
+    hdr_highlight = values.get("64", 0.0) / 100.0
+    rgb = [(value - 0.5) * hdr_contrast + 0.5 + hdr_highlight * _clamp(value) ** 2 * 0.2 for value in rgb]
+
+    h, s, v = colorsys.rgb_to_hsv(*[_clamp(channel) for channel in rgb])
+    curves = {key: (_curve_blocks(blobs.get(key, b"")) or [[]])[0] for key in _CURVE_IDS - {"39"}}
+    s *= max(0.0, 1.0 + _curve(h, curves["42"], 0.0))
+    h = (h + 0.5 * _curve(h, curves["106"], 0.0)) % 1.0
+    v += 0.25 * _curve(h, curves["108"], 0.0)
+    s *= max(0.0, 1.0 + _curve(v, curves["110"], 0.0))
+    s *= max(0.0, 1.0 + _curve(s, curves["112"], 0.0))
+    h = (h + values.get("86", 0.0) / 360.0) % 1.0
+    s *= max(0.0, 1.0 + values.get("87", 0.0) / 100.0)
+    v = (v - 0.5) * max(0.01, 1.0 + values.get("88", 0.0) / 100.0) + 0.5
+    v += values.get("89", 0.0) / 200.0
+    s *= max(0.0, values.get("90", 100.0) / 100.0)
+    rgb = list(colorsys.hsv_to_rgb(h, _clamp(s), _clamp(v)))
+    return [_clamp(value) for value in rgb]
+
+
+def _lumetri_cube_text(grade: Any) -> str:
+    """Return a deterministic LUT for every static pointwise Lumetri record."""
+    values, blobs = _record_values(grade)
+    stream = io.StringIO()
+    stream.write('TITLE "pr2resolve Lumetri static transform"\nLUT_3D_SIZE 33\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n')
     for b in range(33):
         for g in range(33):
             for r in range(33):
-                rgb = [r / 32.0, g / 32.0, b / 32.0]
-                luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-                curve = values.get("39")
-                if isinstance(curve, str):
-                    luma = _curve_luma(luma, curve)
-                rgb = [max(0.0, min(1.0, ((v - 0.18) * contrast + 0.18) * gain)) for v in rgb]
-                shadow = values.get("14", 0.0) / 100.0
-                highlight = values.get("13", 0.0) / 100.0
-                shadow_w, highlight_w = (1.0 - luma) ** 2, luma ** 2
-                rgb = [max(0.0, min(1.0, v + shadow * shadow_w * 0.25 + highlight * highlight_w * 0.25)) for v in rgb]
-                luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-                rgb = [max(0.0, min(1.0, luma + (v - luma) * saturation)) for v in rgb]
-                rgb[0] = max(0.0, min(1.0, rgb[0] + temp * 0.05))
-                rgb[2] = max(0.0, min(1.0, rgb[2] - temp * 0.05))
-                rgb[1] = max(0.0, min(1.0, rgb[1] + tint * 0.03))
+                rgb = _apply_lumetri([r / 32.0, g / 32.0, b / 32.0], values, blobs)
                 stream.write(f"{rgb[0]:.9f} {rgb[1]:.9f} {rgb[2]:.9f}\n")
     return stream.getvalue()
-
-
-def _identity_cube(path: Path) -> None:
-    """Write a deterministic 33^3 identity LUT for native asset binding."""
-    with path.open("w", encoding="ascii", newline="\n") as stream:
-        stream.write(_lumetri_cube_text({}))
-
-
-def _lumetri_xml_values(clip: ET.Element) -> dict[str, Any]:
-    values: dict[str, Any] = {}
-    for effect in clip.findall("filter/effect"):
-        if (effect.findtext("effectid") or "").strip().lower() != "lumetri":
-            continue
-        for parameter in effect.findall("parameter"):
-            key = parameter.findtext("parameterid") or ""
-            raw = (parameter.findtext("value") or "").split(",")
-            if key in {"7", "8", "11", "12", "13", "14", "15", "16", "20", "30", "31"} and len(raw) > 1:
-                try:
-                    values[key] = float(raw[1])
-                except ValueError:
-                    pass
-            elif key in {"39", "42", "106", "108", "110", "112"}:
-                values[key] = parameter.findtext("value") or ""
-    return values
-
-
-def _curve_luma(value: float, raw: str) -> float:
-    """Apply Premiere's little-endian curve block (linear interpolation)."""
-    try:
-        data = base64.b64decode(raw, validate=True)
-        if len(data) < 24:
-            return value
-        kind, count = struct.unpack_from("<II", data)
-        if count < 2 or count > 32 or len(data) < 16 + count * 16:
-            return value
-        points = [struct.unpack_from("<dd", data, 8 + i * 16) for i in range(count)]
-        for (x0, y0), (x1, y1) in zip(points, points[1:]):
-            if value <= x1:
-                return max(0.0, min(1.0, y0 + (value - x0) * (y1 - y0) / max(x1 - x0, 1e-9)))
-        return max(0.0, min(1.0, points[-1][1]))
-    except (ValueError, struct.error):
-        return value
 
 
 def _lut_body_for_asset(asset_name: str) -> str:
@@ -131,6 +231,74 @@ def _lut_body_for_asset(asset_name: str) -> str:
     if len(body) != len(bytes.fromhex(_LUT_BODY_HEX)):
         raise ValueError("native LUT Body length changed")
     return body.hex()
+
+
+def _grade_manifest(grade: Any) -> dict[str, Any]:
+    records = []
+    for record in getattr(grade, "parameter_records", []) or []:
+        representation = "preserved"
+        if not record.is_time_varying and record.parameter_id in LUMETRI_POINTWISE_IDS:
+            representation = "native_lut"
+        elif not record.is_time_varying and record.parameter_id in LUMETRI_SPATIAL_IDS:
+            representation = "spatial_source_record"
+        records.append({
+            "id": record.parameter_id,
+            "name": record.name,
+            "control_type": record.control_type,
+            "encoding": record.encoding,
+            "raw_value": record.raw_value,
+            "lower_bound": record.lower_bound,
+            "upper_bound": record.upper_bound,
+            "is_time_varying": record.is_time_varying,
+            "start_keyframe": record.start_keyframe,
+            "start_keyframe_position": record.start_keyframe_position,
+            "start_keyframe_value": record.start_keyframe_value,
+            "binary_hash": record.binary_hash,
+            "decoded_sha256": record.decoded_sha256,
+            "representation": representation,
+        })
+    return {
+        "clip": grade.clip_name,
+        "track": grade.track_index,
+        "start": grade.start_frame,
+        "end": grade.end_frame,
+        "track_item_id": grade.track_item_id,
+        "parameters": records,
+    }
+
+
+def _profile_name(value: object) -> str:
+    return str(value or "").casefold().replace("rec. ", "rec.")
+
+
+def _configure_color(members: dict[str, bytes], profiles: dict[str, Any] | None) -> dict[str, Any]:
+    """Apply verified Resolve 21 project color enums and return an audit plan."""
+    blobs = {name: members.pop(f"pr2/setup_{name}.blob", None) for name in ("default", "acescct", "hlg")}
+    plan: dict[str, Any] = {"source": profiles or {}, "native": {}, "unmapped": []}
+    if any(value is None for value in blobs.values()):
+        if profiles:
+            plan["unmapped"].append("native setup resource missing")
+        return plan
+    working = _profile_name((profiles or {}).get("WorkingColorSpace") or (profiles or {}).get("WorkingColorSpaceConfiguration"))
+    output = _profile_name((profiles or {}).get("OutputColorSpace"))
+    selected = "default"
+    if "acescct" in working:
+        selected = "acescct"
+        plan["native"] = {"colorScienceMode": "ACEScct"}
+    elif "2100 hlg" in working or "2100 hlg" in output:
+        selected = "hlg"
+        plan["native"] = {"colorScienceMode": "DaVinci YRGB Color Managed", "timeline": "Rec.2100 HLG", "output": "Rec.2100 HLG"}
+    elif working and not any(name in working for name in ("709", "display-referred")):
+        plan["unmapped"].append((profiles or {}).get("WorkingColorSpace", working))
+    if output and not any(name in output for name in ("709", "display-referred", "2100 hlg")):
+        plan["unmapped"].append((profiles or {}).get("OutputColorSpace", output))
+    text = members["project.xml"].decode("utf-8", "replace")
+    pattern = r"(?s)(<SM_Config\b.*?<FieldsBlob>)[0-9a-fA-F]*(</FieldsBlob>)"
+    text, count = re.subn(pattern, rf"\g<1>{(blobs[selected] or b'').hex()}\g<2>", text, count=1)
+    if count != 1:
+        raise ValueError("native project has no SM_Config FieldsBlob")
+    members["project.xml"] = text.encode("utf-8")
+    return plan
 
 
 def _expand_lut_placeholders(data: bytes) -> bytes:
@@ -425,7 +593,7 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
             effect_id = (effect.findtext("effectid") or "").strip().lower()
             if effect_id == "lumetri":
                 if name not in warned_lumetri:
-                    print(f"  Warning: {name}: Lumetri uses an approximate native LUT; spatial/curve controls remain reported")
+                    print(f"  Warning: {name}: static Lumetri point operations use a native LUT; spatial operations remain losslessly recorded")
                     warned_lumetri.add(name)
                 continue
             if effect_id not in allowed_video and (effect.findtext("mediatype") or "video").strip().lower() == "video":
@@ -585,7 +753,13 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     return members, source
 
 
-def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | Path, project_name: str, grades: list[Any] | None = None) -> Path:
+def export_native_drp(
+    sequence: ET.Element | ET.ElementTree,
+    output_path: str | Path,
+    project_name: str,
+    grades: list[Any] | None = None,
+    color_profiles: dict[str, Any] | None = None,
+) -> Path:
     """Export one FCP7 sequence using the verified codec native template."""
     if not TEMPLATE.is_file():
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
@@ -679,7 +853,13 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
             grade = grade_map.get((compact_video_track, _int_text(clip, "start"), _int_text(clip, "end")))
             if grade is not None:
                 lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "") + str(compact_video_track) + (clip.findtext("start") or "") + (clip.findtext("end") or "")).encode("utf-8")).hexdigest()[:16]
-                members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(grade.parameters).encode("ascii")
+                members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(grade).encode("ascii")
+    color_plan = _configure_color(members, color_profiles)
+    members["pr2/conversion.json"] = json.dumps({
+        "format": 1,
+        "color": color_plan,
+        "lumetri": [_grade_manifest(grade) for grade in (grades or [])],
+    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as target:
