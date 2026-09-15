@@ -1816,8 +1816,18 @@ def _prproj_extract_lumetri(
                 continue
 
             parameter_id = param.findtext("ParameterID", "")
-            if parameter_id in {"13", "14", "15", "16"}:
-                warnings.append(f"unsupported parameter {parameter_id}")
+            unsupported_defaults = {"13": 0.0, "14": 0.0, "15": 0.0, "16": 0.0, "51": 0.0, "52": 50.0, "53": 0.0, "54": 50.0}
+            if parameter_id in unsupported_defaults:
+                if param.findtext("IsTimeVarying", "false").lower() == "true":
+                    warnings.append(f"animated unsupported parameter {parameter_id}")
+                    continue
+                sk = param.findtext("StartKeyframe", "")
+                try:
+                    value = float(sk.split(",")[1])
+                except (IndexError, ValueError):
+                    continue
+                if math.isfinite(value) and abs(value - unsupported_defaults[parameter_id]) > 1e-9:
+                    warnings.append(f"unsupported parameter {parameter_id} changed")
                 continue
             if parameter_id not in {"11", "12", "20"}:
                 continue
@@ -1950,7 +1960,9 @@ def _prproj_extract_all_lumetri(
                         else:
                             warnings.append(f"invalid or out-of-range value {key}")
                     params = clean
-                    if params and params != {"11": 0.0, "12": 0.0, "20": 100.0}:
+                    defaults = {"11": 0.0, "12": 0.0, "20": 100.0}
+                    changed = any(key in params and abs(params[key] - default) > 1e-9 for key, default in defaults.items())
+                    if params and changed:
                         exposure, contrast, saturation = params.get("11", 0.0), params.get("12", 0.0), params.get("20", 100.0)
                         factor = max(0.01, min(2.0, 1.0 + contrast / 100.0))
                         gain = 2.0 ** exposure
@@ -3582,10 +3594,12 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
 
 def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, int]:
     """Apply static extracted grades by track and exact timeline frame range."""
-    result = {"applied": 0, "skipped": 0, "failed": 0}
+    result = {"applied": 0, "partial": 0, "skipped": 0, "failed": 0}
     for grade in grades:
         if not grade.cdl:
             result["skipped"] += 1
+            if grade.skipped_reason:
+                print(f"  Lumetri skipped: {grade.clip_name}: {grade.skipped_reason}")
             continue
         matches = []
         for item in timeline.GetItemListInTrack("video", grade.track_index) or []:
@@ -3604,7 +3618,8 @@ def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, i
                 print(f"  Lumetri failed: {grade.clip_name}: SetCDL returned {applied!r}")
                 continue
             if grade.warnings:
-                result["skipped"] += 1
+                result["partial"] += 1
+                print(f"  Lumetri partial: {grade.clip_name}: {'; '.join(grade.warnings)}")
         except Exception as exc:
             result["failed"] += 1
             print(f"  Lumetri failed: {grade.clip_name}: {exc}")
