@@ -23,6 +23,7 @@ _MOTION_PROFILES = {
     (100.0, 270.0): "00000002000000598128b52ffd20637d0200f4030a49080438144a0f082a1a0b0a09116abc74931804e23f4a0f082b004a004a004a0f082f00fcffffff7f56400a16082c381208085c1a040a0220034a004a00050035a5721780e43adb33c9730c",
     (146.0, 270.0): "00000002000000e88128b52ffd603b01ed0600140a0aef01080438144a0f082a1a0b0a09113e0ad7438941e43f4a0f082b004a0f08286d2fa1bd84f672bf4a0f082922efeeeeeeeeae3f4a9601082f00fcffffff7f5640528401ffffff804200000000000d003f5840697f562ac04a0ab602087638204a08083b1a040a0220024a9901083c529401ffffff7035e803e0bf4a8901083d0d009a9999999999e93fe803f0406fc00a0e082c38124a004a004a004a004a001900a1cc10f0400bc0452007e01006405a590381b30409011e306e54c09e336e5030381c828ba6842367824c19755e53b37d9a926c5e1a92a713",
 }
+_MOTION_PROFILE_GEOMETRY = (1920, 1080, 1080, 1920)
 
 
 def _uid() -> str:
@@ -231,7 +232,7 @@ def _rewrite_audio_clone(node: ET.Element, full_path: str, preserve_audio_identi
     return _rewrite_av_clone(node, full_path, preserve_audio_identity, duration, fps)
 
 
-def _static_motion_payload(clip: ET.Element) -> str | None:
+def _static_motion_payload(clip: ET.Element, source_geometry: tuple[int, int], timeline_geometry: tuple[int, int]) -> str | None:
     """Return a known static Basic Motion payload, or reject unsupported motion."""
     basic = next((effect for effect in clip.findall("filter/effect") if (effect.findtext("effectid") or "").strip().lower() == "basic"), None)
     if basic is None:
@@ -262,6 +263,8 @@ def _static_motion_payload(clip: ET.Element) -> str | None:
     scale, rotation = values.get("scale", 100.0), values.get("rotation", 0.0)
     if scale == 100.0 and rotation == 0.0:
         return None
+    if (*source_geometry, *timeline_geometry) != _MOTION_PROFILE_GEOMETRY:
+        raise ValueError(f"unsupported Basic Motion geometry {source_geometry}->{timeline_geometry}: {clip.findtext('name') or 'clip'}")
     try:
         return _MOTION_PROFILES[(scale, rotation)]
     except KeyError as exc:
@@ -271,6 +274,11 @@ def _static_motion_payload(clip: ET.Element) -> str | None:
 def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
+    timeline_sample = source.find("media/video/format/samplecharacteristics")
+    timeline_geometry = (
+        _int_text(timeline_sample, "width") if timeline_sample is not None else 0,
+        _int_text(timeline_sample, "height") if timeline_sample is not None else 0,
+    )
     with zipfile.ZipFile(TEMPLATE) as archive:
         members = {info.filename: archive.read(info.filename) for info in archive.infolist()}
     seq_name = next((name for name in members if name.startswith("SeqContainer/") and name.endswith(".xml")), None)
@@ -346,7 +354,14 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
                         _set_child(node, "MediaTimemapBA", "02" + (outer + middle + tail).hex())
                     else:
                         _set_child(node, "MediaTimemapBA", "02" + struct.pack(">d", seconds).hex())
-                motion_payload = _static_motion_payload(clip) if kind == "video" else None
+                motion_payload = None
+                if kind == "video":
+                    sample = file_node.find("media/video/samplecharacteristics") if file_node is not None else None
+                    source_geometry = (
+                        _int_text(sample, "width") if sample is not None else 0,
+                        _int_text(sample, "height") if sample is not None else 0,
+                    )
+                    motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
                 if motion_payload is not None:
                     _set_child(node, "EffectFiltersBA", motion_payload)
                 item = ET.SubElement(items, "Element")
