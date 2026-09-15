@@ -1876,6 +1876,8 @@ def _prproj_extract_lumetri(
                     records[-1].conversion = "invalid"
                     records[-1].reason = "missing or non-numeric value"
                     continue
+                if math.isfinite(value):
+                    params[parameter_id] = value
                 if math.isfinite(value) and abs(value - unsupported_defaults[parameter_id]) > 1e-9:
                     warnings.append(f"unsupported parameter {parameter_id} changed")
                     records[-1].conversion = "unsupported"
@@ -2018,7 +2020,14 @@ def _prproj_extract_all_lumetri(
                     clean: dict[str, float] = {}
                     limits = {"11": (-5.0, 5.0), "12": (-100.0, 100.0), "20": (0.0, 200.0)}
                     for key, value in params.items():
-                        lo, hi = limits[key]
+                        lo, hi = limits.get(key, (-1e6, 1e6))
+                        if key not in limits:
+                            record = next((item for item in records if item.parameter_id == key), None)
+                            try:
+                                lo = float(record.lower_bound) if record and record.lower_bound else lo
+                                hi = float(record.upper_bound) if record and record.upper_bound else hi
+                            except ValueError:
+                                pass
                         if math.isfinite(value) and lo <= value <= hi:
                             clean[key] = value
                         else:

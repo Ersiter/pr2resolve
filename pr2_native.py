@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import hashlib
 import math
 import os
@@ -55,7 +56,15 @@ def _lumetri_cube_text(values: dict[str, float]) -> str:
             for r in range(33):
                 rgb = [r / 32.0, g / 32.0, b / 32.0]
                 luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+                curve = values.get("39")
+                if isinstance(curve, str):
+                    luma = _curve_luma(luma, curve)
                 rgb = [max(0.0, min(1.0, ((v - 0.18) * contrast + 0.18) * gain)) for v in rgb]
+                shadow = values.get("14", 0.0) / 100.0
+                highlight = values.get("13", 0.0) / 100.0
+                shadow_w, highlight_w = (1.0 - luma) ** 2, luma ** 2
+                rgb = [max(0.0, min(1.0, v + shadow * shadow_w * 0.25 + highlight * highlight_w * 0.25)) for v in rgb]
+                luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
                 rgb = [max(0.0, min(1.0, luma + (v - luma) * saturation)) for v in rgb]
                 rgb[0] = max(0.0, min(1.0, rgb[0] + temp * 0.05))
                 rgb[2] = max(0.0, min(1.0, rgb[2] - temp * 0.05))
@@ -70,8 +79,8 @@ def _identity_cube(path: Path) -> None:
         stream.write(_lumetri_cube_text({}))
 
 
-def _lumetri_xml_values(clip: ET.Element) -> dict[str, float]:
-    values: dict[str, float] = {}
+def _lumetri_xml_values(clip: ET.Element) -> dict[str, Any]:
+    values: dict[str, Any] = {}
     for effect in clip.findall("filter/effect"):
         if (effect.findtext("effectid") or "").strip().lower() != "lumetri":
             continue
@@ -83,7 +92,27 @@ def _lumetri_xml_values(clip: ET.Element) -> dict[str, float]:
                     values[key] = float(raw[1])
                 except ValueError:
                     pass
+            elif key in {"39", "42", "106", "108", "110", "112"}:
+                values[key] = parameter.findtext("value") or ""
     return values
+
+
+def _curve_luma(value: float, raw: str) -> float:
+    """Apply Premiere's little-endian curve block (linear interpolation)."""
+    try:
+        data = base64.b64decode(raw, validate=True)
+        if len(data) < 24:
+            return value
+        kind, count = struct.unpack_from("<II", data)
+        if count < 2 or count > 32 or len(data) < 16 + count * 16:
+            return value
+        points = [struct.unpack_from("<dd", data, 8 + i * 16) for i in range(count)]
+        for (x0, y0), (x1, y1) in zip(points, points[1:]):
+            if value <= x1:
+                return max(0.0, min(1.0, y0 + (value - x0) * (y1 - y0) / max(x1 - x0, 1e-9)))
+        return max(0.0, min(1.0, points[-1][1]))
+    except (ValueError, struct.error):
+        return value
 
 
 def _lut_body_for_asset(asset_name: str) -> str:
