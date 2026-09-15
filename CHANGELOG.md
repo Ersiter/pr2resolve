@@ -8,6 +8,7 @@ All notable changes to pr2resolve.
 - Pure-data native DRP export from `.prproj` or FCP7 XML without media scanning or a running Resolve instance.
 - Batch native export writes one independent DRP per selected sequence using the Resolve 21 template.
 - Removed the legacy media file scanning and ffprobe chain; source metadata now comes from project data only.
+- Native DRP now preserves common video dissolves and audio cross fades, with explicit failure for unsupported video transitions.
 
 ## [v1.0.4] — 2026-07-02
 

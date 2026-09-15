@@ -9,7 +9,7 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and D
 
 [**中文 README**](README.md)
 
-Contest materials: [project brief](docs/contest/submission-brief.md) · [3-minute demo](docs/contest/demo-script-3min.md) · [reproducibility checklist](docs/contest/reproducibility-checklist.md)
+Contest materials: [project brief](docs/contest/submission-brief.md) · [3-minute demo](docs/contest/demo-script-3min.md) · [reproducibility checklist](docs/contest/reproducibility-checklist.md) · [public synthetic fixture](examples/minimal_fcp7.xml)
 
 <img src="fav.png" alt="pr2resolve TUI" width="600">
 
@@ -98,6 +98,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
 - **Pure-data `.prproj` conversion**: media paths, frame rates, timecode, duration, and resolution are read from the `.prproj` object graph, so source media may be offline or unavailable on the current machine.
 - **Native DRP without media scanning**: `.prproj` or XML can produce a native DRP directly, without starting Resolve or scanning media. Batch mode writes one DRP per sequence using the Resolve 21 template.
+- **Common transitions preserved**: native DRP keeps Cross Dissolve, Non-Additive Dissolve, Dip To Color Dissolve, and audio Cross Fade; unknown video transitions fail explicitly.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
 Verify source-mode setup:

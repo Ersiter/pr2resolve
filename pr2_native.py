@@ -16,6 +16,29 @@ from xml.etree import ElementTree as ET
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
+_VIDEO_TRANSITIONS = {
+    "cross dissolve": (
+        "Cross Dissolve",
+        "000000020000001b8012180000002c789c636660640001b6552273180800002fb40165",
+        "000000020000003a800a37081238024a004a004a004a004a29088b015224ffffffe00000000000000c0000000000000000001c00000000000c00000000000000f03f",
+    ),
+    "non-additive dissolve": (
+        "Non-Additive Dissolve",
+        "0000000200000028800a0b1a09080410b0a991f5df0212180000002c789c636660640001b6552273180800002fb40165",
+        "0000000200000038800a35086838024a004a004a004a29088b015224ffffffe00000000000000c0000000000000000001c00000000000c00000000000000f03f",
+    ),
+    "dip to color dissolve": (
+        "Dip To Color Dissolve",
+        "000000020000001b8012180000002c789c636660640001b6552273180800002fb40165",
+        "000000020000003a800a37081638024a004a004a004a004a29088b015224ffffffe00000000000000c0000000000000000001c00000000000c00000000000000f03f",
+    ),
+}
+_AUDIO_TRANSITION = (
+    "Cross Fade 0DB",
+    "0000000200000021800a04a801cf0512180000002c789c636660640001b69587341908000037da019f",
+    "",
+)
+
 
 def _uid() -> str:
     return str(uuid.uuid4())
@@ -223,6 +246,37 @@ def _rewrite_audio_clone(node: ET.Element, full_path: str, preserve_audio_identi
     return _rewrite_av_clone(node, full_path, preserve_audio_identity, duration, fps)
 
 
+def _transition_node(transition: ET.Element, media_type: str) -> ET.Element:
+    """Translate a common FCP transition into a native Resolve transition."""
+    effect_name = (transition.findtext("effect/name") or "").strip().lower()
+    display_name = (transition.findtext("name") or "").strip()
+    if media_type == "audio":
+        spec = _AUDIO_TRANSITION
+    else:
+        spec = next((value for key, value in _VIDEO_TRANSITIONS.items() if key in effect_name), None)
+        if spec is None:
+            raise ValueError(f"unsupported video transition: {display_name or effect_name or 'unnamed'}")
+    node = ET.Element("Sm2TiTransition", {"DbId": _uid()})
+    ET.SubElement(node, "FieldsBlob").text = spec[1]
+    ET.SubElement(node, "PrettyType").text = spec[0]
+    ET.SubElement(node, "Name").text = display_name or spec[0]
+    start = _int_text(transition, "start")
+    end = _int_text(transition, "end")
+    ET.SubElement(node, "Start").text = str(start)
+    ET.SubElement(node, "Duration").text = str(max(0, end - start))
+    for field, value in (("LinkedItemSync", ""), ("WasDisbanded", "false"), ("MarkersBA", ""),
+                         ("UiMemento", "0"), ("Flags", "0"), ("PriorityIndex", "0"),
+                         ("EffectFiltersBA", spec[2]), ("ImportExportMetadataBA", ""),
+                         ("RenderTextEnabled", "true"), ("RenderTextGanged", "true"),
+                         ("RenderTextPrefixed", "true")):
+        ET.SubElement(node, field).text = value
+    alignment = (transition.findtext("alignment") or "center").strip().lower()
+    alignment_type = {"start": "1", "center": "2", "end": "3", "start-black": "1", "end-black": "3"}.get(alignment, "2")
+    ET.SubElement(node, "AlignmentType").text = alignment_type
+    ET.SubElement(node, "Position").text = "2"
+    return node
+
+
 def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
@@ -270,7 +324,14 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
             if items is None:
                 items = ET.SubElement(track, "Items")
             items.clear()
-            for clip in fcp_track.findall("clipitem"):
+            for clip in fcp_track:
+                if clip.tag == "transitionitem":
+                    media_type = "video" if kind == "video" else "audio"
+                    item = ET.SubElement(items, "Element")
+                    item.append(_transition_node(clip, media_type))
+                    continue
+                if clip.tag != "clipitem":
+                    continue
                 file_node = clip.find("file")
                 file_name = file_node.findtext("name") if file_node is not None else ""
                 suffix = Path(file_name or "").suffix.lower()

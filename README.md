@@ -9,7 +9,7 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 
 [**README in English**](README_EN.md)
 
-参赛材料：[项目说明](docs/contest/submission-brief.md) · [三分钟演示脚本](docs/contest/demo-script-3min.md) · [复现清单](docs/contest/reproducibility-checklist.md)
+参赛材料：[项目说明](docs/contest/submission-brief.md) · [三分钟演示脚本](docs/contest/demo-script-3min.md) · [复现清单](docs/contest/reproducibility-checklist.md) · [公开合成 fixture](examples/minimal_fcp7.xml)
 
 <img src="fav.png" alt="pr2resolve TUI" width="600">
 
@@ -98,6 +98,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **源码运行用户**：需要 Python 3.10+。Windows 安装时建议勾选 `Add Python to PATH`。
 - **纯数据 `.prproj` 转换**：工程中的素材路径、帧率、时码、时长和分辨率直接从 `.prproj` 对象图读取，源素材可以离线或不在本机。
 - **原生 DRP 零媒体扫描**：`.prproj` 或 XML 可直接生成 native DRP，不启动 Resolve、不扫描媒体；每个 batch 序列生成一个独立 DRP，模板面向 Resolve 21。
+- **常见转场保留**：native DRP 保留 Cross Dissolve、Non-Additive Dissolve、Dip To Color Dissolve 和音频 Cross Fade；未知视频转场会明确报错。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
 验证源码环境：
