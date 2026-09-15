@@ -1765,7 +1765,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
 def _prproj_extract_lumetri(
     idx: _PrprojIndex,
     component_chain_id: str,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], list[str]]:
     """Extract Lumetri parameters from a VideoComponentChain.
 
     Args:
@@ -1773,20 +1773,21 @@ def _prproj_extract_lumetri(
         component_chain_id: ObjectID of the VideoComponentChain
 
     Returns:
-        Dict mapping parameter name (Chinese) to float value
+        Supported ParameterID values and diagnostic warnings.
     """
     params: dict[str, float] = {}
+    warnings: list[str] = []
     chain = idx.resolve_ref(component_chain_id)
     if chain is None:
-        return params
+        return params, warnings
 
     # Components are nested inside ComponentChain/Components
     inner_cc = chain.find("ComponentChain")
     if inner_cc is None:
-        return params
+        return params, warnings
     comps = inner_cc.find("Components")
     if comps is None:
-        return params
+        return params, warnings
 
     for comp_ref in comps.findall("Component"):
         ref = comp_ref.get("ObjectRef")
@@ -1815,10 +1816,17 @@ def _prproj_extract_lumetri(
                 continue
 
             parameter_id = param.findtext("ParameterID", "")
+            if parameter_id in {"13", "14", "15", "16"}:
+                warnings.append(f"unsupported parameter {parameter_id}")
+                continue
             if parameter_id not in {"11", "12", "20"}:
                 continue
             sk = param.findtext("StartKeyframe", "")
-            if not sk or (param.findtext("IsTimeVarying", "false").lower() == "true"):
+            if param.findtext("IsTimeVarying", "false").lower() == "true":
+                warnings.append(f"animated parameter {parameter_id}")
+                continue
+            if not sk:
+                warnings.append(f"missing static value {parameter_id}")
                 continue
 
             # Parse StartKeyframe: "ticks,value,..." — value is field[1]
@@ -1828,9 +1836,9 @@ def _prproj_extract_lumetri(
                     val = float(parts[1])
                     params[parameter_id] = val
                 except ValueError:
-                    pass
+                    warnings.append(f"invalid value {parameter_id}")
 
-    return params
+    return params, warnings
 
 
 def _prproj_extract_all_lumetri(
@@ -1847,7 +1855,7 @@ def _prproj_extract_all_lumetri(
         sequence_uid: ObjectUID of the target sequence
 
     Returns:
-        Dict mapping clip name → {param_name: value}
+        One identity record per Lumetri-bearing video clip.
     """
     idx = _PrprojIndex.build(prproj_root)
     lumetri_data: list[LumetriGrade] = []
@@ -1859,8 +1867,6 @@ def _prproj_extract_all_lumetri(
             break
     if seq_el is None:
         return lumetri_data
-    fcp_root = _prproj_parse_sequence(prproj_root, sequence_uid, Path(""))
-    fcp_tracks = [t for t in fcp_root.findall(".//sequence/media/video/track") if t.findall("clipitem")]
 
     tg_section = seq_el.find("TrackGroups")
     if tg_section is None:
@@ -1896,8 +1902,11 @@ def _prproj_extract_all_lumetri(
             if not track_items:
                 continue
             compact_track_index += 1
-
-            fcp_track = fcp_tracks[compact_track_index - 1] if compact_track_index <= len(fcp_tracks) else None
+            frame_rate = tg_el.find(".//FrameRate")
+            try:
+                track_fps = _prproj_adobe_timebase_to_fps(int(frame_rate.text)) if frame_rate is not None and frame_rate.text else DEFAULT_FPS
+            except ValueError:
+                track_fps = DEFAULT_FPS
             for item_index, ti_ref in enumerate(track_items):
                 ref = ti_ref.get("ObjectRef")
                 ti_el = idx.resolve_ref(ref) if ref else None
@@ -1917,12 +1926,12 @@ def _prproj_extract_all_lumetri(
                     if sc_el is not None:
                         clip_name = sc_el.findtext("Name", clip_name)
 
-                fcp_clip = fcp_track.findall("clipitem")[item_index] if fcp_track is not None and item_index < len(fcp_track.findall("clipitem")) else None
                 track_item = cti.find("TrackItem")
-                start = int(fcp_clip.findtext("start", "0")) if fcp_clip is not None else (_prproj_ticks_to_frames(track_item.findtext("Start", "0"), 30.0) if track_item is not None else 0)
-                end = int(fcp_clip.findtext("end", "0")) if fcp_clip is not None else (_prproj_ticks_to_frames(track_item.findtext("End", "0"), 30.0) if track_item is not None else 0)
+                start = _prproj_ticks_to_frames(track_item.findtext("Start", "0"), track_fps) if track_item is not None else 0
+                end = _prproj_ticks_to_frames(track_item.findtext("End", "0"), track_fps) if track_item is not None else 0
                 params: dict[str, float] = {}
-                skipped = ""
+                warnings: list[str] = []
+                has_cdl = False
                 # Get ComponentChain → Lumetri params
                 co = cti.find("ComponentOwner")
                 if co is not None:
@@ -1930,7 +1939,7 @@ def _prproj_extract_all_lumetri(
                     if comps is not None:
                         chain_ref = comps.get("ObjectRef")
                         if chain_ref:
-                            params = _prproj_extract_lumetri(idx, chain_ref)
+                            params, warnings = _prproj_extract_lumetri(idx, chain_ref)
                 if params:
                     clean: dict[str, float] = {}
                     limits = {"11": (-5.0, 5.0), "12": (-100.0, 100.0), "20": (0.0, 200.0)}
@@ -1938,6 +1947,8 @@ def _prproj_extract_all_lumetri(
                         lo, hi = limits[key]
                         if math.isfinite(value) and lo <= value <= hi:
                             clean[key] = value
+                        else:
+                            warnings.append(f"invalid or out-of-range value {key}")
                     params = clean
                     if params and params != {"11": 0.0, "12": 0.0, "20": 100.0}:
                         exposure, contrast, saturation = params.get("11", 0.0), params.get("12", 0.0), params.get("20", 100.0)
@@ -1948,11 +1959,12 @@ def _prproj_extract_all_lumetri(
                             "Slope": f"{gain * factor:.9g} {gain * factor:.9g} {gain * factor:.9g}",
                             "Offset": f"{offset:.9g} {offset:.9g} {offset:.9g}",
                             "Power": "1 1 1", "Saturation": f"{saturation / 100.0:.9g}",
-                        }))
+                        }, warnings=warnings))
+                        has_cdl = True
                     elif not params:
-                        skipped = "invalid or out-of-range static parameters"
-                if skipped:
-                    lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, {}, skipped_reason=skipped))
+                        warnings.append("invalid or out-of-range static parameters")
+                if warnings and not has_cdl:
+                    lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, params, skipped_reason="; ".join(warnings), warnings=warnings))
 
     return lumetri_data
 
@@ -3572,7 +3584,7 @@ def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, i
     """Apply static extracted grades by track and exact timeline frame range."""
     result = {"applied": 0, "skipped": 0, "failed": 0}
     for grade in grades:
-        if grade.skipped_reason or not grade.cdl:
+        if not grade.cdl:
             result["skipped"] += 1
             continue
         matches = []
@@ -3584,8 +3596,15 @@ def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, i
             print(f"  Lumetri skipped: {grade.clip_name} ({len(matches)} identity matches)")
             continue
         try:
-            matches[0].SetCDL({"NodeIndex": 1, **grade.cdl})
-            result["applied"] += 1
+            applied = matches[0].SetCDL({"NodeIndex": "1", **grade.cdl})
+            if applied is True:
+                result["applied"] += 1
+            else:
+                result["failed"] += 1
+                print(f"  Lumetri failed: {grade.clip_name}: SetCDL returned {applied!r}")
+                continue
+            if grade.warnings:
+                result["skipped"] += 1
         except Exception as exc:
             result["failed"] += 1
             print(f"  Lumetri failed: {grade.clip_name}: {exc}")

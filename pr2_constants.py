@@ -163,6 +163,7 @@ class LumetriGrade:
     parameters: dict[str, float]
     cdl: dict[str, str] = field(default_factory=dict)
     skipped_reason: str = ""
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -20,7 +20,7 @@ from pr2_constants import (
     VERSION, DEFAULT_FPS, NTSC_RATES, PAL_RATES, FPS_TOLERANCE,
     OUTPUT_SUFFIX,
     FCP7_VERSION, FCP7_DOCTYPE, CRITICAL, MAJOR, MINOR,
-    FCP7_CLIPIITEM_ORDER, ScaleIssue, Issue,
+    FCP7_CLIPIITEM_ORDER, ScaleIssue, Issue, LumetriGrade,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     load_xml, load_prproj,
 )
@@ -432,10 +432,10 @@ def _run_pipeline(
             else:
                 # Batch mode already converted — use first selected for display
                 root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
-                lumetri_data = {}
+                lumetri_data: list[LumetriGrade] = []
         else:
             root = load_xml(input_path)
-            lumetri_data = {}
+            lumetri_data = []
             print("  Format: FCP7 XML")
     except Exception as e:
         print(f"  Error loading file: {e}")
@@ -493,6 +493,9 @@ def _run_pipeline(
                     fcp = _prproj_parse_sequence(prproj_root, selected_sequence["uid"], input_path)
                     issues_s = _scan(fcp)
                     _apply_fixes(fcp, issues_s)
+                    native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
+                    if native_grades:
+                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records extracted; CDL is not applied in pure-data output")
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
@@ -500,6 +503,8 @@ def _run_pipeline(
                     native_outputs.append(destination)
                     print(f"    Native DRP {index}: {destination}")
             else:
+                if lumetri_data:
+                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records extracted; CDL is not applied in pure-data output")
                 export_native_drp(root, native_drp, input_path.stem)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")
