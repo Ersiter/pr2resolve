@@ -2,6 +2,12 @@
 
 All notable changes to pr2resolve.
 
+## [v1.1.0] — 2026-09-15
+
+### Added
+- Pure-data native DRP export from `.prproj` or FCP7 XML without media scanning or a running Resolve instance.
+- Batch native export writes one independent DRP per selected sequence using the Resolve 21 template.
+
 ## [v1.0.4] — 2026-07-02
 
 ### Added
@@ -64,7 +70,8 @@ All notable changes to pr2resolve.
 
 First production release. Architecture refactor complete — domain model separated from XML rendering. Dual-entry: FCP7 XML and `.prproj`.
 
-[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.0.4...HEAD
+[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.1.0...HEAD
+[v1.1.0]: https://github.com/Ersiter/pr2resolve/compare/v1.0.4...v1.1.0
 [v1.0.4]: https://github.com/Ersiter/pr2resolve/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/Ersiter/pr2resolve/compare/v1.0.1...v1.0.3
 [v1.0.1]: https://github.com/Ersiter/pr2resolve/compare/v1.0.0...v1.0.1

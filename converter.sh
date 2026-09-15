@@ -3,7 +3,7 @@
 # pr2resolve - macOS/Linux TUI Launcher
 # ============================================================
 
-VERSION="1.0.4"
+VERSION="1.1.0"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="${SCRIPT_DIR}/pr2resolve.py"
 
@@ -25,7 +25,7 @@ OPT_REPORT="[OFF]"
 OPT_XML="[ON]"
 OPT_MODE="[AUTO]"
 OPT_SUFFIX="[OFF]"
-OPT_DRP="[OFF]"
+OPT_DRP="[NATIVE]"
 
 # Find Python
 PYTHON_CMD=""
@@ -71,12 +71,14 @@ print_header() {
     drt_clr=$([ "$OPT_DRT" = "[ON]" ] && echo "$GREEN" || echo "")
     rpt_clr=$([ "$OPT_REPORT" = "[ON]" ] && echo "$GREEN" || echo "")
     suffix_clr=$([ "$OPT_SUFFIX" = "[ON]" ] && echo "$GREEN" || echo "")
-    drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || ([ "$OPT_DRP" = "[BG]" ] && echo "$YELLOW" || echo ""))
+    drp_clr=$([ "$OPT_DRP" = "[ON]" ] && echo "$GREEN" || ([ "$OPT_DRP" = "[BG]" ] && echo "$YELLOW" || ([ "$OPT_DRP" = "[NATIVE]" ] && echo "$GREEN" || echo "")))
     mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
     if [ "$OPT_DRP" = "[ON]" ]; then
         drp_label="DaVinci DRP interactive ${YELLOW}(all sequences)${NC}"
     elif [ "$OPT_DRP" = "[BG]" ]; then
         drp_label="DaVinci DRP background export ${YELLOW}(all sequences)${NC}"
+    elif [ "$OPT_DRP" = "[NATIVE]" ]; then
+        drp_label="Pure data / no Resolve required (one per sequence)"
     else
         drp_label="DaVinci DRP project export"
     fi
@@ -183,7 +185,7 @@ options_menu() {
         mode_clr=$([ "$OPT_MODE" != "[AUTO]" ] && echo "$YELLOW" || echo "")
         echo -e "  ${BOLD}[1]${NC} FCP7 XML       ${xml_clr}${OPT_XML}${NC}"
         echo -e "  ${BOLD}[2]${NC} DRT            ${drt_clr}${OPT_DRT}${NC}  (needs Resolve Studio)"
-        echo -e "  ${BOLD}[3]${NC} DRP project    ${drp_clr}${OPT_DRP}${NC}  OFF/BG(no GUI)/ON ${YELLOW}- all sequences${NC}"
+        echo -e "  ${BOLD}[3]${NC} DRP project    ${drp_clr}${OPT_DRP}${NC}  OFF/NATIVE/BG(no GUI)/ON ${YELLOW}- one per sequence${NC}"
         echo -e "  ${BOLD}[4]${NC} Export Mode    ${mode_clr}${OPT_MODE}${NC}  (AUTO/ALL/MAN)"
         echo -e "  ${BOLD}[5]${NC} Name suffix    ${suffix_clr}${OPT_SUFFIX}${NC}  _pr2resolve tag"
         echo -e "  ${BOLD}[6]${NC} Fix report     ${rpt_clr}${OPT_REPORT}${NC}"
@@ -196,7 +198,8 @@ options_menu() {
             1) if [ "$OPT_XML" = "[ON]" ]; then OPT_XML="[OFF]"; else OPT_XML="[ON]"; fi ;;
             2) if [ "$OPT_DRT" = "[ON]" ]; then OPT_DRT="[OFF]"; else OPT_DRT="[ON]"; fi ;;
             3) case "$OPT_DRP" in
-                   "[OFF]") OPT_DRP="[BG]" ;;
+                   "[OFF]") OPT_DRP="[NATIVE]" ;;
+                   "[NATIVE]") OPT_DRP="[BG]" ;;
                    "[BG]") OPT_DRP="[ON]" ;;
                    "[ON]") OPT_DRP="[OFF]" ;;
                esac ;;
@@ -249,6 +252,8 @@ run_pipeline() {
         cmd+=(--drp)
     elif [ "$OPT_DRP" = "[ON]" ]; then
         cmd+=(--drp-gui)
+    elif [ "$OPT_DRP" = "[NATIVE]" ]; then
+        cmd+=(--native-drp)
     fi
 
     PYTHONIOENCODING=utf-8 "${cmd[@]}"

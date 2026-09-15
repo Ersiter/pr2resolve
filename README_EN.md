@@ -1,9 +1,9 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.0.4 — metadata reliability, release automation, and TUI portability*
+> *v1.1.0 — pure-data native DRP export*
 
-# .PRPROJ-.DRT Converter
+# pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
 Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and DRP.
 
@@ -95,6 +95,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **Release package users**: Python is not required.
 - **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
 - **Pure-data `.prproj` conversion**: media paths, frame rates, timecode, duration, and resolution are read from the `.prproj` object graph, so source media may be offline or unavailable on the current machine.
+- **Native DRP without media scanning**: `.prproj` or XML can produce a native DRP directly, without starting Resolve or scanning media. Batch mode writes one DRP per sequence using the Resolve 21 template.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
 Verify source-mode setup:
@@ -139,6 +140,9 @@ python pr2resolve.py "project.prproj" --drp
 
 # DRP interactive export (all non-empty sequences, keeps project open)
 python pr2resolve.py "project.prproj" --drp-gui
+
+# Pure-data native DRP (no Resolve required)
+python pr2resolve.py "project.prproj" --native-drp
 
 # Generate a fix report
 python pr2resolve.py "input.xml" --report
@@ -208,6 +212,7 @@ Three output formats:
 | `--drt` | flag | Generate DRT (requires DaVinci Studio) |
 | `--drp` | flag/path | Background DRP export (all non-empty sequences) |
 | `--drp-gui` | flag/path | Interactive DRP export (all non-empty sequences) |
+| `--native-drp` | flag/path | Pure-data native DRP (one file per batch sequence; no Resolve required) |
 | `--all-sequences` | flag | Export all non-empty sequences from .prproj |
 | `--sequence` | str | Sequence name in .prproj |
 | `--no-suffix` | flag | Omit `_pr2resolve` suffix from output filename |

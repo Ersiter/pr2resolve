@@ -70,6 +70,7 @@ python3 -m nuitka \
   --noinclude-numba-mode=nofollow \
   --noinclude-default-mode=warning \
   --remove-output \
+  --include-data-file=resources/resolve21_native_template.drp=resources/resolve21_native_template.drp \
   tui.py
 
 if [ ! -f "${BINARY}" ]; then

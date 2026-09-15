@@ -54,8 +54,26 @@ Write-Host "pr2resolve v$VERSION - Windows x86_64 build" -ForegroundColor Cyan
 $missing = @()
 
 # python + Python build dependencies
-$nuitkaProbe = & $PYTHON_BIN -m nuitka --version 2>$null
-if ($LASTEXITCODE -ne 0) {
+$nuitkaInfo = New-Object System.Diagnostics.ProcessStartInfo
+$nuitkaInfo.FileName = $PYTHON_BIN
+$nuitkaInfo.Arguments = '-m nuitka --version'
+$nuitkaInfo.UseShellExecute = $false
+$nuitkaInfo.CreateNoWindow = $true
+$nuitkaInfo.RedirectStandardOutput = $true
+$nuitkaInfo.RedirectStandardError = $true
+$nuitkaProcess = New-Object System.Diagnostics.Process
+$nuitkaProcess.StartInfo = $nuitkaInfo
+$nuitkaExit = 1
+try {
+    [void]$nuitkaProcess.Start()
+    $nuitkaStdout = $nuitkaProcess.StandardOutput.ReadToEnd()
+    $nuitkaStderr = $nuitkaProcess.StandardError.ReadToEnd()
+    $nuitkaProcess.WaitForExit()
+    $nuitkaExit = $nuitkaProcess.ExitCode
+} catch {
+    $nuitkaStderr = $_.Exception.Message
+}
+if ($nuitkaExit -ne 0) {
     $missing += "nuitka (use $PYTHON_BIN -m pip install -r requirements-build.txt)"
 }
 
@@ -105,6 +123,7 @@ $nuitkaArgs = @(
     "--noinclude-numba-mode=nofollow",
     "--noinclude-default-mode=warning",
     "--remove-output",
+    "--include-data-file=resources/resolve21_native_template.drp=resources/resolve21_native_template.drp",
     "tui.py"
 )
 & $PYTHON_BIN -m nuitka @nuitkaArgs

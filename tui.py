@@ -28,7 +28,7 @@ INPUT_FILE: str = ""
 OUTPUT_DIR: str = ""
 OPT_XML = True
 OPT_DRT = False
-OPT_DRP = "OFF"   # "OFF" | "BG" | "ON"
+OPT_DRP = "NATIVE"   # "OFF" | "NATIVE" | "BG" | "ON"
 OPT_MODE = "AUTO"  # "AUTO" | "ALL" | "MAN"
 OPT_SUFFIX = True
 OPT_REPORT = False
@@ -61,7 +61,7 @@ def _clr_mode(mode: str) -> str:
 
 def _clr_drp(drp: str) -> str:
     """GREEN for ON, YELLOW for BG, else empty."""
-    if drp == "ON":
+    if drp in ("ON", "NATIVE"):
         return GREEN
     if drp == "BG":
         return YELLOW
@@ -146,7 +146,9 @@ def _print_header() -> None:
         if OPT_DRP == "ON"
         else f"DaVinci DRP background export {YELLOW}(all sequences){NC}"
         if OPT_DRP == "BG"
-        else "DaVinci DRP project export"
+        else "pure data / no Resolve required"
+        if OPT_DRP == "NATIVE"
+        else "DRP disabled"
     )
     print(f"  XML:     {_clr(OPT_XML)}[{_onoff(OPT_XML)}]{NC}   FCP7 XML output")
     print(f"  DRT:     {_clr(OPT_DRT)}[{_onoff(OPT_DRT)}]{NC}  DaVinci DRT output (needs Resolve Studio)")
@@ -241,7 +243,7 @@ def options_menu() -> None:
         print()
         print(f"  {BOLD}[1]{NC} FCP7 XML       {_clr(OPT_XML)}[{_onoff(OPT_XML)}]{NC}")
         print(f"  {BOLD}[2]{NC} DRT            {_clr(OPT_DRT)}[{_onoff(OPT_DRT)}]{NC}  (needs Resolve Studio)")
-        print(f"  {BOLD}[3]{NC} DRP project    {_clr_drp(OPT_DRP)}[{OPT_DRP}]{NC}  OFF/BG(no GUI)/ON {YELLOW}- all sequences{NC}")
+        print(f"  {BOLD}[3]{NC} DRP project    {_clr_drp(OPT_DRP)}[{OPT_DRP}]{NC}  OFF/NATIVE/BG(no GUI)/ON {YELLOW}- one DRP per sequence{NC}")
         print(f"  {BOLD}[4]{NC} Export Mode    {_clr_mode(OPT_MODE)}[{OPT_MODE}]{NC}  (AUTO/ALL/MAN)")
         print(f"  {BOLD}[5]{NC} Name suffix    {_clr(OPT_SUFFIX)}[{_onoff(OPT_SUFFIX)}]{NC}  _pr2resolve tag")
         print(f"  {BOLD}[6]{NC} Fix report     {_clr(OPT_REPORT)}[{_onoff(OPT_REPORT)}]{NC}")
@@ -255,6 +257,8 @@ def options_menu() -> None:
             OPT_DRT = not OPT_DRT
         elif ch == "3":
             if OPT_DRP == "OFF":
+                OPT_DRP = "NATIVE"
+            elif OPT_DRP == "NATIVE":
                 OPT_DRP = "BG"
             elif OPT_DRP == "BG":
                 OPT_DRP = "ON"
@@ -292,7 +296,10 @@ def run_pipeline() -> None:
     # Map TUI state → _run_pipeline parameters (mirrors converter.sh argument logic)
     drp_path = None
     drp_gui = None
-    if OPT_DRP == "BG":
+    native_drp = None
+    if OPT_DRP == "NATIVE":
+        native_drp = True
+    elif OPT_DRP == "BG":
         drp_path = True   # signal: auto-compute path
     elif OPT_DRP == "ON":
         drp_gui = True   # signal: auto-compute path
@@ -304,6 +311,7 @@ def run_pipeline() -> None:
         drt=OPT_DRT,
         drp_path=drp_path,      # type: ignore[arg-type]
         drp_gui=drp_gui,        # type: ignore[arg-type]
+        native_drp=native_drp,  # type: ignore[arg-type]
         all_sequences=(OPT_MODE == "ALL"),
         no_suffix=(not OPT_SUFFIX),
         no_xml=(not OPT_XML),

@@ -69,6 +69,7 @@ jobs:
       - name: Check Python syntax
         run: |
           python -m py_compile pr2resolve.py
+          python -m py_compile pr2_native.py
           python -m py_compile pr2_engine.py
           python -m py_compile pr2_constants.py
           python -m py_compile tui.py

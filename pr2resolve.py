@@ -37,6 +37,9 @@ from pr2_engine import (
     _shutdown_resolve,
 )
 
+# ── Native DRP writer ─────────────────────────────────────────────
+from pr2_native import export_native_drp
+
 # ── Recycle utility (also lives in pr2_engine, re-export for convenience) ──
 
 
@@ -303,6 +306,7 @@ def _run_pipeline(
     drt: bool = False,
     drp_path: Optional[Path] = None,
     drp_gui: Optional[Path] = None,
+    native_drp: Optional[Path] = None,
     all_sequences: bool = False,
     nogui: bool = False,
     gui: bool = False,
@@ -322,10 +326,15 @@ def _run_pipeline(
         drp_path = output_dir / f"{stem}.drp"
     if drp_gui is True:
         drp_gui = output_dir / f"{stem}.drp"
+    if native_drp is True:
+        native_drp = output_dir / f"{stem}.drp"
     if drp_path is not None:
         drp_path = _next_available_path(drp_path)
     if drp_gui is not None:
         drp_gui = _next_available_path(drp_gui)
+    if native_drp is not None:
+        native_drp = _next_available_path(native_drp)
+    native_outputs: list[Path] = []
     # output_path / report_path deferred — computed from sequence name after parsing
 
     # Load
@@ -475,6 +484,28 @@ def _run_pipeline(
         print("  All 23 validation checks passed.")
     print()
 
+    if native_drp:
+        print(f"  Native DRP (pure data / no Resolve required): {native_drp}")
+        try:
+            if prproj_root is not None and len(selected_seqs) > 1:
+                for index, selected_sequence in enumerate(selected_seqs, start=1):
+                    fcp = _prproj_parse_sequence(prproj_root, selected_sequence["uid"], input_path)
+                    issues_s = _scan(fcp)
+                    _apply_fixes(fcp, issues_s)
+                    safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
+                    destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
+                    destination = _next_available_path(destination)
+                    export_native_drp(fcp, destination, input_path.stem)
+                    native_outputs.append(destination)
+                    print(f"    Native DRP {index}: {destination}")
+            else:
+                export_native_drp(root, native_drp, input_path.stem)
+                native_outputs.append(native_drp)
+                print(f"  Native DRP written: {native_drp}")
+        except Exception as exc:
+            print(f"  Error: Native DRP export failed: {exc}")
+            return 1
+
     # Write intermediate XML — always needed for DRP/DRT (DaVinci imports from file)
     xml_written = False
     needs_intermediate = drt or drp_path or drp_gui
@@ -605,7 +636,12 @@ def _run_pipeline(
                 print("  Continuing without DRT. XML kept.")
 
     print()
-    if xml_written:
+    if native_outputs:
+        if len(native_outputs) == 1:
+            print(f"  Done. Native DRP: {native_outputs[0]}")
+        else:
+            print(f"  Done. Native DRP: {len(native_outputs)} files")
+    elif xml_written:
         print(f"  Done. {fix_count} fixes applied to {output_path.name}")
     elif drt:
         print(f"  Done. Output: {drt_path.name}")
@@ -628,7 +664,7 @@ def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         prog="pr2resolve",
-        description="Fix Premiere Pro FCP7 XML for DaVinci Resolve compatibility.",
+        description="Convert Premiere Pro .prproj/XML to FCP7 XML, DRT, or native DRP.",
     )
     parser.add_argument("input", type=Path, help="Input file (.xml or .prproj)")
     parser.add_argument("-o", "--output", type=Path, default=None, help="Output directory")
@@ -639,6 +675,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--drp-gui", nargs="?", const=True, type=Path, default=None,
                         dest="drp_gui",
                         help="DRP interactive export for all non-empty sequences")
+    parser.add_argument("--native-drp", nargs="?", const=True, type=Path, default=None,
+                        help="Pure-data native DRP export; no Resolve required")
     parser.add_argument("--all-sequences", action="store_true",
                         help="Export all non-empty sequences (.prproj)")
     parser.add_argument("--nogui", action="store_true", dest="nogui",
@@ -674,6 +712,7 @@ def main() -> int:
         drt=args.drt,
         drp_path=args.drp,
         drp_gui=args.drp_gui,
+        native_drp=args.native_drp,
         all_sequences=args.all_sequences,
         nogui=args.nogui,
         gui=args.gui,

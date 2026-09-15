@@ -1,9 +1,9 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.0.4 — metadata reliability, release automation, and TUI portability*
+> *v1.1.0 — pure-data native DRP export*
 
-# .PRPROJ-.DRT Converter
+# pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
 Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT 和 DRP。
 
@@ -95,6 +95,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **Release 包用户**：不需要安装 Python。
 - **源码运行用户**：需要 Python 3.10+。Windows 安装时建议勾选 `Add Python to PATH`。
 - **纯数据 `.prproj` 转换**：工程中的素材路径、帧率、时码、时长和分辨率直接从 `.prproj` 对象图读取，源素材可以离线或不在本机。
+- **原生 DRP 零媒体扫描**：`.prproj` 或 XML 可直接生成 native DRP，不启动 Resolve、不扫描媒体；每个 batch 序列生成一个独立 DRP，模板面向 Resolve 21。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
 验证源码环境：
@@ -139,6 +140,9 @@ python pr2resolve.py "project.prproj" --drp
 
 # DRP 交互式导出（GUI，工程保持打开）
 python pr2resolve.py "project.prproj" --drp-gui
+
+# 纯数据原生 DRP（无需启动 Resolve）
+python pr2resolve.py "project.prproj" --native-drp
 
 # 生成修正报告
 python pr2resolve.py "input.xml" --report
@@ -208,6 +212,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | `--drt` | flag | 生成 DRT 输出（需达芬奇 Studio） |
 | `--drp` | flag/path | 后台导出 DRP（所有非空序列） |
 | `--drp-gui` | flag/path | 交互式导出 DRP（所有非空序列） |
+| `--native-drp` | flag/path | 纯数据 native DRP（无需 Resolve；batch 每序列一个） |
 | `--all-sequences` | flag | 导出 .prproj 中全部非空序列 |
 | `--sequence` | str | 指定 .prproj 中的序列名 |
 | `--no-suffix` | flag | 输出文件名不加 `_pr2resolve` 后缀 |

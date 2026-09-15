@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 :: pr2resolve - Windows TUI Launcher
 :: ============================================================
 
-set "VERSION=1.0.4"
+set "VERSION=1.1.0"
 set "SCRIPT=%~dp0pr2resolve.py"
 set "PYTHONIOENCODING=utf-8"
 
@@ -17,7 +17,7 @@ set "OPT_REPORT=[OFF]"
 set "OPT_XML=[ON]"
 set "OPT_MODE=[AUTO]"
 set "OPT_SUFFIX=[OFF]"
-set "OPT_DRP=[OFF]"
+set "OPT_DRP=[NATIVE]"
 
 :: Find Python
 set "PYTHON_CMD="
@@ -60,7 +60,11 @@ echo  XML:     !OPT_XML!   FCP7 XML output
 echo  DRT:     !OPT_DRT!  DaVinci DRT output (needs Resolve Studio^)
 if "!OPT_DRP!"=="[ON]" goto _SHOW_DRP_ON
 if "!OPT_DRP!"=="[BG]" goto _SHOW_DRP_BG
+if "!OPT_DRP!"=="[NATIVE]" goto _SHOW_DRP_NATIVE
 echo  DRP:     !OPT_DRP!  DaVinci DRP project export
+goto _AFTER_DRP
+:_SHOW_DRP_NATIVE
+echo  DRP:     [NATIVE]  Pure data / no Resolve required (one per sequence^)
 goto _AFTER_DRP
 :_SHOW_DRP_ON
 echo  DRP:     [ON]  DaVinci DRP interactive (all sequences^)
@@ -167,7 +171,7 @@ echo  ============================================================
 echo.
 echo  [1] FCP7 XML       !OPT_XML!
 echo  [2] DRT            !OPT_DRT!  (needs Resolve Studio^)
-echo  [3] DRP project    !OPT_DRP!  OFF/BG(no GUI^)/ON - all sequences
+echo  [3] DRP project    !OPT_DRP!  OFF/NATIVE/BG(no GUI^)/ON - one per sequence
 echo  [4] Export Mode    !OPT_MODE!  AUTO/ALL/MAN (.prproj^)
 echo  [5] Name suffix    !OPT_SUFFIX!  _pr2resolve tag
 echo  [6] Fix report     !OPT_REPORT!
@@ -201,6 +205,10 @@ if "!OPT_SUFFIX!"=="[ON]" (set "OPT_SUFFIX=[OFF]") else (set "OPT_SUFFIX=[ON]")
 goto OPTIONS
 :_TOG_DRP
 if "!OPT_DRP!"=="[OFF]" (
+    set "OPT_DRP=[NATIVE]"
+    goto OPTIONS
+)
+if "!OPT_DRP!"=="[NATIVE]" (
     set "OPT_DRP=[BG]"
     goto OPTIONS
 )
@@ -233,6 +241,7 @@ if "!OPT_SUFFIX!"=="[OFF]" set "CMD=!CMD! --no-suffix"
 if "!OPT_XML!"=="[OFF]" set "CMD=!CMD! --no-xml"
 if "!OPT_DRP!"=="[BG]" set "CMD=!CMD! --drp"
 if "!OPT_DRP!"=="[ON]" set "CMD=!CMD! --drp-gui"
+if "!OPT_DRP!"=="[NATIVE]" set "CMD=!CMD! --native-drp"
 !CMD!
 echo.
 pause
