@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import math
+import os
 import re
 import struct
 import uuid
@@ -60,7 +61,7 @@ def _native_path(pathurl: str) -> str:
         path = f"//{parsed.netloc}{path}"
     if re.match(r"^/[A-Za-z]:", path):
         path = path[1:]
-    return path.replace("/", "\\")
+    return path.replace("/", "\\") if os.name == "nt" else path
 
 
 def _source_position_code(source_in: int, source_fps: float, timeline_fps: float) -> str:
@@ -265,7 +266,9 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
         for fcp_track in source.findall(f"media/{kind}/track"):
             wrapper, track = ET.SubElement(vector, "Element"), ET.fromstring(ET.tostring(tracks[kind]))
             track.set("DbId", _uid())
-            items = track.find("Items") or ET.SubElement(track, "Items")
+            items = track.find("Items")
+            if items is None:
+                items = ET.SubElement(track, "Items")
             items.clear()
             for clip in fcp_track.findall("clipitem"):
                 file_node = clip.find("file")
