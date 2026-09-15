@@ -1395,26 +1395,6 @@ def _root_cause_hint(issue: Issue) -> str:
 _ADOBE_TIMEBASE_CONSTANT = 10594584000
 _NTSC_FILM_RATE = 24000.0 / 1001.0  # 23.976023976… exact NTSC film rate
 
-# Lumetri parameter name mapping (Chinese → English)
-_LUMETRI_PARAM_MAP: dict[str, str] = {
-    "色温": "Temperature",
-    "色彩": "Tint",
-    "曝光": "Exposure",
-    "对比度": "Contrast",
-    "高光": "Highlights",
-    "阴影": "Shadows",
-    "白色": "Whites",
-    "黑色": "Blacks",
-    "饱和度": "Saturation",
-    "强度": "Intensity",
-    "淡化胶片": "Faded Film",
-    "锐化": "Sharpness",
-    "降噪": "Noise Reduction",
-    "模糊": "Blur",
-    "晕影": "Vignette",
-}
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Index Class
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3539,80 +3519,3 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     print(f"  DaVinci did not start within {timeout}s.")
     _shutdown_resolve()  # kill the process we just launched
     return None
-
-
-def _drt_supplement_lumetri(
-    resolve: Any,
-    lumetri_data: dict[str, dict[str, float]],
-) -> bool:
-    """Supplement DaVinci timeline with Lumetri color data from .prproj.
-
-    Maps PR Lumetri parameters to DaVinci Color Corrector nodes.
-
-    Args:
-        resolve: The DaVinci Resolve object
-        lumetri_data: Dict mapping clip name -> {param_name: value}
-
-    Returns:
-        True if at least one clip was updated
-    """
-    # Lumetri -> DaVinci Color parameter mapping
-    _LUMETRI_TO_DAVINCI: dict[str, str] = {
-        "曝光": "Exposure",    # Exposure (DaVinci Color Page Exposure)
-        "对比度": "Contrast",
-        "高光": "Highlights",
-        "阴影": "Shadows",
-        "白色": "Gain",        # Whites -> Gain wheel
-        "黑色": "Lift",        # Blacks -> Lift wheel
-        "饱和度": "Saturation",
-        "色温": "Temperature",
-        "色彩": "Tint",
-    }
-
-    try:
-        pm = resolve.GetProjectManager()
-        project = pm.GetCurrentProject()
-        if project is None:
-            return False
-
-        timeline = project.GetCurrentTimeline()
-        if timeline is None:
-            return False
-
-        updated = 0
-        for track_idx in range(1, timeline.GetTrackCount("video") + 1):
-            clips = timeline.GetItemListInTrack("video", track_idx)
-            if not clips:
-                continue
-            for clip in clips:
-                clip_name = clip.GetName()
-                if clip_name not in lumetri_data:
-                    continue
-
-                params = lumetri_data[clip_name]
-                if not params:
-                    continue
-                try:
-                    color = clip.GetColor()
-                    if color is None:
-                        continue
-                    for pr_name, da_name in _LUMETRI_TO_DAVINCI.items():
-                        if pr_name not in params:
-                            continue
-                        try:
-                            color.SetCurrentParameterByName(da_name, params[pr_name])
-                            updated += 1
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-
-        if updated > 0:
-            print(f"  Lumetri data applied to {updated} parameters")
-        else:
-            print("  (Lumetri skipped: skeleton import, no source media to attach Color nodes)")
-        return updated > 0
-
-    except Exception as e:
-        print(f"  Error supplementing Lumetri: {e}")
-        return False

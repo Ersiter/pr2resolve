@@ -173,7 +173,7 @@ Two input formats:
 
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
-- DRT — needs DaVinci Studio; exports timelines through the Resolve API and can supplement some Lumetri parameters
+- DRT — needs DaVinci Studio; exports timelines through the Resolve API. Lumetri parameters are extracted and reported, but are not applied automatically
 - DRP — project export with all non-empty sequences
 
 ---
@@ -202,7 +202,7 @@ Three output formats:
 
 - **When to use DRT?**
 
-    You spent time grading in PR and don't want to redo it in DaVinci. DRT goes through DaVinci's Scripting API and writes Lumetri params directly into Color Corrector nodes. DaVinci Studio needs to be running.
+    You spent time grading in PR and don't want to redo it in DaVinci. Current DRT/native DRP export does not apply Lumetri automatically; extracted data is reported so it can be recreated manually in Resolve.
 
 ---
 
@@ -256,7 +256,7 @@ Output:
 | C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media order | Move video before audio |
-| M0 | Lumetri | XML: remove; DRT: map to Color nodes |
+| M0 | Lumetri | XML: remove; DRT/native DRP: do not apply and report |
 | M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | Generate `<link>` for same-source clips |
 | M5 | file details | Fill missing samplecharacteristics |
@@ -275,7 +275,7 @@ All rules apply automatically. They're not optional — skip them and the import
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
-6. **Lumetri isn't perfect** — XML path: removed. DRT path: basic params (Exposure, Contrast, Highlights, Shadows, Temperature, etc.) map to Color nodes. Vignette and Sharpen are approximate.
+6. **Lumetri is not auto-migrated** — XML removes the effect; DRT/native DRP retain project-data extraction but do not call Resolve Color APIs to apply it, and report the limitation.
 
 ---
 

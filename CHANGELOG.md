@@ -9,6 +9,7 @@ All notable changes to pr2resolve.
 - Batch native export writes one independent DRP per selected sequence using the Resolve 21 template.
 - Native DRP maps verified static Basic Motion rotation/scale profiles and rejects unsupported animated transforms explicitly.
 - Native DRP preserves constant forward retimes through source range mapping, while rejecting reverse and variable retimes, transitions, nested sequences, generators, and unsupported video effects before writing a misleading package.
+- Removed the invalid Resolve Color API Lumetri supplement path; DRT and native DRP now report extracted Lumetri data without claiming automatic application.
 - Removed the legacy media file scanning and ffprobe chain; source metadata now comes from project data only.
 
 ## [v1.0.4] — 2026-07-02

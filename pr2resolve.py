@@ -32,7 +32,7 @@ from pr2_engine import (
     _PrprojIndex, _prproj_parse_sequence, _prproj_list_sequences,
     _prproj_extract_all_lumetri,
     _check_resolve_running, _ensure_resolve_running,
-    _drt_sandbox_export, _drt_supplement_lumetri,
+    _drt_sandbox_export,
     _drt_batch_export, _drp_export, _recycle,
     _shutdown_resolve,
 )
@@ -582,7 +582,7 @@ def _run_pipeline(
             if not _drt_sandbox_export(resolve_obj, output_path, drt_path, seq_name_drt):
                 return False
             if lumetri_data:
-                _drt_supplement_lumetri(resolve_obj, lumetri_data)
+                print("  Warning: Lumetri parameters were extracted but are not applied by DRT export.")
             _recycle(output_path)
             print(f"  DRT: {drt_path}")
             print(f"     (intermediate XML moved to recycle bin)")
