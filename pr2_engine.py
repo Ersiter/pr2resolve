@@ -7,6 +7,7 @@ prproj parser, and DRT bridge.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import math
 import os
@@ -1824,8 +1825,13 @@ def _prproj_extract_lumetri(
             start_value = param.find("StartKeyframeValue")
             raw = (start_keyframe.text if start_keyframe is not None else "") or (start_value.text if start_value is not None else "") or ""
             encoding = "blob" if start_value is not None else "scalar"
+            decoded_digest = ""
             if start_value is not None and raw:
                 digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+                try:
+                    decoded_digest = hashlib.sha256(base64.b64decode(raw, validate=True)).hexdigest()
+                except (ValueError, TypeError):
+                    decoded_digest = ""
             else:
                 digest = ""
             records.append(LumetriParameter(
@@ -1839,20 +1845,23 @@ def _prproj_extract_lumetri(
                 digest,
                 param.findtext("IsTimeVarying", "false").lower() == "true",
                 start_keyframe=start_keyframe.text or "" if start_keyframe is not None else "",
-                start_keyframe_position=start_keyframe.get("Position", "") if start_keyframe is not None else "",
+                start_keyframe_position=param.findtext("StartKeyframePosition", ""),
                 start_keyframe_value=start_value.text or "" if start_value is not None else "",
                 binary_hash=start_value.get("BinaryHash", "") if start_value is not None else "",
+                start_keyframe_encoding=start_keyframe.get("Encoding", "") if start_keyframe is not None else "",
+                start_value_encoding=start_value.get("Encoding", "") if start_value is not None else "",
+                decoded_sha256=decoded_digest,
             ))
             # These controls are decoded and retained, but only 11/12/20 have
             # a verified Resolve representation in the current native path.
             unsupported_defaults = {
                 "7": 0.0, "8": 0.0, "13": 0.0, "14": 0.0, "15": 0.0,
-                "16": 0.0, "26": 0.0, "28": 0.0, "29": 0.0, "30": 0.0,
-                "31": 0.0, "33": 0.0, "51": 0.0, "52": 50.0,
-                "53": 0.0, "54": 50.0, "63": 0.0, "64": 0.0,
-                "65": 0.0, "66": 0.0, "81": 0.0, "82": 0.0,
+                "16": 0.0, "26": 100.0, "28": 0.0, "29": 0.0, "30": 0.0,
+                "31": 100.0, "33": 0.0, "51": 0.0, "52": 50.0,
+                "53": 0.0, "54": 50.0, "63": 100.0, "64": 0.0,
+                "65": 100.0, "66": 100.0, "81": 0.0, "82": 0.0,
                 "86": 0.0, "87": 0.0, "88": 0.0, "89": 0.0,
-                "90": 0.0, "123": 0.0,
+                "90": 100.0, "123": 50.0,
             }
             if parameter_id in unsupported_defaults:
                 if param.findtext("IsTimeVarying", "false").lower() == "true":
@@ -3307,6 +3316,7 @@ def _prproj_get_color_profiles(prproj_root: ET.Element) -> dict[str, str]:
                 result[key] = str(data.get("workingSpaceID") or data.get("baseColorProfile", {}).get("colorProfileName") or value)
             except (_json.JSONDecodeError, AttributeError):
                 result[key] = value
+    media_index = 0
     for media in prproj_root.iter("Media"):
         override = media.findtext("OverriddenColorSpace", "")
         original = media.findtext("OriginalColorSpace", "")
@@ -3317,8 +3327,10 @@ def _prproj_get_color_profiles(prproj_root: ET.Element) -> dict[str, str]:
                 name = data.get("baseColorProfile", {}).get("colorProfileName", chosen)
             except (_json.JSONDecodeError, AttributeError):
                 name = chosen
+            identity = media.get("ObjectUID") or media.get("ObjectID") or media.findtext("FilePath") or str(media_index)
+            result[f"media:{identity}"] = str(name)
             result.setdefault("media", str(name))
-            break
+            media_index += 1
     return result
 
 

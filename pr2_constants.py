@@ -186,6 +186,9 @@ class LumetriParameter:
     start_keyframe_position: str = ""
     start_keyframe_value: str = ""
     binary_hash: str = ""
+    start_keyframe_encoding: str = ""
+    start_value_encoding: str = ""
+    decoded_sha256: str = ""
 
 
 @dataclass
