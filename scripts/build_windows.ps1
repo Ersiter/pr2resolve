@@ -158,7 +158,34 @@ if ($UPX_BIN) {
 
 # Package
 Write-Host "[4/5] Packaging $ARCHIVE_NAME.zip..." -ForegroundColor Yellow
-Compress-Archive -Path $EXE_PATH -DestinationPath $ARCHIVE_PATH
+$lockDeadline = (Get-Date).AddSeconds(10)
+$lockReleased = $false
+do {
+    try {
+        $probe = [System.IO.File]::Open($EXE_PATH, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+        $probe.Dispose()
+        $lockReleased = $true
+    } catch [System.IO.IOException] {
+        Start-Sleep -Milliseconds 200
+    } catch {
+        Write-Host "FATAL: Unable to probe executable lock: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
+} while (-not $lockReleased -and (Get-Date) -lt $lockDeadline)
+if (-not $lockReleased) {
+    Write-Host "FATAL: executable remained locked for 10 seconds: $EXE_PATH" -ForegroundColor Red
+    exit 1
+}
+try {
+    Compress-Archive -Path $EXE_PATH -DestinationPath $ARCHIVE_PATH
+} catch {
+    if (Test-Path -LiteralPath $ARCHIVE_PATH) {
+        Remove-Item -LiteralPath $ARCHIVE_PATH -Force
+    }
+    Write-Host "FATAL: packaging failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
 
 # Clean up bare binary (only the zip is distributed)
 Write-Host "[5/5] Cleaning up..." -ForegroundColor Yellow
