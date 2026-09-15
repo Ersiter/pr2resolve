@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""pr2resolve TUI — interactive menu launcher (like converter.sh).
+r"""pr2resolve TUI — interactive menu launcher.
 
 Compiled via Nuitka into a single executable. All work files stay in this directory.
 """
@@ -293,7 +293,7 @@ def run_pipeline() -> None:
     input_path = Path(INPUT_FILE)
     output_dir = Path(OUTPUT_DIR) if OUTPUT_DIR else None
 
-    # Map TUI state → _run_pipeline parameters (mirrors converter.sh argument logic)
+    # Map TUI state to the shared pipeline parameters.
     drp_path = None
     drp_gui = None
     native_drp = None

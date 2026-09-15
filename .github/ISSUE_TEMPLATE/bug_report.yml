@@ -23,8 +23,7 @@ body:
       label: How do you run pr2resolve? / 运行方式
       options:
         - Windows release executable
-        - Source mode with converter.bat
-        - Source mode with converter.sh
+        - Source mode with python pr2resolve.py or python tui.py
         - Direct CLI with python pr2resolve.py
         - Other
     validations:

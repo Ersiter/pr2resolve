@@ -71,23 +71,11 @@ chmod +x pr2resolve
 
 需要改代码、调试或不使用 Release 包时，再使用源码运行。源码运行需要 Python 3.10+。
 
-Windows：
-
-```bat
-converter.bat
-```
-
-macOS / Linux：
-
-```bash
-chmod +x converter.sh
-./converter.sh
-```
-
-也可以直接使用 CLI：
+Windows、macOS / Linux 均可直接运行 CLI 或 TUI：
 
 ```bash
 python pr2resolve.py "project.prproj" -o ./output
+python tui.py
 ```
 
 ---

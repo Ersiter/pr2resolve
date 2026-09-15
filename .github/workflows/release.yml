@@ -45,14 +45,8 @@ jobs:
 
           from pr2_constants import VERSION as source_version
 
-          bat_text = Path("converter.bat").read_text(encoding="utf-8", errors="ignore")
-          sh_text = Path("converter.sh").read_text(encoding="utf-8")
-          bat_match = re.search(r'set "VERSION=([^"]+)"', bat_text)
-          sh_match = re.search(r'VERSION="([^"]+)"', sh_text)
           versions = {
               "pr2_constants.py": source_version,
-              "converter.bat": bat_match.group(1) if bat_match else "",
-              "converter.sh": sh_match.group(1) if sh_match else "",
           }
           mismatches = {name: value for name, value in versions.items() if value != version}
           if mismatches:
@@ -273,7 +267,7 @@ jobs:
             SHA256SUMS.txt \
             --draft \
             --verify-tag \
-            --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve converter" \
+            --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve" \
             --notes-file RELEASE_NOTES.md
 
       - name: Publish release

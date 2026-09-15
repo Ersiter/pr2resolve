@@ -71,23 +71,11 @@ chmod +x pr2resolve
 
 Use source mode when you need to edit, debug, or avoid release packages. Source mode requires Python 3.10+.
 
-Windows:
-
-```bat
-converter.bat
-```
-
-macOS / Linux:
-
-```bash
-chmod +x converter.sh
-./converter.sh
-```
-
-You can also call the CLI directly:
+On Windows, macOS, and Linux, run the CLI or TUI directly:
 
 ```bash
 python pr2resolve.py "project.prproj" -o ./output
+python tui.py
 ```
 
 ---

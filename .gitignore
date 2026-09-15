@@ -57,3 +57,6 @@ output/
 
 # DaVinci Resolve temp
 *.drp.bak
+MIOConsole*.log
+resources/resolve21_*.drp
+!resources/resolve21_native_template.drp

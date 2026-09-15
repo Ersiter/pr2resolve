@@ -34,16 +34,6 @@ VERSION_TARGETS = (
         'VERSION = "{version}"',
     ),
     VersionTarget(
-        "converter.bat",
-        r'set "VERSION=[^"]+"',
-        'set "VERSION={version}"',
-    ),
-    VersionTarget(
-        "converter.sh",
-        r'VERSION="[^"]+"',
-        'VERSION="{version}"',
-    ),
-    VersionTarget(
         "README.md",
         r"\*v[0-9]+\.[0-9]+\.[0-9]+ [^\n]+\*",
         "*v{version} — {tagline}*",

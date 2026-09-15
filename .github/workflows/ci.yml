@@ -54,11 +54,7 @@ jobs:
                           print(f'  tui.py: imports VERSION from pr2resolve')
           "
 
-          echo "converter.bat version:"
-          sed -n 's/.*VERSION="\([^"]*\)".*/\1/p' converter.bat
 
-          echo "converter.sh version:"
-          sed -n 's/.*VERSION="\([^"]*\)".*/\1/p' converter.sh
 
       - name: Verify community files
         run: |
