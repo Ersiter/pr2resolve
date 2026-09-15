@@ -500,13 +500,13 @@ def _run_pipeline(
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
-                    export_native_drp(fcp, destination, input_path.stem)
+                    export_native_drp(fcp, destination, input_path.stem, native_grades)
                     native_outputs.append(destination)
                     print(f"    Native DRP {index}: {destination}")
             else:
                 if lumetri_data:
                     print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records; {_lumetri_conversion_summary(lumetri_data)}; bundled LUT approximation is applied")
-                export_native_drp(root, native_drp, input_path.stem)
+                export_native_drp(root, native_drp, input_path.stem, lumetri_data)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")
         except Exception as exc:

@@ -11,6 +11,7 @@ import struct
 import uuid
 import zipfile
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
@@ -101,6 +102,35 @@ def _lut_body_for_asset(asset_name: str) -> str:
     if len(body) != len(bytes.fromhex(_LUT_BODY_HEX)):
         raise ValueError("native LUT Body length changed")
     return body.hex()
+
+
+def _expand_lut_placeholders(data: bytes) -> bytes:
+    """Expand ET-safe placeholders into Resolve's historical double-colon tags."""
+    text = data.decode("utf-8")
+    pattern = re.compile(r"<PR2LutVersion data-id=\"([^\"]+)\"><HasCorrection>true</HasCorrection><Body>([^<]+)</Body></PR2LutVersion>")
+    def replace(match: re.Match[str]) -> str:
+        version_id, body = match.group(1), match.group(2)
+        return (
+            '<pLmVerTable><ListMgt::LmVersionTable DbId="' + _uid() + '"><FieldsBlob/>'
+            '<VerType>0</VerType><pActive>' + version_id + '</pActive><Locals><Element>'
+            '<ListMgt::LmVersion DbId="' + version_id + '"><FieldsBlob/><Name>Version 1</Name>'
+            '<HasCorrection>true</HasCorrection><VerType>0</VerType><ImplVersion>1</ImplVersion>'
+            '<IncludedInRecording>true</IncludedInRecording><FlatPassEnabled>false</FlatPassEnabled>'
+            '<RGBAOutputEnabled>false</RGBAOutputEnabled><Body>' + body + '</Body>'
+            '<UseVersionClipProcParams>true</UseVersionClipProcParams></ListMgt::LmVersion>'
+            '</Element></Locals><DbSavedTime>0</DbSavedTime></ListMgt::LmVersionTable></pLmVerTable>'
+        )
+    return pattern.sub(replace, text).encode("utf-8")
+
+
+def _ensure_lut_version(node: ET.Element) -> ET.Element:
+    """Create the minimal Resolve version container when clean templates omit it."""
+    version = next((element for element in node.iter() if element.tag in ("ListMgt::LmVersion", "ListMgt::LmLocalVersion")), None)
+    if version is not None:
+        return version
+    version_id = _uid()
+    version = ET.SubElement(node, "PR2LutVersion", {"data-id": version_id})
+    return version
 
 
 def _uid() -> str:
@@ -391,7 +421,7 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
         raise ValueError("native DRP unsupported features: " + "; ".join(dict.fromkeys(problems)))
 
 
-def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, bytes], ET.Element]:
+def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | None = None) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
     timeline_sample = source.find("media/video/format/samplecharacteristics")
@@ -445,12 +475,16 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
     if video_template is None or still_template is None or audio_template is None or audio_only_template is None:
         raise ValueError("codec template lacks required timeline nodes")
     tracks = {kind: ET.fromstring(ET.tostring(native.find(f"{vec}/Element/Sm2TiTrack"))) for vec, kind in (("VideoTrackVec", "video"), ("AudioTrackVec", "audio"))}
+    grade_map = {(g.track_index, g.start_frame, g.end_frame): g for g in (grades or [])}
+    compact_video_track = 0
     for vector_name, kind, generic in (("VideoTrackVec", "video", video_template), ("AudioTrackVec", "audio", audio_template)):
         vector = native.find(vector_name)
         if vector is None or tracks[kind] is None:
             raise ValueError("codec template lacks required track")
         vector.clear()
         for fcp_track in source.findall(f"media/{kind}/track"):
+            if kind == "video" and fcp_track.findall("clipitem"):
+                compact_video_track += 1
             wrapper, track = ET.SubElement(vector, "Element"), ET.fromstring(ET.tostring(tracks[kind]))
             track.set("DbId", _uid())
             items = track.find("Items")
@@ -505,15 +539,14 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
                     motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
                 if motion_payload is not None:
                     _set_child(node, "EffectFiltersBA", motion_payload)
-                if kind == "video" and any(
-                    (effect.findtext("effectid") or "").strip().lower() == "lumetri"
-                    for effect in clip.findall("filter/effect")
-                ):
-                    lut_id = hashlib.sha256((file_node.get("id", "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
-                    version = node.find("pLmVerTable/Locals/Element/ListMgt::LmVersion")
-                    if version is not None:
-                        _set_child(version, "HasCorrection", "true")
-                        _set_child(version, "Body", _lut_body_for_asset(f"pr2/{lut_id}.cube"))
+                grade = None
+                if kind == "video":
+                    grade = grade_map.get((compact_video_track, _int_text(clip, "start"), _int_text(clip, "end")))
+                if grade is not None:
+                    lut_id = hashlib.sha256((file_node.get("id", "") + (clip.findtext("name") or "") + str(compact_video_track) + (clip.findtext("start") or "") + (clip.findtext("end") or "")).encode("utf-8")).hexdigest()[:16]
+                    version = _ensure_lut_version(node)
+                    _set_child(version, "HasCorrection", "true")
+                    _set_child(version, "Body", _lut_body_for_asset(f"pr2/{lut_id}.cube"))
                 item = ET.SubElement(items, "Element")
                 item.append(node)
             for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
@@ -523,13 +556,13 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
     return members, source
 
 
-def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | Path, project_name: str) -> Path:
+def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | Path, project_name: str, grades: list[Any] | None = None) -> Path:
     """Export one FCP7 sequence using the verified codec native template."""
     if not TEMPLATE.is_file():
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     _validate_sequence_capabilities(root)
-    members, source = _build_timeline(sequence)
+    members, source = _build_timeline(sequence, grades)
     pool_name = "MediaPool/Master/MpFolder.xml"
     with zipfile.ZipFile(TEMPLATE) as archive:
         pool = archive.read(pool_name).decode("utf-8", "replace")
@@ -608,10 +641,16 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
     pool = re.sub(r"(?is)<Element>\s*<(?:Sm2MpVideoClip|Sm2MpAudioClip)\b.*?</(?:Sm2MpVideoClip|Sm2MpAudioClip)>\s*</Element>", "", pool)
     pool = re.sub(r"(?is)(<MediaVec>)(.*?)(</MediaVec>)", lambda m: m.group(1) + m.group(2) + "\n" + "\n".join(generated) + m.group(3), pool, count=1)
     members[pool_name] = pool.encode("utf-8")
-    for clip in source.findall(".//video//clipitem"):
-        if any((effect.findtext("effectid") or "").strip().lower() == "lumetri" for effect in clip.findall("filter/effect")):
-            lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
-            members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(_lumetri_xml_values(clip)).encode("ascii")
+    grade_map = {(g.track_index, g.start_frame, g.end_frame): g for g in (grades or [])}
+    compact_video_track = 0
+    for track in source.findall("media/video/track"):
+        if track.findall("clipitem"):
+            compact_video_track += 1
+        for clip in track.findall("clipitem"):
+            grade = grade_map.get((compact_video_track, _int_text(clip, "start"), _int_text(clip, "end")))
+            if grade is not None:
+                lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "") + str(compact_video_track) + (clip.findtext("start") or "") + (clip.findtext("end") or "")).encode("utf-8")).hexdigest()[:16]
+                members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(grade.parameters).encode("ascii")
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as target:
@@ -626,16 +665,12 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
                 text = re.sub(r"(?is)(<Sm2Timeline\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
                 text = text.replace("<Name>Unified Native Template</Name>", f"<Name>{sequence_name}</Name>").replace("<Name>Codec Native Template</Name>", f"<Name>{sequence_name}</Name>")
                 data = text.encode("utf-8")
+            elif name.startswith("SeqContainer/"):
+                data = _expand_lut_placeholders(data)
             target.writestr(name, data)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(result.getvalue())
-    lut_dir = destination.parent / "pr2"
-    for clip in source.findall(".//video//clipitem"):
-        if any((effect.findtext("effectid") or "").strip().lower() == "lumetri" for effect in clip.findall("filter/effect")):
-            lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
-            lut_dir.mkdir(parents=True, exist_ok=True)
-            (lut_dir / f"{lut_id}.cube").write_text(_lumetri_cube_text(_lumetri_xml_values(clip)), encoding="ascii", newline="\n")
     return destination
 
 
