@@ -5,7 +5,7 @@ This module has NO internal dependencies. All other modules import from here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from typing import Optional
@@ -149,6 +149,20 @@ class FilterSpec:
     start: str              # filter range start ("0" or "-1")
     end: str                # filter range end (str(dur) or "-1")
     params: list[FilterParam]
+
+
+@dataclass
+class LumetriGrade:
+    """Static Lumetri grade identified by its timeline clip identity."""
+
+    track_index: int
+    start_frame: int
+    end_frame: int
+    track_item_id: str
+    clip_name: str
+    parameters: dict[str, float]
+    cdl: dict[str, str] = field(default_factory=dict)
+    skipped_reason: str = ""
 
 
 @dataclass

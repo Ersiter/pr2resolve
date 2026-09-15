@@ -405,7 +405,8 @@ def _run_pipeline(
                 if drt:
                     resolve = _ensure_resolve_running(timeout=60, nogui=False)
                     if resolve:
-                        results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names)
+                        batch_grades = [_prproj_extract_all_lumetri(prproj_root, s["uid"]) for s in selected_seqs]
+                        results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names, batch_grades)
                         ok = sum(1 for r in results if r[0])
                         print(f"  Batch DRT: {ok}/{len(results)} exported")
                         ran_drt = True
@@ -427,7 +428,7 @@ def _run_pipeline(
 
                 lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
                 if lumetri_data:
-                    print(f"  Lumetri params: {sum(len(v) for v in lumetri_data.values())} across {len(lumetri_data)} clips")
+                    print(f"  Lumetri grades: {len(lumetri_data)} clip identities extracted")
             else:
                 # Batch mode already converted — use first selected for display
                 root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
@@ -531,6 +532,7 @@ def _run_pipeline(
         non_empty_all = [s for s in all_seqs if s["clip_count"] > 0]
         drp_xml_paths: list[Path] = []
         drp_seq_names: list[str] = []
+        drp_lumetri_grades = []
         print()
         print(f"  DRP: generating XML for all {len(non_empty_all)} sequences...")
         for s in non_empty_all:
@@ -542,12 +544,13 @@ def _run_pipeline(
             _write_fixed_xml(fcp, tmp_xml)
             drp_xml_paths.append(tmp_xml)
             drp_seq_names.append(s["name"])
+            drp_lumetri_grades.append(_prproj_extract_all_lumetri(prproj_root, s["uid"]) if prproj_root is not None else [])
 
         if drp_path:
             print(f"  DRP export (background): {drp_path}")
             resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
             if resolve_drp:
-                _drp_export(resolve_drp, drp_xml_paths, drp_path, stem, drp_seq_names, gui=False, prproj_root=prproj_root)
+                _drp_export(resolve_drp, drp_xml_paths, drp_path, stem, drp_seq_names, gui=False, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades)
                 ran_drp = True
             else:
                 print("  DRP skipped: DaVinci not available")
@@ -556,7 +559,7 @@ def _run_pipeline(
             print(f"  DRP export (interactive): {drp_gui}")
             resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
             if resolve_gui:
-                _drp_export(resolve_gui, drp_xml_paths, drp_gui, stem, drp_seq_names, gui=True, prproj_root=prproj_root)
+                _drp_export(resolve_gui, drp_xml_paths, drp_gui, stem, drp_seq_names, gui=True, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades)
                 ran_drp = True
             else:
                 print("  DRP skipped: DaVinci not available")
@@ -579,10 +582,8 @@ def _run_pipeline(
             print("  touching your current project. It will briefly")
             print("  switch projects and restore afterward.")
             seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
-            if not _drt_sandbox_export(resolve_obj, output_path, drt_path, seq_name_drt):
+            if not _drt_sandbox_export(resolve_obj, output_path, drt_path, seq_name_drt, lumetri_data):
                 return False
-            if lumetri_data:
-                print("  Warning: Lumetri parameters were extracted but are not applied by DRT export.")
             _recycle(output_path)
             print(f"  DRT: {drt_path}")
             print(f"     (intermediate XML moved to recycle bin)")

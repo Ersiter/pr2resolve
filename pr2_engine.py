@@ -7,6 +7,7 @@ prproj parser, and DRT bridge.
 from __future__ import annotations
 
 import copy
+import math
 import os
 import subprocess
 import sys
@@ -23,7 +24,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
-    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo,
+    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo, LumetriGrade,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -1813,9 +1814,11 @@ def _prproj_extract_lumetri(
             if param is None:
                 continue
 
-            pname = param.findtext("Name", "")
+            parameter_id = param.findtext("ParameterID", "")
+            if parameter_id not in {"11", "12", "20"}:
+                continue
             sk = param.findtext("StartKeyframe", "")
-            if not pname or not sk:
+            if not sk or (param.findtext("IsTimeVarying", "false").lower() == "true"):
                 continue
 
             # Parse StartKeyframe: "ticks,value,..." — value is field[1]
@@ -1823,7 +1826,7 @@ def _prproj_extract_lumetri(
             if len(parts) >= 2:
                 try:
                     val = float(parts[1])
-                    params[pname] = val
+                    params[parameter_id] = val
                 except ValueError:
                     pass
 
@@ -1833,7 +1836,7 @@ def _prproj_extract_lumetri(
 def _prproj_extract_all_lumetri(
     prproj_root: ET.Element,
     sequence_uid: str,
-) -> dict[str, dict[str, float]]:
+) -> list[LumetriGrade]:
     """Extract Lumetri parameters for all clips in a sequence.
 
     Walks the Sequence → TrackGroup → TrackItem → SubClip → ComponentChain
@@ -1847,7 +1850,7 @@ def _prproj_extract_all_lumetri(
         Dict mapping clip name → {param_name: value}
     """
     idx = _PrprojIndex.build(prproj_root)
-    lumetri_data: dict[str, dict[str, float]] = {}
+    lumetri_data: list[LumetriGrade] = []
 
     seq_el = None
     for s in prproj_root.findall("Sequence"):
@@ -1856,11 +1859,14 @@ def _prproj_extract_all_lumetri(
             break
     if seq_el is None:
         return lumetri_data
+    fcp_root = _prproj_parse_sequence(prproj_root, sequence_uid, Path(""))
+    fcp_tracks = [t for t in fcp_root.findall(".//sequence/media/video/track") if t.findall("clipitem")]
 
     tg_section = seq_el.find("TrackGroups")
     if tg_section is None:
         return lumetri_data
 
+    compact_track_index = 0
     for tg_pair in tg_section.findall("TrackGroup"):
         second = tg_pair.find("Second")
         if second is None:
@@ -1886,8 +1892,13 @@ def _prproj_extract_all_lumetri(
             ti_section = ct.find(".//TrackItems")
             if ti_section is None:
                 continue
+            track_items = ti_section.findall("TrackItem")
+            if not track_items:
+                continue
+            compact_track_index += 1
 
-            for ti_ref in ti_section.findall("TrackItem"):
+            fcp_track = fcp_tracks[compact_track_index - 1] if compact_track_index <= len(fcp_tracks) else None
+            for item_index, ti_ref in enumerate(track_items):
                 ref = ti_ref.get("ObjectRef")
                 ti_el = idx.resolve_ref(ref) if ref else None
                 if ti_el is None:
@@ -1897,7 +1908,7 @@ def _prproj_extract_all_lumetri(
                 if cti is None:
                     continue
 
-                # Get clip name from SubClip
+                # Get clip identity and timeline range from the object graph.
                 subclip = cti.find("SubClip")
                 clip_name = "(unknown)"
                 if subclip is not None:
@@ -1906,6 +1917,12 @@ def _prproj_extract_all_lumetri(
                     if sc_el is not None:
                         clip_name = sc_el.findtext("Name", clip_name)
 
+                fcp_clip = fcp_track.findall("clipitem")[item_index] if fcp_track is not None and item_index < len(fcp_track.findall("clipitem")) else None
+                track_item = cti.find("TrackItem")
+                start = int(fcp_clip.findtext("start", "0")) if fcp_clip is not None else (_prproj_ticks_to_frames(track_item.findtext("Start", "0"), 30.0) if track_item is not None else 0)
+                end = int(fcp_clip.findtext("end", "0")) if fcp_clip is not None else (_prproj_ticks_to_frames(track_item.findtext("End", "0"), 30.0) if track_item is not None else 0)
+                params: dict[str, float] = {}
+                skipped = ""
                 # Get ComponentChain → Lumetri params
                 co = cti.find("ComponentOwner")
                 if co is not None:
@@ -1914,8 +1931,28 @@ def _prproj_extract_all_lumetri(
                         chain_ref = comps.get("ObjectRef")
                         if chain_ref:
                             params = _prproj_extract_lumetri(idx, chain_ref)
-                            if params:
-                                lumetri_data[clip_name] = params
+                if params:
+                    clean: dict[str, float] = {}
+                    limits = {"11": (-5.0, 5.0), "12": (-100.0, 100.0), "20": (0.0, 200.0)}
+                    for key, value in params.items():
+                        lo, hi = limits[key]
+                        if math.isfinite(value) and lo <= value <= hi:
+                            clean[key] = value
+                    params = clean
+                    if params and params != {"11": 0.0, "12": 0.0, "20": 100.0}:
+                        exposure, contrast, saturation = params.get("11", 0.0), params.get("12", 0.0), params.get("20", 100.0)
+                        factor = max(0.01, min(2.0, 1.0 + contrast / 100.0))
+                        gain = 2.0 ** exposure
+                        offset = gain * 0.18 * (1.0 - factor)
+                        lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, params, {
+                            "Slope": f"{gain * factor:.9g} {gain * factor:.9g} {gain * factor:.9g}",
+                            "Offset": f"{offset:.9g} {offset:.9g} {offset:.9g}",
+                            "Power": "1 1 1", "Saturation": f"{saturation / 100.0:.9g}",
+                        }))
+                    elif not params:
+                        skipped = "invalid or out-of-range static parameters"
+                if skipped:
+                    lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, {}, skipped_reason=skipped))
 
     return lumetri_data
 
@@ -2787,6 +2824,7 @@ def _drt_batch_export(
     xml_paths: list[Path],
     output_dir: Path,
     sequence_names: list[str],
+    lumetri_grades: Optional[list[list[LumetriGrade]]] = None,
 ) -> list[tuple[bool, Optional[Path]]]:
     """Export multiple sequences as DRT files in one DaVinci session.
 
@@ -2847,6 +2885,8 @@ def _drt_batch_export(
             print(f"    Import FAILED")
             results.append((False, None))
             continue
+        if lumetri_grades and i < len(lumetri_grades) and lumetri_grades[i]:
+            _apply_lumetri_cdl(timeline, lumetri_grades[i])
 
         # Force timeline start timecode to 00:00:00:00
         # (DaVinci defaults to 01:00:00:00 regardless of XML sequence timecode)
@@ -2897,6 +2937,7 @@ def _drp_export(
     sequence_names: list[str],
     gui: bool = False,
     prproj_root: Optional[ET.Element] = None,
+    lumetri_grades: Optional[list[list[LumetriGrade]]] = None,
 ) -> bool:
     """Export a full project as DRP with media pool, bin structure, and timelines.
 
@@ -3033,7 +3074,7 @@ def _drp_export(
         # importSourceClips=False — media already in pool from Step 1
         import_failed = False
         failed_xmls: list[tuple[str, Path]] = []
-        for xml_path, seq_name in zip(xml_paths, sequence_names):
+        for seq_index, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
             print("=" * 60)
             print(f"  SEQ_NAME: {seq_name}")
             print(f"  XML: {xml_path}")
@@ -3046,6 +3087,8 @@ def _drp_export(
             print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
                 print(f"  OK: {timeline.GetName()}")
+                if lumetri_grades and seq_index < len(lumetri_grades):
+                    _apply_lumetri_cdl(timeline, lumetri_grades[seq_index])
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
                     timeline.SetSetting("timelineColorSpace", "Rec.709 Gamma 2.4")
@@ -3287,6 +3330,7 @@ def _drt_sandbox_export(
     xml_path: Path,
     output_path: Path,
     timeline_name: str = "Imported",
+    lumetri_grades: Optional[list[LumetriGrade]] = None,
 ) -> bool:
     """Export DRT via a temporary sandbox project.
 
@@ -3378,6 +3422,9 @@ def _drt_sandbox_export(
             timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
         except Exception:
             pass
+
+        if lumetri_grades:
+            _apply_lumetri_cdl(timeline, lumetri_grades)
 
         # Export DRT
         export_result = timeline.Export(
@@ -3519,3 +3566,28 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     print(f"  DaVinci did not start within {timeout}s.")
     _shutdown_resolve()  # kill the process we just launched
     return None
+
+
+def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, int]:
+    """Apply static extracted grades by track and exact timeline frame range."""
+    result = {"applied": 0, "skipped": 0, "failed": 0}
+    for grade in grades:
+        if grade.skipped_reason or not grade.cdl:
+            result["skipped"] += 1
+            continue
+        matches = []
+        for item in timeline.GetItemListInTrack("video", grade.track_index) or []:
+            if item.GetStart() == grade.start_frame and item.GetEnd() == grade.end_frame:
+                matches.append(item)
+        if len(matches) != 1:
+            result["skipped"] += 1
+            print(f"  Lumetri skipped: {grade.clip_name} ({len(matches)} identity matches)")
+            continue
+        try:
+            matches[0].SetCDL({"NodeIndex": 1, **grade.cdl})
+            result["applied"] += 1
+        except Exception as exc:
+            result["failed"] += 1
+            print(f"  Lumetri failed: {grade.clip_name}: {exc}")
+    print("  Lumetri CDL: " + ", ".join(f"{key}={value}" for key, value in result.items()))
+    return result

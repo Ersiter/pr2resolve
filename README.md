@@ -161,7 +161,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 三种输出格式：
 - FCP7 XML — 零依赖，所有达芬奇版本均可导入
-- DRT — 需达芬奇 Studio，可通过 Resolve API 导出时间线；Lumetri 参数仅提取并提示，当前不自动应用
+- DRT — 需达芬奇 Studio，可通过 Resolve API 导出时间线；静态 Lumetri Exposure/Contrast/Saturation 以近似 CDL 应用
 - DRP — 达芬奇工程导出，包含所有非空序列的完整项目结构
 
 ---
@@ -190,7 +190,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **DRT 的使用场景？**
 
-    已在 PR 中完成大量调色，不希望到达芬奇后重做。当前 DRT/native DRP 不自动应用 Lumetri；导出时会保留提取能力并明确提示，需在 Resolve 中人工重做。
+    DRT/API DRP 会将静态 Lumetri 的 Exposure、Contrast、Saturation 近似为 Node 1 的 CDL；动画参数、Highlights/Shadows/Whites/Blacks 与其他参数会跳过并提示。native DRP 仍只提取，不自动应用。
 
 ---
 
@@ -244,7 +244,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | C3-C4 | rate | 补全 `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media 顺序 | video 移到 audio 前面 |
-| M0 | Lumetri | XML: 删除；DRT/native DRP: 不自动应用并明确提示 |
+| M0 | Lumetri | XML: 删除；DRT/API DRP: 静态三参数近似 CDL；native DRP: 不应用 |
 | M1-M2 | clipid/track | 补全 `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | 同源素材生成 `<link>` |
 | M5 | file details | 补全 `<file>` 的 samplecharacteristics |
@@ -263,7 +263,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 3. **素材移动** — XML 存储绝对路径，素材搬移后需在达芬奇 relink。
 4. **达芬奇导入设置** — 建议取消 "Use sizing information"，避免双重缩放。
 5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
-6. **Lumetri 不自动迁移** — XML 路径直接删除 Lumetri；DRT/native DRP 保留工程数据提取，但不调用 Resolve Color API 自动应用，导出时明确提示。
+6. **Lumetri 仅部分迁移** — XML 路径直接删除 Lumetri；DRT/API DRP 只对静态 Exposure、Contrast、Saturation 生成近似 CDL，动画和其余参数跳过；native DRP 不应用。
 
 ---
 
