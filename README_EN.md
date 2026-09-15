@@ -98,6 +98,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
 - **Pure-data `.prproj` conversion**: media paths, frame rates, timecode, duration, and resolution are read from the `.prproj` object graph, so source media may be offline or unavailable on the current machine.
 - **Native DRP without media scanning**: `.prproj` or XML can produce a native DRP directly, without starting Resolve or scanning media. Batch mode writes one DRP per sequence using the Resolve 21 template.
+- **Basic Motion preserved**: native DRP supports verified static Basic Motion rotation/scale profiles; animated or unverified non-default positions fail explicitly.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
 Verify source-mode setup:

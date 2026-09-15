@@ -16,6 +16,14 @@ from xml.etree import ElementTree as ET
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
+# Resolve's static Basic Motion payloads captured from the clean Resolve 21
+# template family.  They contain only transform data; source IDs and paths are
+# not embedded.  Animated or otherwise unsupported values are rejected below.
+_MOTION_PROFILES = {
+    (100.0, 270.0): "00000002000000598128b52ffd20637d0200f4030a49080438144a0f082a1a0b0a09116abc74931804e23f4a0f082b004a004a004a0f082f00fcffffff7f56400a16082c381208085c1a040a0220034a004a00050035a5721780e43adb33c9730c",
+    (146.0, 270.0): "00000002000000e88128b52ffd603b01ed0600140a0aef01080438144a0f082a1a0b0a09113e0ad7438941e43f4a0f082b004a0f08286d2fa1bd84f672bf4a0f082922efeeeeeeeeae3f4a9601082f00fcffffff7f5640528401ffffff804200000000000d003f5840697f562ac04a0ab602087638204a08083b1a040a0220024a9901083c529401ffffff7035e803e0bf4a8901083d0d009a9999999999e93fe803f0406fc00a0e082c38124a004a004a004a004a001900a1cc10f0400bc0452007e01006405a590381b30409011e306e54c09e336e5030381c828ba6842367824c19755e53b37d9a926c5e1a92a713",
+}
+
 
 def _uid() -> str:
     return str(uuid.uuid4())
@@ -223,6 +231,43 @@ def _rewrite_audio_clone(node: ET.Element, full_path: str, preserve_audio_identi
     return _rewrite_av_clone(node, full_path, preserve_audio_identity, duration, fps)
 
 
+def _static_motion_payload(clip: ET.Element) -> str | None:
+    """Return a known static Basic Motion payload, or reject unsupported motion."""
+    basic = next((effect for effect in clip.findall("filter/effect") if (effect.findtext("effectid") or "").strip().lower() == "basic"), None)
+    if basic is None:
+        return None
+    if basic.find(".//keyframe") is not None:
+        raise ValueError(f"animated Basic Motion is unsupported: {clip.findtext('name') or 'clip'}")
+    values = {}
+    for parameter in basic.findall("parameter"):
+        parameter_id = parameter.findtext("parameterid") or ""
+        value = parameter.find("value")
+        if value is None:
+            continue
+        if parameter_id in ("scale", "rotation"):
+            try:
+                values[parameter_id] = float(value.text or "")
+            except ValueError:
+                raise ValueError(f"invalid Basic Motion {parameter_id}: {clip.findtext('name') or 'clip'}")
+        elif parameter_id == "center":
+            horiz, vert = value.findtext("horiz"), value.findtext("vert")
+            if (horiz and float(horiz) != 0.0) or (vert and float(vert) != 0.0):
+                raise ValueError(f"non-default Basic Motion center is unsupported: {clip.findtext('name') or 'clip'}")
+    for effect in clip.findall("filter/effect"):
+        if (effect.findtext("effectid") or "").strip().lower() != "opacity":
+            continue
+        value = next((p.find("value") for p in effect.findall("parameter") if p.findtext("parameterid") == "opacity"), None)
+        if value is not None and value.text and float(value.text) != 100.0:
+            raise ValueError(f"non-default opacity is unsupported: {clip.findtext('name') or 'clip'}")
+    scale, rotation = values.get("scale", 100.0), values.get("rotation", 0.0)
+    if scale == 100.0 and rotation == 0.0:
+        return None
+    try:
+        return _MOTION_PROFILES[(scale, rotation)]
+    except KeyError as exc:
+        raise ValueError(f"unsupported static Basic Motion ({scale:g}, {rotation:g}): {clip.findtext('name') or 'clip'}") from exc
+
+
 def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
@@ -301,6 +346,9 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
                         _set_child(node, "MediaTimemapBA", "02" + (outer + middle + tail).hex())
                     else:
                         _set_child(node, "MediaTimemapBA", "02" + struct.pack(">d", seconds).hex())
+                motion_payload = _static_motion_payload(clip) if kind == "video" else None
+                if motion_payload is not None:
+                    _set_child(node, "EffectFiltersBA", motion_payload)
                 item = ET.SubElement(items, "Element")
                 item.append(node)
             for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
