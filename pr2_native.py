@@ -299,8 +299,17 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
                 problems.append(f"{name}: non-default crop")
             if effect_id == "opacity" and values.get("opacity") and float(values["opacity"]) != 100:
                 problems.append(f"{name}: non-default opacity")
-            if effect_id == "timeremap" and (float(values.get("speed") or 100) != 100 or (values.get("reverse") or "FALSE").upper() == "TRUE" or float(values.get("variablespeed") or 0) != 0):
-                problems.append(f"{name}: retime or speed change")
+            if effect_id == "timeremap":
+                try:
+                    speed = float(values.get("speed") or 100)
+                    variable = float(values.get("variablespeed") or 0)
+                except ValueError:
+                    problems.append(f"{name}: non-numeric retime")
+                    continue
+                if speed <= 0 or (values.get("reverse") or "FALSE").upper() == "TRUE":
+                    problems.append(f"{name}: reverse or non-positive retime")
+                elif variable != 0:
+                    problems.append(f"{name}: variable retime")
     if problems:
         raise ValueError("native DRP unsupported features: " + "; ".join(dict.fromkeys(problems)))
 
@@ -336,6 +345,20 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
         if total <= 0:
             total = max((_int_text(c, "out") for c in source.iter("clipitem") if c.find("file") is not None and c.find("file").get("id") == key), default=0)
         source_frames[key] = total
+    def clip_speed(clip: ET.Element) -> float:
+        speeds = []
+        for effect in clip.findall("filter/effect"):
+            if (effect.findtext("effectid") or "").strip().lower() != "timeremap":
+                continue
+            try:
+                speeds.append(float(next((p.findtext("value") for p in effect.findall("parameter") if p.findtext("parameterid") == "speed"), "100")))
+            except ValueError as exc:
+                raise ValueError(f"non-numeric retime: {clip.findtext('name') or 'clip'}") from exc
+        if not speeds:
+            return 100.0
+        if any(abs(value - speeds[0]) > 1e-9 for value in speeds[1:]):
+            raise ValueError(f"variable retime: {clip.findtext('name') or 'clip'}")
+        return speeds[0]
     refs = {key: _uid() for key in files}
     video_template = next((n for n in native.iter("Sm2TiVideoClip") if n.findtext("Name") == "neutral-source.mp4"), native.find(".//Sm2TiVideoClip"))
     still_template = next((n for n in native.iter("Sm2TiVideoClip") if n.findtext("Name") == "neutral-still.png"), video_template)
@@ -359,6 +382,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
             items.clear()
             for clip in fcp_track.findall("clipitem"):
                 file_node = clip.find("file")
+                if file_node is not None:
+                    file_node = files.get(file_node.get("id") or "", file_node)
                 file_name = file_node.findtext("name") if file_node is not None else ""
                 suffix = Path(file_name or "").suffix.lower()
                 if kind == "video":
@@ -378,7 +403,12 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
                     file_id = file_node.get("id") or ""
                     _set_child(node, "MediaRef", refs.get(file_id, ""))
                     _set_child(node, "MediaFilePath", _native_path(file_node.findtext("pathurl") or ""))
-                    seconds = (source_frames.get(file_id, 0) + 1) / _rate(file_node)
+                    speed = clip_speed(clip)
+                    if abs(speed - 100.0) > 1e-9:
+                        source_span = _int_text(clip, "out") - _int_text(clip, "in") + 1
+                        seconds = max(source_span, 1) / _rate(file_node)
+                    else:
+                        seconds = (source_frames.get(file_id, 0) + 1) / _rate(file_node)
                     if kind == "video":
                         _set_child(node, "CurrentSelectorIdx", "0")
                         _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
