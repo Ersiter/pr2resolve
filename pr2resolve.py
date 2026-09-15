@@ -30,7 +30,7 @@ from pr2_engine import (
     _scan, _apply_fixes, _validate,
     _write_fixed_xml, _generate_report, _make_output_name,
     _PrprojIndex, _prproj_parse_sequence, _prproj_list_sequences,
-    _prproj_extract_all_lumetri,
+    _prproj_extract_all_lumetri, _lumetri_conversion_summary,
     _check_resolve_running, _ensure_resolve_running,
     _drt_sandbox_export,
     _drt_batch_export, _drp_export, _recycle,
@@ -429,6 +429,7 @@ def _run_pipeline(
                 lumetri_data = _prproj_extract_all_lumetri(prproj_root, selected["uid"])
                 if lumetri_data:
                     print(f"  Lumetri grades: {len(lumetri_data)} clip identities extracted")
+                    print(f"  Lumetri controls: {_lumetri_conversion_summary(lumetri_data)}")
             else:
                 # Batch mode already converted — use first selected for display
                 root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
@@ -495,7 +496,7 @@ def _run_pipeline(
                     _apply_fixes(fcp, issues_s)
                     native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
                     if native_grades:
-                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records extracted; CDL is not applied in pure-data output")
+                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records extracted; {_lumetri_conversion_summary(native_grades)}; native DRP does not apply CDL")
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
@@ -504,7 +505,7 @@ def _run_pipeline(
                     print(f"    Native DRP {index}: {destination}")
             else:
                 if lumetri_data:
-                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records extracted; CDL is not applied in pure-data output")
+                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records extracted; {_lumetri_conversion_summary(lumetri_data)}; native DRP does not apply CDL")
                 export_native_drp(root, native_drp, input_path.stem)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")

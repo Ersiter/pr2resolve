@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.2.0 — Lumetri CDL 近似与纯数据 DRP 边界*
+> *v1.3.0 — Lumetri 参数清单、色彩空间读取与纯数据 DRP*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -190,7 +190,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **DRT 的使用场景？**
 
-    DRT/API DRP 会将静态 Lumetri 的 Exposure、Contrast、Saturation 近似为 Node 1 的 CDL；动画参数、Highlights/Shadows/Whites/Blacks 与其他参数会跳过并提示。native DRP 仍只提取，不自动应用。
+    工程读取会按片段身份保留 Lumetri 全部参数的原始编码、动画状态与转换结果；DRT/API DRP 对静态 Exposure、Contrast、Saturation 生成 Node 1 的近似 CDL，其余无法验证的控件逐项计数并提示。native DRP 记录并报告这些数据，但当前不自动写入 opaque 原生调色节点。
 
 ---
 

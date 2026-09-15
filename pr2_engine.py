@@ -7,6 +7,7 @@ prproj parser, and DRT bridge.
 from __future__ import annotations
 
 import copy
+import hashlib
 import math
 import os
 import subprocess
@@ -24,7 +25,7 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
-    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo, LumetriGrade,
+    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo, LumetriGrade, LumetriParameter,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
 )
@@ -1765,7 +1766,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
 def _prproj_extract_lumetri(
     idx: _PrprojIndex,
     component_chain_id: str,
-) -> tuple[dict[str, float], list[str]]:
+) -> tuple[dict[str, float], list[str], list[LumetriParameter]]:
     """Extract Lumetri parameters from a VideoComponentChain.
 
     Args:
@@ -1773,21 +1774,24 @@ def _prproj_extract_lumetri(
         component_chain_id: ObjectID of the VideoComponentChain
 
     Returns:
-        Supported ParameterID values and diagnostic warnings.
+        A CDL candidate map, diagnostics, and one lossless record for every
+        Lumetri parameter encountered.  The record list is deliberately
+        broader than the CDL map so unsupported controls are never silent.
     """
     params: dict[str, float] = {}
     warnings: list[str] = []
+    records: list[LumetriParameter] = []
     chain = idx.resolve_ref(component_chain_id)
     if chain is None:
-        return params, warnings
+        return params, warnings, records
 
     # Components are nested inside ComponentChain/Components
     inner_cc = chain.find("ComponentChain")
     if inner_cc is None:
-        return params, warnings
+        return params, warnings, records
     comps = inner_cc.find("Components")
     if comps is None:
-        return params, warnings
+        return params, warnings, records
 
     for comp_ref in comps.findall("Component"):
         ref = comp_ref.get("ObjectRef")
@@ -1816,27 +1820,74 @@ def _prproj_extract_lumetri(
                 continue
 
             parameter_id = param.findtext("ParameterID", "")
-            unsupported_defaults = {"13": 0.0, "14": 0.0, "15": 0.0, "16": 0.0, "51": 0.0, "52": 50.0, "53": 0.0, "54": 50.0}
+            start_keyframe = param.find("StartKeyframe")
+            start_value = param.find("StartKeyframeValue")
+            raw = (start_keyframe.text if start_keyframe is not None else "") or (start_value.text if start_value is not None else "") or ""
+            encoding = "blob" if start_value is not None else "scalar"
+            if start_value is not None and raw:
+                digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
+            else:
+                digest = ""
+            records.append(LumetriParameter(
+                parameter_id,
+                param.findtext("Name", ""),
+                param.findtext("ParameterControlType", ""),
+                raw,
+                param.findtext("LowerBound", ""),
+                param.findtext("UpperBound", ""),
+                encoding,
+                digest,
+                param.findtext("IsTimeVarying", "false").lower() == "true",
+                start_keyframe=start_keyframe.text or "" if start_keyframe is not None else "",
+                start_keyframe_position=start_keyframe.get("Position", "") if start_keyframe is not None else "",
+                start_keyframe_value=start_value.text or "" if start_value is not None else "",
+                binary_hash=start_value.get("BinaryHash", "") if start_value is not None else "",
+            ))
+            # These controls are decoded and retained, but only 11/12/20 have
+            # a verified Resolve representation in the current native path.
+            unsupported_defaults = {
+                "7": 0.0, "8": 0.0, "13": 0.0, "14": 0.0, "15": 0.0,
+                "16": 0.0, "26": 0.0, "28": 0.0, "29": 0.0, "30": 0.0,
+                "31": 0.0, "33": 0.0, "51": 0.0, "52": 50.0,
+                "53": 0.0, "54": 50.0, "63": 0.0, "64": 0.0,
+                "65": 0.0, "66": 0.0, "81": 0.0, "82": 0.0,
+                "86": 0.0, "87": 0.0, "88": 0.0, "89": 0.0,
+                "90": 0.0, "123": 0.0,
+            }
             if parameter_id in unsupported_defaults:
                 if param.findtext("IsTimeVarying", "false").lower() == "true":
                     warnings.append(f"animated unsupported parameter {parameter_id}")
+                    records[-1].conversion = "unsupported"
+                    records[-1].reason = "animated"
                     continue
                 sk = param.findtext("StartKeyframe", "")
                 try:
                     value = float(sk.split(",")[1])
                 except (IndexError, ValueError):
+                    records[-1].conversion = "invalid"
+                    records[-1].reason = "missing or non-numeric value"
                     continue
                 if math.isfinite(value) and abs(value - unsupported_defaults[parameter_id]) > 1e-9:
                     warnings.append(f"unsupported parameter {parameter_id} changed")
+                    records[-1].conversion = "unsupported"
+                    records[-1].reason = "unsupported changed value"
+                elif not math.isfinite(value):
+                    records[-1].conversion = "invalid"
+                    records[-1].reason = "non-finite value"
                 continue
             if parameter_id not in {"11", "12", "20"}:
+                records[-1].conversion = "preserved"
                 continue
             sk = param.findtext("StartKeyframe", "")
             if param.findtext("IsTimeVarying", "false").lower() == "true":
                 warnings.append(f"animated parameter {parameter_id}")
+                records[-1].conversion = "unsupported"
+                records[-1].reason = "animated"
                 continue
             if not sk:
                 warnings.append(f"missing static value {parameter_id}")
+                records[-1].conversion = "invalid"
+                records[-1].reason = "missing static value"
                 continue
 
             # Parse StartKeyframe: "ticks,value,..." — value is field[1]
@@ -1845,10 +1896,13 @@ def _prproj_extract_lumetri(
                 try:
                     val = float(parts[1])
                     params[parameter_id] = val
+                    records[-1].conversion = "candidate"
                 except ValueError:
                     warnings.append(f"invalid value {parameter_id}")
+                    records[-1].conversion = "invalid"
+                    records[-1].reason = "non-numeric value"
 
-    return params, warnings
+    return params, warnings, records
 
 
 def _prproj_extract_all_lumetri(
@@ -1941,6 +1995,7 @@ def _prproj_extract_all_lumetri(
                 end = _prproj_ticks_to_frames(track_item.findtext("End", "0"), track_fps) if track_item is not None else 0
                 params: dict[str, float] = {}
                 warnings: list[str] = []
+                records: list[LumetriParameter] = []
                 has_cdl = False
                 # Get ComponentChain → Lumetri params
                 co = cti.find("ComponentOwner")
@@ -1949,7 +2004,7 @@ def _prproj_extract_all_lumetri(
                     if comps is not None:
                         chain_ref = comps.get("ObjectRef")
                         if chain_ref:
-                            params, warnings = _prproj_extract_lumetri(idx, chain_ref)
+                            params, warnings, records = _prproj_extract_lumetri(idx, chain_ref)
                 if params:
                     clean: dict[str, float] = {}
                     limits = {"11": (-5.0, 5.0), "12": (-100.0, 100.0), "20": (0.0, 200.0)}
@@ -1971,14 +2026,35 @@ def _prproj_extract_all_lumetri(
                             "Slope": f"{gain * factor:.9g} {gain * factor:.9g} {gain * factor:.9g}",
                             "Offset": f"{offset:.9g} {offset:.9g} {offset:.9g}",
                             "Power": "1 1 1", "Saturation": f"{saturation / 100.0:.9g}",
-                        }, warnings=warnings))
+                        }, warnings=warnings, parameter_records=records))
                         has_cdl = True
-                    elif not params:
+                    elif not params and not warnings:
                         warnings.append("invalid or out-of-range static parameters")
-                if warnings and not has_cdl:
-                    lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, params, skipped_reason="; ".join(warnings), warnings=warnings))
+                if (warnings or records) and not has_cdl:
+                    if not warnings:
+                        warnings.append("no supported static CDL parameters; parameters preserved")
+                    lumetri_data.append(LumetriGrade(
+                        compact_track_index, start, end, ref or "", clip_name, params,
+                        skipped_reason="; ".join(warnings), warnings=warnings,
+                        parameter_records=records,
+                    ))
 
     return lumetri_data
+
+
+def _lumetri_conversion_summary(grades: list[LumetriGrade]) -> dict[str, int]:
+    """Count the explicit conversion outcome of extracted Lumetri controls."""
+    counts = {"converted": 0, "identity": 0, "preserved": 0, "unsupported": 0, "invalid": 0}
+    for grade in grades:
+        for record in grade.parameter_records:
+            outcome = record.conversion
+            if outcome == "candidate":
+                counts["converted"] += 1
+            elif outcome in counts:
+                counts[outcome] += 1
+            else:
+                counts["preserved"] += 1
+    return counts
 
 
 def _prproj_find_media_for_clip(
@@ -3071,6 +3147,8 @@ def _drp_export(
             cp = _prproj_get_color_profile(prproj_root)
             if cp:
                 color_profile = cp
+                profiles = _prproj_get_color_profiles(prproj_root)
+                print(f"  Premiere color profile: output={color_profile}; working={profiles.get('WorkingColorSpace', 'unknown')}; media={profiles.get('media', 'unknown')}")
         if "BT.709" in color_profile or "Rec.709" in color_profile:
             try:
                 project.SetSetting("colorScience", "0")  # DaVinci YRGB
@@ -3115,7 +3193,10 @@ def _drp_export(
                     _apply_lumetri_cdl(timeline, lumetri_grades[seq_index])
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
-                    timeline.SetSetting("timelineColorSpace", "Rec.709 Gamma 2.4")
+                    timeline_color = "Rec.709 Gamma 2.4"
+                    if "HLG" in color_profile.upper():
+                        timeline_color = "Rec.2100 HLG"
+                    timeline.SetSetting("timelineColorSpace", timeline_color)
                 except Exception:
                     pass
             else:
@@ -3207,6 +3288,38 @@ def _prproj_get_color_profile(prproj_root: ET.Element) -> str:
             except (_json.JSONDecodeError, AttributeError):
                 pass
     return ""
+
+
+def _prproj_get_color_profiles(prproj_root: ET.Element) -> dict[str, str]:
+    """Read Premiere color-management profiles without probing media files.
+
+    The JSON values are kept as names because Premiere and Resolve do not share
+    a complete profile vocabulary; callers must report an unmapped profile
+    rather than silently substituting a different transform.
+    """
+    import json as _json
+    result: dict[str, str] = {}
+    for key in ("WorkingColorSpace", "OutputColorSpace", "WorkingColorSpaceConfiguration"):
+        value = next((element.text or "" for element in prproj_root.iter(key)), "")
+        if value:
+            try:
+                data = _json.loads(value)
+                result[key] = str(data.get("workingSpaceID") or data.get("baseColorProfile", {}).get("colorProfileName") or value)
+            except (_json.JSONDecodeError, AttributeError):
+                result[key] = value
+    for media in prproj_root.iter("Media"):
+        override = media.findtext("OverriddenColorSpace", "")
+        original = media.findtext("OriginalColorSpace", "")
+        chosen = override or original
+        if chosen:
+            try:
+                data = _json.loads(chosen)
+                name = data.get("baseColorProfile", {}).get("colorProfileName", chosen)
+            except (_json.JSONDecodeError, AttributeError):
+                name = chosen
+            result.setdefault("media", str(name))
+            break
+    return result
 
 
 def _resolve_pathurl(url: str) -> Optional[str]:

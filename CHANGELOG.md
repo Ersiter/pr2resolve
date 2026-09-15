@@ -2,6 +2,12 @@
 
 All notable changes to pr2resolve.
 
+## [v1.3.0] — 2026-09-15
+
+- Lumetri extraction now retains every encountered parameter's raw encoding, bounds, animation state, and conversion outcome by clip identity.
+- Premiere working/output and media color profiles are read from project data and reported; unmapped profiles are not silently substituted.
+- DRT/API DRP continue to apply only the verified static CDL approximation; native DRP explicitly reports that opaque native grade nodes are not yet written.
+
 ## [v1.2.0] — 2026-09-15
 
 ### Added

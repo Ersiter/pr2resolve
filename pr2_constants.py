@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -164,6 +164,28 @@ class LumetriGrade:
     cdl: dict[str, str] = field(default_factory=dict)
     skipped_reason: str = ""
     warnings: list[str] = field(default_factory=list)
+    parameter_records: list["LumetriParameter"] = field(default_factory=list)
+
+
+@dataclass
+class LumetriParameter:
+    """Lossless project record for one Lumetri parameter."""
+
+    parameter_id: str
+    name: str
+    control_type: str
+    raw_value: str
+    lower_bound: str = ""
+    upper_bound: str = ""
+    encoding: str = "scalar"
+    blob_hash: str = ""
+    is_time_varying: bool = False
+    conversion: str = "preserved"
+    reason: str = ""
+    start_keyframe: str = ""
+    start_keyframe_position: str = ""
+    start_keyframe_value: str = ""
+    binary_hash: str = ""
 
 
 @dataclass

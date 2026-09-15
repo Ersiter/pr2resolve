@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.2.0 — static Lumetri CDL approximation and native DRP boundaries*
+> *v1.3.0 — complete Lumetri inventory, color profiles, and native DRP*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -190,7 +190,7 @@ Three output formats:
 
 - **When to use DRT?**
 
-    DRT/API DRP converts static Lumetri Exposure, Contrast, and Saturation to an approximate CDL on Node 1. Animated parameters, Highlights/Shadows/Whites/Blacks, and other parameters are skipped and reported. Native DRP only extracts data and does not apply it.
+    The project reader retains every Lumetri parameter's raw encoding, animation state, and conversion outcome per clip. DRT/API DRP converts static Exposure, Contrast, and Saturation to an approximate CDL on Node 1; controls without a verified mapping are counted and reported individually. Native DRP records and reports the data but does not currently write opaque native grade nodes.
 
 ---
 
