@@ -2,6 +2,15 @@
 
 All notable changes to pr2resolve.
 
+## [v1.2.0] — 2026-09-15
+
+### Added
+- Lumetri grades are identified per clip by video track and timeline frame range; static Exposure, Contrast, and Saturation can be applied as an approximate CDL in DRT/API DRP export.
+- Native DRP reports extracted Lumetri records but does not apply CDL.
+
+### Changed
+- Removed `converter.bat` and `converter.sh`, together with their release and CI dependencies; source users run `pr2resolve.py` or `tui.py` directly.
+
 ## [v1.1.0] — 2026-09-15
 
 ### Added
@@ -9,7 +18,6 @@ All notable changes to pr2resolve.
 - Batch native export writes one independent DRP per selected sequence using the Resolve 21 template.
 - Native DRP maps verified static Basic Motion rotation/scale profiles and rejects unsupported animated transforms explicitly.
 - Native DRP preserves constant forward retimes through source range mapping, while rejecting reverse and variable retimes, transitions, nested sequences, generators, and unsupported video effects before writing a misleading package.
-- DRT/API DRP now apply static Lumetri Exposure, Contrast, and Saturation as an approximate Node 1 CDL; animated and unsupported parameters are reported, while native DRP remains extraction-only.
 - Removed the legacy media file scanning and ffprobe chain; source metadata now comes from project data only.
 
 ## [v1.0.4] — 2026-07-02

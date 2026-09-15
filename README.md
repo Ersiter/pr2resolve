@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.1.0 — pure-data native DRP export*
+> *v1.2.0 — Lumetri CDL 近似与纯数据 DRP 边界*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 

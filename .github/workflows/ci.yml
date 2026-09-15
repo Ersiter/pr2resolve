@@ -53,9 +53,6 @@ jobs:
                       if alias.name == 'VERSION':
                           print(f'  tui.py: imports VERSION from pr2resolve')
           "
-
-
-
       - name: Verify community files
         run: |
           test -f .github/CONTRIBUTING.md
