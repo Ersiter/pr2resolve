@@ -99,6 +99,7 @@ python pr2resolve.py "project.prproj" -o ./output
 - **纯数据 `.prproj` 转换**：工程中的素材路径、帧率、时码、时长和分辨率直接从 `.prproj` 对象图读取，源素材可以离线或不在本机。
 - **原生 DRP 零媒体扫描**：`.prproj` 或 XML 可直接生成 native DRP，不启动 Resolve、不扫描媒体；每个 batch 序列生成一个独立 DRP，模板面向 Resolve 21。
 - **基础 Motion 保留**：native DRP 支持已验证的静态 Basic Motion 旋转/缩放组合；动画和未验证的非默认位置会明确报错。
+- **兼容性门禁**：无法忠实表达的转场、变速、嵌套序列、生成器和非默认视频效果会在导出前明确拒绝。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
 验证源码环境：

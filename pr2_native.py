@@ -271,6 +271,40 @@ def _static_motion_payload(clip: ET.Element, source_geometry: tuple[int, int], t
         raise ValueError(f"unsupported static Basic Motion ({scale:g}, {rotation:g}): {clip.findtext('name') or 'clip'}") from exc
 
 
+def _validate_sequence_capabilities(root: ET.Element) -> None:
+    """Reject FCP structures that the native writer cannot represent faithfully."""
+    problems: list[str] = []
+    if root.findall(".//transitionitem"):
+        problems.append("transitionitem/transition effects")
+    if root.findall(".//clipitem//sequence") or root.findall(".//generatoritem"):
+        problems.append("nested sequence or generator item")
+    allowed_video = {"basic", "crop", "opacity", "timeremap", "lumetri"}
+    warned_lumetri: set[str] = set()
+    for clip in root.findall(".//clipitem"):
+        name = clip.findtext("name") or "unnamed clip"
+        file_node = clip.find("file")
+        if file_node is None or not file_node.get("id"):
+            problems.append(f"{name}: generator or clip without file")
+        for effect in clip.findall("filter/effect"):
+            effect_id = (effect.findtext("effectid") or "").strip().lower()
+            if effect_id == "lumetri":
+                if name not in warned_lumetri:
+                    print(f"  Warning: {name}: Lumetri is not translated by native DRP")
+                    warned_lumetri.add(name)
+                continue
+            if effect_id not in allowed_video and (effect.findtext("mediatype") or "video").strip().lower() == "video":
+                problems.append(f"{name}: unsupported video effect {effect_id or 'unnamed effect'}")
+            values = {p.findtext("parameterid"): p.findtext("value") for p in effect.findall("parameter")}
+            if effect_id == "crop" and any(float(values.get(key) or 0) != 0 for key in ("left", "right", "top", "bottom")):
+                problems.append(f"{name}: non-default crop")
+            if effect_id == "opacity" and values.get("opacity") and float(values["opacity"]) != 100:
+                problems.append(f"{name}: non-default opacity")
+            if effect_id == "timeremap" and (float(values.get("speed") or 100) != 100 or (values.get("reverse") or "FALSE").upper() == "TRUE" or float(values.get("variablespeed") or 0) != 0):
+                problems.append(f"{name}: retime or speed change")
+    if problems:
+        raise ValueError("native DRP unsupported features: " + "; ".join(dict.fromkeys(problems)))
+
+
 def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
@@ -377,6 +411,8 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
     """Export one FCP7 sequence using the verified codec native template."""
     if not TEMPLATE.is_file():
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
+    root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
+    _validate_sequence_capabilities(root)
     members, source = _build_timeline(sequence)
     pool_name = "MediaPool/Master/MpFolder.xml"
     with zipfile.ZipFile(TEMPLATE) as archive:
