@@ -19,12 +19,12 @@ pr2resolve 是一个开源的 Premiere Pro → DaVinci Resolve 时间线转换�
 
 已知限制包括嵌套序列、PR 文字标题、移动素材后的 relink、非标准像素宽高比，以及 Lumetri 的近似映射。免费版 Resolve 不作为 DRT/DRP 支持目标；FCP7 XML 路径不受该限制。
 
-## 当前真实验证
+## 当前验证与样本边界
 
-在 Windows 工作区使用仓库绑定的 Python 3.12.14 运行：
+公开仓库只分发无媒体内容的合成 fixture `examples/minimal_fcp7.xml`，可用于验证 native DRP 生成，不代表真实项目。Windows 工作区使用仓库绑定的 Python 3.12.14 运行：
 
-- `test/荷花.prproj` 的“序列 01”执行 `--native-drp --report` 成功；输出 native DRP、修正 XML 和报告，日志显示 “All 23 validation checks passed”。诊断阶段有 1 个 N5 多时间基提示。
-- `test/序列 01_pr_direct.xml` 执行 `--diagnose-only` 成功，发现 22 项待处理问题。
-- `tests/run_local_tests.py --mode fast` 当前为 1 passed、4 failed；4 个失败都来自测试仍引用已从主链路移除的 `_ffprobe_*` / `_merge_source_tc_info` 私有接口，不能记作通过。
+- `.github/scripts/ci_smoke_tests.py` 当前 2 项通过，覆盖 prproj 元数据解析和最小 native DRP 输出。
+- `examples/minimal_fcp7.xml` 可直接生成 native DRP；该 fixture 使用 `neutral.mov` 作为路径占位，不读取或分发媒体。
+- 开发机另有未随仓库分发的真实项目样本验证记录；它们不能作为公开复现输入，也不用于声称用户量或性能。
 
 复现命令、样本边界和验收记录见 [reproducibility-checklist.md](reproducibility-checklist.md)。三分钟现场讲解见 [demo-script-3min.md](demo-script-3min.md)。

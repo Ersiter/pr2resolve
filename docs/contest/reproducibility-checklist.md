@@ -10,11 +10,11 @@
 
 ```powershell
 python pr2resolve.py --version
-python pr2resolve.py "test\序列 01_pr_direct.xml" --diagnose-only
-python pr2resolve.py "test\荷花.prproj" -o .\contest-output --sequence "序列 01" --native-drp --report
+python pr2resolve.py "examples\minimal_fcp7.xml" --diagnose-only
+python pr2resolve.py "examples\minimal_fcp7.xml" -o .\contest-output --native-drp --report
 ```
 
-预期：版本输出 `pr2resolve 1.1.0`；XML 诊断退出码为 0 并报告 22 项问题；prproj 命令退出码为 0，生成 native `.drp`、修正 `.xml` 和报告，并输出 `All 23 validation checks passed`。输出目录可换成任意工作目录，不依赖固定盘符。
+预期：版本输出 `pr2resolve 1.1.0`；XML 诊断退出码为 0；native DRP 命令退出码为 0，生成 native `.drp`、修正 `.xml` 和报告，并输出 `All 23 validation checks passed`。输出目录可换成任意工作目录，不依赖固定盘符。
 
 ## 输出路径条件
 
@@ -27,9 +27,9 @@ python pr2resolve.py "test\荷花.prproj" -o .\contest-output --sequence "序列
 
 ## 已记录事实
 
-- `test/荷花.prproj` → “序列 01”：native DRP、XML、报告成功，23 项验证通过；诊断时有 1 项 N5 提示。
-- `test/序列 01_pr_direct.xml`：诊断成功，22 项问题。
-- `tests/run_local_tests.py --mode fast`：1 passed、4 failed。失败是旧测试调用已移除的 ffprobe/合并私有接口；本清单保留该结果，待测试随代码迁移后再更新。
+- `.github/scripts/ci_smoke_tests.py`：2 项通过，覆盖 prproj 元数据解析和最小 native DRP 导出。
+- `examples/minimal_fcp7.xml`：公开合成 fixture，可生成 native DRP；其中 `neutral.mov` 只是路径占位，不需要媒体文件。
+- 开发机真实项目样本另有验证，但未随仓库分发，不能作为公开复现依据。
 
 ## 复核项
 

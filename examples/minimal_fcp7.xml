@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <sequence id="smoke-sequence">
+    <name>Smoke</name>
+    <duration>24</duration>
+    <rate><timebase>24</timebase><ntsc>FALSE</ntsc></rate>
+    <media>
+      <video>
+        <track>
+          <clipitem id="v1">
+            <name>neutral.mov</name>
+            <duration>24</duration>
+            <start>0</start><end>24</end><in>0</in><out>24</out>
+            <file id="f1">
+              <name>neutral.mov</name>
+              <pathurl>neutral.mov</pathurl>
+              <duration>24</duration>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+      <audio />
+    </media>
+  </sequence>
+</xmeml>
