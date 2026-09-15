@@ -15,25 +15,20 @@ Resolve 可导入的文件。很小的改动也可能影响真实剪辑工程，
 ## Development Setup / 开发环境
 
 - Use Python 3.10+ for source mode.
-- No external runtime dependency is required for the normal XML path.
-- FFmpeg / `ffprobe` on `PATH` is strongly recommended for reliable `.prproj`
-  source media timecode, frame rate, and duration detection.
-- DaVinci Resolve Studio is only required for DRT / DRP related verification.
+- Source mode has no external media probing dependency.
+- DaVinci Resolve Studio is only required for DRT, legacy API DRP, and real-device import verification; native DRP generation does not require it.
 - Run from the repository root:
 
 ```bash
 python --version
-ffprobe -version
-python -m py_compile pr2resolve.py pr2_engine.py pr2_constants.py tui.py
+python -m py_compile pr2resolve.py pr2_native.py pr2_engine.py pr2_constants.py tui.py
 ```
 
 中文说明：
 
 - 源码运行需要 Python 3.10+。
-- 普通 XML 转换路径不需要额外运行时依赖。
-- `.prproj` 可靠转换强烈建议安装 FFmpeg，并确保 `ffprobe` 在 `PATH` 中可用，
-  用于读取源素材 timecode、帧率和完整时长。
-- 只有验证 DRT / DRP 相关功能时才需要 DaVinci Resolve Studio。
+- 源码运行不依赖外部媒体探测工具。
+- 只有 DRT、legacy API DRP 和实机导入验证需要 DaVinci Resolve Studio；生成 native DRP 不需要。
 - 命令请在仓库根目录执行。
 
 ## Privacy and Test Files / 隐私与测试文件
