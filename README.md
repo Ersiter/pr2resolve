@@ -9,6 +9,8 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 
 [**README in English**](README_EN.md)
 
+参赛材料：[项目说明](docs/contest/submission-brief.md) · [三分钟演示脚本](docs/contest/demo-script-3min.md) · [复现清单](docs/contest/reproducibility-checklist.md)
+
 <img src="fav.png" alt="pr2resolve TUI" width="600">
 
 </div>
@@ -216,7 +218,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | `--all-sequences` | flag | 导出 .prproj 中全部非空序列 |
 | `--sequence` | str | 指定 .prproj 中的序列名 |
 | `--no-suffix` | flag | 输出文件名不加 `_pr2resolve` 后缀 |
-| `--no-xml` | flag | 跳过 FCP7 XML 输出（仅 --drt 或 --drp 时） |
+| `--no-xml` | flag | 跳过 FCP7 XML 输出（与 --drt、--drp 或 --native-drp 配合时） |
 | `--diagnose-only` | flag | 仅诊断，不修正 |
 | `--version` | flag | 显示版本号 |
 

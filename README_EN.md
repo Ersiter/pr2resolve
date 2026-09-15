@@ -9,6 +9,8 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and D
 
 [**中文 README**](README.md)
 
+Contest materials: [project brief](docs/contest/submission-brief.md) · [3-minute demo](docs/contest/demo-script-3min.md) · [reproducibility checklist](docs/contest/reproducibility-checklist.md)
+
 <img src="fav.png" alt="pr2resolve TUI" width="600">
 
 </div>
@@ -216,7 +218,7 @@ Three output formats:
 | `--all-sequences` | flag | Export all non-empty sequences from .prproj |
 | `--sequence` | str | Sequence name in .prproj |
 | `--no-suffix` | flag | Omit `_pr2resolve` suffix from output filename |
-| `--no-xml` | flag | Skip FCP7 XML output (use with --drt or --drp) |
+| `--no-xml` | flag | Skip FCP7 XML output (use with --drt, --drp, or --native-drp) |
 | `--diagnose-only` | flag | Diagnose only, no fixes |
 | `--version` | flag | Show version |
 
