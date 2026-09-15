@@ -688,7 +688,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-suffix", action="store_true", dest="no_suffix",
                         help=f"Omit '{OUTPUT_SUFFIX}' suffix from output filename")
     parser.add_argument("--no-xml", action="store_true", dest="no_xml",
-                        help="Skip FCP7 XML output (diagnose only, or use with --drt)")
+                        help="Skip FCP7 XML output (use with --drt, --drp, or --native-drp)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     return parser.parse_args()
 
