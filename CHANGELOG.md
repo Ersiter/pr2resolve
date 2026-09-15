@@ -4,9 +4,10 @@ All notable changes to pr2resolve.
 
 ## [v1.3.0] — 2026-09-15
 
-- Lumetri extraction now retains every encountered parameter's raw encoding, bounds, animation state, and conversion outcome by clip identity.
-- Premiere working/output and media color profiles are read from project data and reported; unmapped profiles are not silently substituted.
-- Native DRP now binds a per-clip bundled LUT through the verified Resolve native grade Body; scalar Lumetri controls use a documented approximation and spatial/curve controls remain reported as unsupported.
+- Lumetri extraction retains every encountered ParameterID, raw encoding, bounds, animation state, and binary digest by clip identity.
+- Native DRP compiles static Basic, Creative, RGB/Hue curve, wheel, HDR, and HSL point operations into bundled per-clip LUTs; it stores the complete source records in `pr2/conversion.json`.
+- Sequence-scoped Premiere working/output/media profiles feed verified Resolve 21 Rec.709, ACEScct, and Rec.2100 HLG project settings. API DRP also assigns known media input profiles by path.
+- Spatial operations and animation remain losslessly recorded because a 3D LUT cannot represent them.
 
 ## [v1.2.0] — 2026-09-15
 

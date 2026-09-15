@@ -161,8 +161,8 @@ Two input formats:
 
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
-- DRT — needs DaVinci Studio; exports timelines through the Resolve API and applies a static CDL approximation for Lumetri Exposure, Contrast, and Saturation
-- DRP — project export with all non-empty sequences
+- Native DRP — primary delivery path; writes timelines, clip grades, bundled LUTs, color configuration, and a complete reverse-engineering manifest without starting Resolve
+- API DRT/DRP — compatibility path; needs DaVinci Studio and applies a basic static CDL approximation
 
 ---
 
@@ -188,9 +188,9 @@ Three output formats:
 
     PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with richer timeline, media, and effect context. Feed it .prproj directly, no need to export XML first.
 
-- **When to use DRT?**
+- **How are grades migrated?**
 
-    The project reader retains every Lumetri parameter's raw encoding, animation state, and conversion outcome per clip. DRT/API DRP converts static Exposure, Contrast, and Saturation to an approximate CDL on Node 1; native DRP writes a bundled per-clip LUT (currently a scalar approximation), while spatial and curve controls without a verified mapping are counted and reported individually.
+    The `.prproj` reader retains every encountered ParameterID, raw value, bound, animation state, and binary digest by timeline clip identity. Native DRP compiles static point operations from Basic, Creative, RGB/Hue curves, wheels, HDR, and HSL into a per-clip LUT. Spatial and animated records remain lossless in `pr2/conversion.json`; API DRT/DRP keeps the three-parameter CDL compatibility path.
 
 ---
 
@@ -244,7 +244,7 @@ Output:
 | C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media order | Move video before audio |
-| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: no application |
+| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: full record plus static point operations |
 | M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | Generate `<link>` for same-source clips |
 | M5 | file details | Fill missing samplecharacteristics |
@@ -263,7 +263,8 @@ All rules apply automatically. They're not optional — skip them and the import
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
-6. **Lumetri is only partially migrated** — XML removes the effect; DRT/API DRP apply an approximate CDL for static Exposure, Contrast, and Saturation, while animated and other parameters are skipped and reported. Native DRP does not apply grades.
+6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP preserves those records and states without claiming an equivalent conversion.
+7. **Color-space vocabularies differ** — Native DRP is live-verified for Rec.709, ACEScct, and Rec.2100 HLG project/timeline settings. API DRP also assigns known input spaces by media path. Unknown Premiere profiles remain explicit in the manifest.
 
 ---
 

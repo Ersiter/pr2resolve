@@ -161,8 +161,8 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 三种输出格式：
 - FCP7 XML — 零依赖，所有达芬奇版本均可导入
-- DRT — 需达芬奇 Studio，可通过 Resolve API 导出时间线；静态 Lumetri Exposure/Contrast/Saturation 以近似 CDL 应用
-- DRP — 达芬奇工程导出，包含所有非空序列的完整项目结构
+- native DRP — 主交付路径；无需启动 Resolve，写入时间线、片段调色节点、包内 LUT、色彩配置及完整逆向清单
+- API DRT/DRP — 兼容路径；需达芬奇 Studio，基础静态调色以近似 CDL 应用
 
 ---
 
@@ -188,9 +188,9 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
     PR 自带的 XML 导出是二次加工——先生成删减版 XML 再输出，数据已失真。.prproj 是 PR 原生工程文件（gzip 压缩的 XML），可提供更多时间线、素材和效果上下文。直接提供 .prproj 即可，无需先导出 XML 再修正。
 
-- **DRT 的使用场景？**
+- **调色如何迁移？**
 
-    工程读取会按片段身份保留 Lumetri 全部参数的原始编码、动画状态与转换结果；DRT/API DRP 对静态 Exposure、Contrast、Saturation 生成 Node 1 的近似 CDL，native DRP 写入随包提供的片段 LUT（当前为标量近似），其余空间/曲线控件逐项计数并提示。
+    `.prproj` 读取器按时间线片段身份保存遇到的全部 ParameterID、原始值、边界、动画状态和二进制摘要。native DRP 将基础校正、创意调色、RGB/色相曲线、色轮、HDR 与 HSL 的静态点运算编入片段 LUT；空间运算和动画参数原样写入 `pr2/conversion.json`，不会静默丢弃。API DRT/DRP 保留三参数 CDL 兼容路径。
 
 ---
 
@@ -244,7 +244,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | C3-C4 | rate | 补全 `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media 顺序 | video 移到 audio 前面 |
-| M0 | Lumetri | XML: 删除；DRT/API DRP: 静态三参数近似 CDL；native DRP: 不应用 |
+| M0 | Lumetri | XML: 删除；DRT/API DRP: 静态三参数近似 CDL；native DRP: 全量记录并应用静态点运算 |
 | M1-M2 | clipid/track | 补全 `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | 同源素材生成 `<link>` |
 | M5 | file details | 补全 `<file>` 的 samplecharacteristics |
@@ -263,7 +263,8 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 3. **素材移动** — XML 存储绝对路径，素材搬移后需在达芬奇 relink。
 4. **达芬奇导入设置** — 建议取消 "Use sizing information"，避免双重缩放。
 5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
-6. **Lumetri 仅部分迁移** — XML 路径直接删除 Lumetri；DRT/API DRP 只对静态 Exposure、Contrast、Saturation 生成近似 CDL，动画和其余参数跳过；native DRP 不应用。
+6. **Lumetri 空间与时间运算** — 3D LUT 无法表达降噪、锐化、模糊、暗角和关键帧。native DRP 会保留这些参数及状态，但不把它们伪装成等价转换。
+7. **色彩空间词汇差异** — native DRP 已实机验证 Rec.709、ACEScct 与 Rec.2100 HLG 项目/时间线配置；API DRP 还会按素材路径设置已知输入色彩空间。未知 Premiere 配置会进入清单并明确报告。
 
 ---
 
