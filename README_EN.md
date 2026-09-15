@@ -190,7 +190,7 @@ Three output formats:
 
 - **When to use DRT?**
 
-    The project reader retains every Lumetri parameter's raw encoding, animation state, and conversion outcome per clip. DRT/API DRP converts static Exposure, Contrast, and Saturation to an approximate CDL on Node 1; controls without a verified mapping are counted and reported individually. Native DRP records and reports the data but does not currently write opaque native grade nodes.
+    The project reader retains every Lumetri parameter's raw encoding, animation state, and conversion outcome per clip. DRT/API DRP converts static Exposure, Contrast, and Saturation to an approximate CDL on Node 1; native DRP writes a bundled per-clip LUT (currently a scalar approximation), while spatial and curve controls without a verified mapping are counted and reported individually.
 
 ---
 

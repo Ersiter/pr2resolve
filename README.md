@@ -190,7 +190,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **DRT 的使用场景？**
 
-    工程读取会按片段身份保留 Lumetri 全部参数的原始编码、动画状态与转换结果；DRT/API DRP 对静态 Exposure、Contrast、Saturation 生成 Node 1 的近似 CDL，其余无法验证的控件逐项计数并提示。native DRP 记录并报告这些数据，但当前不自动写入 opaque 原生调色节点。
+    工程读取会按片段身份保留 Lumetri 全部参数的原始编码、动画状态与转换结果；DRT/API DRP 对静态 Exposure、Contrast、Saturation 生成 Node 1 的近似 CDL，native DRP 写入随包提供的片段 LUT（当前为标量近似），其余空间/曲线控件逐项计数并提示。
 
 ---
 

@@ -496,7 +496,7 @@ def _run_pipeline(
                     _apply_fixes(fcp, issues_s)
                     native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
                     if native_grades:
-                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records extracted; {_lumetri_conversion_summary(native_grades)}; native DRP does not apply CDL")
+                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records; {_lumetri_conversion_summary(native_grades)}; bundled LUT approximation is applied")
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
@@ -505,7 +505,7 @@ def _run_pipeline(
                     print(f"    Native DRP {index}: {destination}")
             else:
                 if lumetri_data:
-                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records extracted; {_lumetri_conversion_summary(lumetri_data)}; native DRP does not apply CDL")
+                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records; {_lumetri_conversion_summary(lumetri_data)}; bundled LUT approximation is applied")
                 export_native_drp(root, native_drp, input_path.stem)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")

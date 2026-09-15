@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import math
 import os
 import re
@@ -24,6 +25,82 @@ _MOTION_PROFILES = {
     (146.0, 270.0): "00000002000000e88128b52ffd603b01ed0600140a0aef01080438144a0f082a1a0b0a09113e0ad7438941e43f4a0f082b004a0f08286d2fa1bd84f672bf4a0f082922efeeeeeeeeae3f4a9601082f00fcffffff7f5640528401ffffff804200000000000d003f5840697f562ac04a0ab602087638204a08083b1a040a0220024a9901083c529401ffffff7035e803e0bf4a8901083d0d009a9999999999e93fe803f0406fc00a0e082c38124a004a004a004a004a001900a1cc10f0400bc0452007e01006405a590381b30409011e306e54c09e336e5030381c828ba6842367824c19755e53b37d9a926c5e1a92a713",
 }
 _MOTION_PROFILE_GEOMETRY = (1920, 1080, 1080, 1920)
+
+# Resolve 21's native LUT version payload, captured from a clean project.  It
+# is a structural seed only; the LUT asset beside the DRP is generated below.
+_LUT_BODY_HEX = (
+    "8128b52ffd20e4650600040c0adc01080110011a4808800f10b8081d0000803f20"
+    "800f28b808350000803f38800f40b80848ffffffff0f7a240000803f003a670801"
+    "100120be0128b4013801402c4a440a3b080118013235123308011a0a08a08180b008"
+    "120210061a2308a11b2a19414345535c4c4d5420414345532076302e312e312e637562"
+    "6512050304050612520c0a0a08818080800c1202100260e7a69f0d4a0e080110501a"
+    "080801104018012001520e080210401a08080210401802200160cecdbe1a20f8bdbe"
+    "1a03007e116aa667e50050"
+)
+
+
+def _lumetri_cube_text(values: dict[str, float]) -> str:
+    """Return a deterministic approximate LUT for scalar Lumetri controls."""
+    stream = io.StringIO()
+    stream.write('TITLE "pr2resolve Lumetri approximation"\nLUT_3D_SIZE 33\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n')
+    gain = 2.0 ** values.get("11", 0.0)
+    contrast = max(0.01, min(2.0, 1.0 + values.get("12", 0.0) / 100.0))
+    saturation = max(0.0, values.get("20", 100.0) / 100.0)
+    saturation *= max(0.0, 1.0 + values.get("30", 0.0) / 100.0)
+    saturation *= max(0.0, values.get("31", 100.0) / 100.0)
+    temp, tint = values.get("7", 0.0) / 300.0, values.get("8", 0.0) / 300.0
+    for b in range(33):
+        for g in range(33):
+            for r in range(33):
+                rgb = [r / 32.0, g / 32.0, b / 32.0]
+                luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+                rgb = [max(0.0, min(1.0, ((v - 0.18) * contrast + 0.18) * gain)) for v in rgb]
+                rgb = [max(0.0, min(1.0, luma + (v - luma) * saturation)) for v in rgb]
+                rgb[0] = max(0.0, min(1.0, rgb[0] + temp * 0.05))
+                rgb[2] = max(0.0, min(1.0, rgb[2] - temp * 0.05))
+                rgb[1] = max(0.0, min(1.0, rgb[1] + tint * 0.03))
+                stream.write(f"{rgb[0]:.9f} {rgb[1]:.9f} {rgb[2]:.9f}\n")
+    return stream.getvalue()
+
+
+def _identity_cube(path: Path) -> None:
+    """Write a deterministic 33^3 identity LUT for native asset binding."""
+    with path.open("w", encoding="ascii", newline="\n") as stream:
+        stream.write(_lumetri_cube_text({}))
+
+
+def _lumetri_xml_values(clip: ET.Element) -> dict[str, float]:
+    values: dict[str, float] = {}
+    for effect in clip.findall("filter/effect"):
+        if (effect.findtext("effectid") or "").strip().lower() != "lumetri":
+            continue
+        for parameter in effect.findall("parameter"):
+            key = parameter.findtext("parameterid") or ""
+            raw = (parameter.findtext("value") or "").split(",")
+            if key in {"7", "8", "11", "12", "13", "14", "15", "16", "20", "30", "31"} and len(raw) > 1:
+                try:
+                    values[key] = float(raw[1])
+                except ValueError:
+                    pass
+    return values
+
+
+def _lut_body_for_asset(asset_name: str) -> str:
+    """Bind a relative LUT name into the verified native Body payload."""
+    body = bytearray(bytes.fromhex(_LUT_BODY_HEX))
+    if body[:2] != b"\x81\x28" or body[1:5] != b"(\xb5/\xfd":
+        raise ValueError("native LUT Body seed is not the expected zstd frame")
+    old = b"ACES\\LMT ACES v0.1.1.cube"
+    new = asset_name.encode("ascii")
+    if len(new) != len(old):
+        raise ValueError("native LUT asset name must retain the template path length")
+    offset = body.find(old)
+    if offset < 0:
+        raise ValueError("native LUT Body seed has no LUT path")
+    body[offset:offset + len(old)] = new
+    if len(body) != len(bytes.fromhex(_LUT_BODY_HEX)):
+        raise ValueError("native LUT Body length changed")
+    return body.hex()
 
 
 def _uid() -> str:
@@ -289,7 +366,7 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
             effect_id = (effect.findtext("effectid") or "").strip().lower()
             if effect_id == "lumetri":
                 if name not in warned_lumetri:
-                    print(f"  Warning: {name}: Lumetri is not translated by native DRP")
+                    print(f"  Warning: {name}: Lumetri uses an approximate native LUT; spatial/curve controls remain reported")
                     warned_lumetri.add(name)
                 continue
             if effect_id not in allowed_video and (effect.findtext("mediatype") or "video").strip().lower() == "video":
@@ -428,6 +505,15 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree) -> tuple[dict[str, by
                     motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
                 if motion_payload is not None:
                     _set_child(node, "EffectFiltersBA", motion_payload)
+                if kind == "video" and any(
+                    (effect.findtext("effectid") or "").strip().lower() == "lumetri"
+                    for effect in clip.findall("filter/effect")
+                ):
+                    lut_id = hashlib.sha256((file_node.get("id", "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
+                    version = node.find("pLmVerTable/Locals/Element/ListMgt::LmVersion")
+                    if version is not None:
+                        _set_child(version, "HasCorrection", "true")
+                        _set_child(version, "Body", _lut_body_for_asset(f"pr2/{lut_id}.cube"))
                 item = ET.SubElement(items, "Element")
                 item.append(node)
             for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
@@ -522,6 +608,10 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
     pool = re.sub(r"(?is)<Element>\s*<(?:Sm2MpVideoClip|Sm2MpAudioClip)\b.*?</(?:Sm2MpVideoClip|Sm2MpAudioClip)>\s*</Element>", "", pool)
     pool = re.sub(r"(?is)(<MediaVec>)(.*?)(</MediaVec>)", lambda m: m.group(1) + m.group(2) + "\n" + "\n".join(generated) + m.group(3), pool, count=1)
     members[pool_name] = pool.encode("utf-8")
+    for clip in source.findall(".//video//clipitem"):
+        if any((effect.findtext("effectid") or "").strip().lower() == "lumetri" for effect in clip.findall("filter/effect")):
+            lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
+            members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(_lumetri_xml_values(clip)).encode("ascii")
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as target:
@@ -540,6 +630,12 @@ def export_native_drp(sequence: ET.Element | ET.ElementTree, output_path: str | 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(result.getvalue())
+    lut_dir = destination.parent / "pr2"
+    for clip in source.findall(".//video//clipitem"):
+        if any((effect.findtext("effectid") or "").strip().lower() == "lumetri" for effect in clip.findall("filter/effect")):
+            lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "")).encode("utf-8")).hexdigest()[:16]
+            lut_dir.mkdir(parents=True, exist_ok=True)
+            (lut_dir / f"{lut_id}.cube").write_text(_lumetri_cube_text(_lumetri_xml_values(clip)), encoding="ascii", newline="\n")
     return destination
 
 
