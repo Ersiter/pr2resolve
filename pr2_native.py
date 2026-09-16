@@ -709,58 +709,52 @@ def _export_native_project(
         with zipfile.ZipFile(packages[0]) as first:
             members = {info.filename: first.read(info.filename) for info in first.infolist()}
         pool_name = "MediaPool/Master/MpFolder.xml"
-        pool = ET.fromstring(members[pool_name])
-        media_vec = pool.find("MediaVec")
-        if media_vec is None:
+        pool = members[pool_name].decode("utf-8", "replace")
+        if "<MediaVec>" not in pool:
             raise ValueError("native project has no media pool vector")
-        project = ET.fromstring(members["project.xml"])
         conversion_manifests = []
         for package in packages:
             with zipfile.ZipFile(package) as archive:
                 conversion_manifests.append(json.loads(archive.read("pr2/conversion.json")))
         for package in packages[1:]:
             with zipfile.ZipFile(package) as archive:
-                extra_pool = ET.fromstring(archive.read(pool_name))
+                extra_pool = archive.read(pool_name).decode("utf-8", "replace")
                 extra_seq_name = next(name for name in archive.namelist() if name.startswith("SeqContainer/"))
                 extra_seq = archive.read(extra_seq_name).decode("utf-8", "replace")
-            timeline_clip = extra_pool.find(".//Sm2MpTimelineClip")
-            timeline = extra_pool.find(".//Sm2Timeline")
-            nested_sequence = timeline.find("Sequence/Sm2Sequence") if timeline is not None else None
-            if timeline_clip is None or timeline is None or nested_sequence is None:
+            timeline_match = re.search(r"(?s)<Element>\s*(<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>)\s*</Element>", extra_pool)
+            if timeline_match is None:
                 raise ValueError("native timeline package has incomplete sequence topology")
             old_container = re.search(r"<Sm2SequenceContainer\b[^>]*\bDbId=\"([^\"]+)\"", extra_seq)
             if old_container is None:
                 raise ValueError("native sequence container has no DbId")
-            old_sequence = nested_sequence.get("DbId") or ""
             new_container, new_sequence = _uid(), _uid()
             new_timeline, new_timeline_clip = _uid(), _uid()
             new_sequence_unique, new_media_unique = _uid(), _uid()
             extra_seq = extra_seq.replace(old_container.group(1), new_container, 1)
-            if old_sequence:
-                extra_seq = re.sub(r"(<Sequence>)" + re.escape(old_sequence) + r"(</Sequence>)", rf"\g<1>{new_sequence}\g<2>", extra_seq)
-            nested_sequence.set("DbId", new_sequence)
-            sequence_unique = nested_sequence.find("UniqueSequenceId")
-            if sequence_unique is not None:
-                sequence_unique.text = new_sequence_unique
-            if nested_sequence.find("Parent") is not None:
-                nested_sequence.find("Parent").text = new_timeline
-            timeline.set("DbId", new_timeline)
-            timeline.find("MpTimelineClip").text = new_timeline_clip
-            timeline_clip.set("DbId", new_timeline_clip)
-            unique_media = timeline_clip.find("UniqueMediaPoolItemId")
-            if unique_media is not None:
-                unique_media.text = new_media_unique
-            for element in extra_pool.find("MediaVec") or []:
-                media_vec.append(element)
-            members.pop(extra_seq_name, None)
+            old_sequence = re.search(r"<Sequence>([^<]+)</Sequence>", extra_seq)
+            if old_sequence is None:
+                raise ValueError("native sequence container has no sequence reference")
+            extra_seq = extra_seq.replace(old_sequence.group(1), new_sequence)
+            timeline_block = timeline_match.group(1)
+            timeline_block = re.sub(r'(<Sm2MpTimelineClip DbId=")[^"]+', rf'\g<1>{new_timeline_clip}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<UniqueMediaPoolItemId>)[^<]+', rf'\g<1>{new_media_unique}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<Sm2Timeline DbId=")[^"]+', rf'\g<1>{new_timeline}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<MpTimelineClip>)[^<]+', rf'\g<1>{new_timeline_clip}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<Sm2Sequence DbId=")[^"]+', rf'\g<1>{new_sequence}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<UniqueSequenceId>)[^<]+', rf'\g<1>{new_sequence_unique}', timeline_block, count=1)
+            timeline_block = re.sub(r'(<Parent>)[^<]+', rf'\g<1>{new_timeline}', timeline_block, count=1)
+            extra_media = re.search(r"(?s)<MediaVec>(.*?)</MediaVec>", extra_pool)
+            if extra_media is None:
+                raise ValueError("native timeline package has no media pool vector")
+            extra_media_text = extra_media.group(1).replace(timeline_match.group(1), timeline_block, 1)
+            pool = re.sub(r"(?s)(<MediaVec>.*?)(</MediaVec>)", lambda match: match.group(1) + "\n" + extra_media_text + match.group(2), pool, count=1)
             members[f"SeqContainer/{new_container}.xml"] = extra_seq.encode("utf-8")
-        members[pool_name] = _xml(pool)
-        merged_conversion = conversion_manifests[0]
+        members[pool_name] = pool.encode("utf-8")
+        merged_conversion = dict(conversion_manifests[0])
         merged_conversion["lumetri"] = [grade for item in conversion_manifests for grade in item.get("lumetri", [])]
         merged_conversion["timeline_state"] = [item.get("timeline_state", {}) for item in conversion_manifests]
         merged_conversion["timelines"] = conversion_manifests
         members["pr2/conversion.json"] = json.dumps(merged_conversion, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        members["project.xml"] = _xml(project)
         destination = Path(output_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target:
