@@ -2688,13 +2688,9 @@ def _prproj_parse_sequence(
                 if ct is None:
                     continue
                 ti_section = ct.find(".//TrackItems")
-                if ti_section is None:
-                    continue
-                # Only create track if it has items (DC: no empty tracks)
-                track_items = ti_section.findall("TrackItem")
-                if not track_items:
-                    continue
-                fcp_track_index = len(video_section.findall("track")) + 1
+                track_items = ti_section.findall("TrackItem") if ti_section is not None else []
+                # Preserve source topology so state indexes and later API writes stay aligned.
+                fcp_track_index = vt_idx
                 track_node = track_el.find("ClipTrack/Track")
                 track_props = track_node.find("Node/Properties") if track_node is not None else None
                 track_data = TrackData(
@@ -2753,13 +2749,8 @@ def _prproj_parse_sequence(
                 if a_ct is None:
                     continue
                 a_ti_section = a_ct.find(".//TrackItems")
-                if a_ti_section is None:
-                    continue
-                # Only create track if it has items (DC: no empty tracks)
-                a_track_items = a_ti_section.findall("TrackItem")
-                if not a_track_items:
-                    continue
-                fcp_track_index = len(audio_section.findall("track")) + 1
+                a_track_items = a_ti_section.findall("TrackItem") if a_ti_section is not None else []
+                fcp_track_index = at_idx
                 track_node = a_track_el.find("ClipTrack/Track")
                 track_props = track_node.find("Node/Properties") if track_node is not None else None
                 a_track_data = TrackData(

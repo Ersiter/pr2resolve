@@ -618,6 +618,20 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
         raise ValueError("native DRP unsupported features: " + "; ".join(dict.fromkeys(problems)))
 
 
+def _timeline_state_manifest(root: ET.Element) -> dict[str, Any]:
+    """Read opaque Premiere timeline state carried beside the FCP7 sequence."""
+    for node in root:
+        if node.tag is not ET.Comment or not (node.text or "").strip().startswith("pr2resolve-timeline-state:"):
+            continue
+        encoded = (node.text or "").strip().split(":", 1)[1]
+        try:
+            value = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
 def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | None = None) -> tuple[dict[str, bytes], ET.Element]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
@@ -765,6 +779,7 @@ def export_native_drp(
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     _validate_sequence_capabilities(root)
+    timeline_state = _timeline_state_manifest(root)
     members, source = _build_timeline(sequence, grades)
     pool_name = "MediaPool/Master/MpFolder.xml"
     with zipfile.ZipFile(TEMPLATE) as archive:
@@ -859,6 +874,7 @@ def export_native_drp(
         "format": 1,
         "color": color_plan,
         "lumetri": [_grade_manifest(grade) for grade in (grades or [])],
+        "timeline_state": timeline_state,
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
