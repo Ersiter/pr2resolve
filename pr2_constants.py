@@ -91,6 +91,8 @@ class ClipData:
     source_h: int = 0                     # Media→VideoStream→FrameRect height
     scale: float = 100.0                  # PR Motion Scale (StartKeyframe)
     rotation: float = 0.0                 # PR Motion Rotation (StartKeyframe)
+    label_name: str = ""                  # Premiere label preset name, if present
+    label_raw_color: str = ""              # Premiere color payload, encoding not assumed
 
 
 @dataclass
@@ -205,6 +207,42 @@ class TrackData:
     index: int            # 1-based track index
     enabled: bool = True
     locked: bool = False
+    muted: bool = False
+    solo: bool = False
+    name: str = ""
+
+
+@dataclass
+class TimelineMarkerData:
+    """Marker attached to a sequence, track, or clip in source timeline."""
+
+    name: str = ""
+    comment: str = ""
+    start_frame: int = 0
+    end_frame: int = -1
+    marker_type: str = "Comment"
+    color_index: Optional[int] = None
+    raw_payload: str = ""
+    scope: str = "sequence"
+    track_type: str = ""
+    track_index: int = 0
+
+
+@dataclass
+class TimelineState:
+    """Timeline metadata with explicit records for fields lacking a safe mapping."""
+
+    sequence_uid: str = ""
+    in_frame: Optional[int] = None
+    out_frame: Optional[int] = None
+    work_in_frame: Optional[int] = None
+    work_out_frame: Optional[int] = None
+    raw_in_ticks: str = ""
+    raw_out_ticks: str = ""
+    raw_work_in_ticks: str = ""
+    raw_work_out_ticks: str = ""
+    markers: list[TimelineMarkerData] = field(default_factory=list)
+    unknown: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass

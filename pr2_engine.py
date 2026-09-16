@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import base64
 import hashlib
+import json
 import math
 import os
 import subprocess
@@ -27,7 +28,8 @@ from pr2_constants import (
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
-    FilterParam, FilterSpec, TrackData, TransitionData, _SourceTCInfo, LumetriGrade, LumetriParameter,
+    FilterParam, FilterSpec, TrackData, TransitionData, TimelineState, TimelineMarkerData,
+    _SourceTCInfo, LumetriGrade, LumetriParameter,
     LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, load_xml, load_prproj,
@@ -1498,6 +1500,120 @@ def _prproj_ticks_to_frames(ticks_str: str, fps: float) -> int:
     return int(round(seconds * fps))
 
 
+def _prproj_parse_marker_owner(
+    owner: Optional[ET.Element], idx: _PrprojIndex, fps: float,
+    *, scope: str = "sequence", track_type: str = "", track_index: int = 0,
+) -> list[TimelineMarkerData]:
+    """Resolve Premiere marker references while retaining source payloads."""
+    if owner is None:
+        return []
+    markers_ref = owner.find("Markers")
+    markers_obj = idx.resolve_ref(markers_ref.get("ObjectRef", "")) if markers_ref is not None else None
+    if markers_obj is None:
+        return []
+    result: list[TimelineMarkerData] = []
+    for marker_ref in markers_obj.findall(".//Marker/Second"):
+        marker = idx.resolve_ref(marker_ref.get("ObjectRef", ""))
+        if marker is None:
+            continue
+        payload = marker.findtext("DVAMarker", "")
+        try:
+            data = json.loads(payload)
+            details = data.get("DVAMarker", {})
+        except (json.JSONDecodeError, AttributeError):
+            details = {}
+        start_data = details.get("mStartTime", {})
+        duration_data = details.get("mDuration", {})
+        start = start_data.get("ticks") if isinstance(start_data, dict) else None
+        duration = duration_data.get("ticks") if isinstance(duration_data, dict) else None
+        try:
+            start_frame = _prproj_ticks_to_frames(str(start), fps) if start is not None else 0
+            end_frame = (start_frame + _prproj_ticks_to_frames(str(duration), fps)
+                         if duration is not None else -1)
+        except (TypeError, ValueError):
+            start_frame, end_frame = 0, -1
+        result.append(TimelineMarkerData(
+            name=str(details.get("mName", "")),
+            comment=str(details.get("mComments", details.get("mComment", ""))),
+            start_frame=start_frame,
+            end_frame=end_frame,
+            marker_type=str(details.get("mType", "Comment")),
+            color_index=(int(details["mColorIndex"]) if str(details.get("mColorIndex", "")).isdigit() else None),
+            raw_payload=payload,
+            scope=scope,
+            track_type=track_type,
+            track_index=track_index,
+        ))
+    return result
+
+
+def _prproj_extract_timeline_state(
+    sequence: ET.Element, idx: _PrprojIndex, fps: float,
+) -> TimelineState:
+    """Extract known timeline state and inventory untranslatable Premiere fields."""
+    state = TimelineState(sequence_uid=sequence.get("ObjectUID", ""))
+    for source_name, target_name in (
+        ("MZ.InPoint", "in_frame"), ("MZ.OutPoint", "out_frame"),
+        ("MZ.WorkInPoint", "work_in_frame"), ("MZ.WorkOutPoint", "work_out_frame"),
+    ):
+        raw = sequence.findtext(f"Node/Properties/{source_name}")
+        if raw is None:
+            continue
+        setattr(state, f"raw_{target_name.replace('_frame', '_ticks')}", raw)
+        try:
+            ticks = int(raw)
+        except ValueError:
+            state.unknown.append((source_name, raw))
+            continue
+        if ticks >= 0:
+            setattr(state, target_name, _prproj_ticks_to_frames(raw, fps))
+        else:
+            state.unknown.append((source_name, raw))
+    state.markers.extend(_prproj_parse_marker_owner(sequence.find("MarkerOwner"), idx, fps))
+    known = {"MZ.InPoint", "MZ.OutPoint", "MZ.WorkInPoint", "MZ.WorkOutPoint"}
+    for element in sequence.iter():
+        if element.tag.startswith("MZ.") and element.tag not in known and element.text:
+            state.unknown.append((element.tag, element.text.strip()))
+    for group_ref in sequence.findall("TrackGroups/TrackGroup/Second"):
+        group = idx.resolve_ref(group_ref.get("ObjectRef", ""))
+        tracks = group.find(".//Tracks") if group is not None else None
+        if tracks is None:
+            continue
+        for track_index, track_ref in enumerate(tracks.findall("Track"), 1):
+            track = idx.resolve_uref(track_ref.get("ObjectURef", ""))
+            if track is None:
+                continue
+            track_type = "video" if "Video" in track.tag else "audio" if "Audio" in track.tag else "data"
+            for element in track.findall(".//Node/Properties/*"):
+                if element.tag.startswith("MZ.") and element.text:
+                    state.unknown.append((f"track:{track_type}:{track_index}:{element.tag}", element.text.strip()))
+            track_node = track.find("ClipTrack/Track")
+            if track_node is not None:
+                props = track_node.find("Node/Properties")
+                track_state = {
+                    "muted": (track_node.findtext("IsMuted", "false").lower() == "true"),
+                    "locked": (track_node.findtext("IsLocked", "false").lower() == "true"),
+                    "solo": (track_node.findtext("Solo", "0") not in ("", "0", "false")),
+                    "name": props.findtext("MZ.TrackName", "") if props is not None else "",
+                }
+                state.unknown.append((f"track-state:{track_type}:{track_index}", json.dumps(track_state, sort_keys=True)))
+            state.markers.extend(_prproj_parse_marker_owner(
+                track.find("MarkerOwner"), idx, fps, scope="track",
+                track_type=track_type, track_index=track_index,
+            ))
+    for marker in state.markers:
+        if marker.raw_payload:
+            try:
+                details = json.loads(marker.raw_payload).get("DVAMarker", {})
+            except (json.JSONDecodeError, AttributeError):
+                details = {}
+            known_marker_fields = {"mStartTime", "mDuration", "mType", "mName", "mComments", "mComment", "mColorIndex"}
+            for key, value in details.items():
+                if key not in known_marker_fields:
+                    state.unknown.append((f"marker.{key}", json.dumps(value, ensure_ascii=False, sort_keys=True)))
+    return state
+
+
 def _prproj_get_source_resolution(
     prproj_root: ET.Element,
     mc_name: str,
@@ -2118,6 +2234,8 @@ def _extract_clip(
     src_w, src_h = default_w, default_h
     scale_val = 100.0
     rotation_val = 0.0
+    label_name = ""
+    label_raw_color = ""
 
     # Timeline position
     ti_inner = cti.find("TrackItem")
@@ -2145,6 +2263,8 @@ def _extract_clip(
                 clip_ref = clip_ref_el.get("ObjectRef")
                 clip_el = idx.resolve_ref(clip_ref) if clip_ref is not None else None
                 if clip_el is not None:
+                    label_name = clip_el.findtext(".//asl.clip.label.name", "")
+                    label_raw_color = clip_el.findtext(".//asl.clip.label.color", "")
                     graph_path, graph_id, graph_media = _prproj_find_media_for_clip(clip_el, idx)
                     if graph_path:
                         media_path = graph_path
@@ -2232,6 +2352,7 @@ def _extract_clip(
         start=start, end=end, in_pt=in_point, out_pt=out_point,
         playback_speed=playback_speed, source_tc=source_tc,
         source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
+        label_name=label_name, label_raw_color=label_raw_color,
     )
 
 
@@ -2315,6 +2436,7 @@ def _prproj_parse_sequence(
 
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
+    timeline_state = _prproj_extract_timeline_state(seq_el, idx, fps)
 
     def _render_sequence_skeleton(seq_name: str, timebase: int, is_ntsc: bool):
         """Build DC-format sequence skeleton. Returns (xmeml, dur_elem, video_et, audio_et)."""
@@ -2350,6 +2472,10 @@ def _prproj_parse_sequence(
 
     total_frames = 0
     xmeml, dur_elem, video_section, audio_section = _render_sequence_skeleton(seq_name, timebase, is_ntsc)
+    fcp_sequence = xmeml.find("sequence")
+    if fcp_sequence is not None:
+        fcp_sequence.find("in").text = str(timeline_state.in_frame if timeline_state.in_frame is not None else -1)
+        fcp_sequence.find("out").text = str(timeline_state.out_frame if timeline_state.out_frame is not None else -1)
 
     # ─── Shared state ────────────────────────────────────────────────
     _id_counter = [0]  # single global counter — DC uses unique IDs per-name
@@ -2509,6 +2635,7 @@ def _prproj_parse_sequence(
         cl: ClipData, fd: FileData, clip_dur: int, start_frame: int,
         ci_id: str, mediatype: str,
         *,
+        track_index: int = 0,
         is_shared_file: bool = False,
     ) -> ET.Element:
         """Build a DC-format <clipitem> from data. No side effects."""
@@ -2539,6 +2666,12 @@ def _prproj_parse_sequence(
             ET.SubElement(st_el, "trackindex").text = "1"
             _render_filters(ci, _build_audio_filters(clip_dur, cl.playback_speed))
         ET.SubElement(ci, "comments")
+        if cl.label_name or cl.label_raw_color:
+            timeline_state.unknown.append((f"clip-label:{ci_id}", json.dumps({
+                "name": cl.name, "start": start_frame, "media_type": mediatype,
+                "end": start_frame + clip_dur, "track_index": track_index, "preset": cl.label_name,
+                "raw_color": cl.label_raw_color,
+            }, ensure_ascii=False, sort_keys=True)))
         return ci
 
     # PASS 1: Video tracks
@@ -2561,8 +2694,19 @@ def _prproj_parse_sequence(
                 track_items = ti_section.findall("TrackItem")
                 if not track_items:
                     continue
-                track_data = TrackData(type="video", index=vt_idx)
+                fcp_track_index = len(video_section.findall("track")) + 1
+                track_node = track_el.find("ClipTrack/Track")
+                track_props = track_node.find("Node/Properties") if track_node is not None else None
+                track_data = TrackData(
+                    type="video", index=fcp_track_index,
+                    enabled=(track_node is None or track_node.findtext("IsMuted", "false").lower() != "true"),
+                    locked=(track_node is not None and track_node.findtext("IsLocked", "false").lower() == "true"),
+                    solo=(track_node is not None and track_node.findtext("Solo", "0") not in ("", "0", "false")),
+                    name=(track_props.findtext("MZ.TrackName", "") if track_props is not None else ""),
+                )
                 fcp_track = ET.SubElement(video_section, "track")
+                if track_data.name:
+                    ET.SubElement(fcp_track, "name").text = track_data.name
                 for vc_idx, ti_ref in enumerate(track_items, 1):
                     ti_el = idx.resolve_ref(ti_ref.get("ObjectRef", ""))
                     if ti_el is None:
@@ -2589,7 +2733,7 @@ def _prproj_parse_sequence(
                     if ti_el.get("ObjectID"):
                         _clipitem_by_track_item[ti_el.get("ObjectID", "")] = LinkMember(
                             clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx)
-                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video")
+                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video", track_index=fcp_track_index)
                     fcp_track.append(ci)
 
                 ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
@@ -2615,8 +2759,19 @@ def _prproj_parse_sequence(
                 a_track_items = a_ti_section.findall("TrackItem")
                 if not a_track_items:
                     continue
-                a_track_data = TrackData(type="audio", index=at_idx)
+                fcp_track_index = len(audio_section.findall("track")) + 1
+                track_node = a_track_el.find("ClipTrack/Track")
+                track_props = track_node.find("Node/Properties") if track_node is not None else None
+                a_track_data = TrackData(
+                    type="audio", index=fcp_track_index,
+                    muted=(track_node is not None and track_node.findtext("IsMuted", "false").lower() == "true"),
+                    locked=(track_node is not None and track_node.findtext("IsLocked", "false").lower() == "true"),
+                    solo=(track_node is not None and track_node.findtext("Solo", "0") not in ("", "0", "false")),
+                    name=(track_props.findtext("MZ.TrackName", "") if track_props is not None else ""),
+                )
                 fcp_a_track = ET.SubElement(audio_section, "track")
+                if a_track_data.name:
+                    ET.SubElement(fcp_a_track, "name").text = a_track_data.name
                 for ac_idx, a_ti_ref in enumerate(a_track_items, 1):
                     a_ti_el = idx.resolve_ref(a_ti_ref.get("ObjectRef", ""))
                     if a_ti_el is None:
@@ -2652,10 +2807,10 @@ def _prproj_parse_sequence(
                         _file_ids[file_key] = fd
                         is_shared = False
 
-                    a_ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "audio", is_shared_file=is_shared)
+                    a_ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "audio", track_index=fcp_track_index, is_shared_file=is_shared)
                     fcp_a_track.append(a_ci)
 
-                ET.SubElement(fcp_a_track, "enabled").text = "TRUE" if a_track_data.enabled else "FALSE"
+                ET.SubElement(fcp_a_track, "enabled").text = "FALSE" if a_track_data.muted else "TRUE"
                 ET.SubElement(fcp_a_track, "locked").text = "TRUE" if a_track_data.locked else "FALSE"
 
     # ═══════════════════════════════════════════════════════════════════
@@ -2739,6 +2894,36 @@ def _prproj_parse_sequence(
 
     # ─── Finalize ────────────────────────────────────────────────────
     dur_elem.text = str(total_frames if total_frames > 0 else 0)
+
+    if fcp_sequence is not None:
+        for marker in timeline_state.markers:
+            if marker.scope != "sequence":
+                continue
+            marker_el = ET.SubElement(fcp_sequence, "marker")
+            ET.SubElement(marker_el, "name").text = marker.name
+            ET.SubElement(marker_el, "in").text = str(marker.start_frame)
+            ET.SubElement(marker_el, "out").text = str(marker.end_frame)
+            ET.SubElement(marker_el, "comment").text = marker.comment
+        if (timeline_state.unknown or any(marker.raw_payload for marker in timeline_state.markers)
+                or any((timeline_state.raw_in_ticks, timeline_state.raw_out_ticks,
+                        timeline_state.raw_work_in_ticks, timeline_state.raw_work_out_ticks))):
+            opaque = {
+                "sequence_uid": timeline_state.sequence_uid,
+                "work_area": [timeline_state.work_in_frame, timeline_state.work_out_frame],
+                "source_ticks": {
+                    "in": timeline_state.raw_in_ticks, "out": timeline_state.raw_out_ticks,
+                    "work_in": timeline_state.raw_work_in_ticks,
+                    "work_out": timeline_state.raw_work_out_ticks,
+                },
+                "unknown": timeline_state.unknown,
+                "markers": [
+                    {"scope": marker.scope, "type": marker.marker_type,
+                     "color_index": marker.color_index, "raw": marker.raw_payload}
+                    for marker in timeline_state.markers if marker.raw_payload
+                ],
+            }
+            payload = base64.b64encode(json.dumps(opaque, ensure_ascii=False, sort_keys=True).encode("utf-8")).decode("ascii")
+            xmeml.append(ET.Comment(f" pr2resolve-timeline-state:{payload} "))
 
     return xmeml
 
@@ -3202,6 +3387,7 @@ def _drp_export(
             print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
                 print(f"  OK: {timeline.GetName()}")
+                _apply_fcp_timeline_state_to_resolve(timeline, xml_path)
                 if lumetri_grades and seq_index < len(lumetri_grades):
                     _apply_lumetri_cdl(timeline, lumetri_grades[seq_index])
                 try:
@@ -3262,6 +3448,122 @@ def _drp_export(
             _shutdown_resolve()
 
     return drp_result
+
+
+def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> None:
+    """Apply timeline marks and markers through Resolve API when XML import omits them."""
+    try:
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
+        root = ET.parse(xml_path, parser=parser).getroot()
+    except (ET.ParseError, OSError):
+        return
+    sequence = root.find("sequence")
+    if sequence is None:
+        return
+    opaque: dict[str, Any] = {}
+    for node in root:
+        if node.tag is ET.Comment and (node.text or "").strip().startswith("pr2resolve-timeline-state:"):
+            encoded = (node.text or "").strip().split(":", 1)[1]
+            try:
+                opaque = json.loads(base64.b64decode(encoded).decode("utf-8"))
+            except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+                opaque = {}
+            break
+    in_text, out_text = sequence.findtext("in", "-1"), sequence.findtext("out", "-1")
+    if in_text != "-1" and out_text != "-1" and hasattr(timeline, "SetMarkInOut"):
+        try:
+            timeline.SetMarkInOut(int(in_text), int(out_text), "all")
+        except (TypeError, ValueError, RuntimeError):
+            pass
+    markers = sequence.findall("marker")
+    if markers and hasattr(timeline, "AddMarker"):
+        try:
+            existing = timeline.GetMarkers() if hasattr(timeline, "GetMarkers") else {}
+        except Exception:
+            existing = {}
+        existing_keys: set[tuple[int, str]] = set()
+        if isinstance(existing, dict):
+            for position, data in existing.items():
+                if not isinstance(data, dict):
+                    continue
+                try:
+                    existing_keys.add((int(float(position)), str(data.get("name", ""))))
+                except (TypeError, ValueError):
+                    continue
+        source_markers = [item for item in opaque.get("markers", []) if item.get("scope") == "sequence"]
+        for marker_index, marker in enumerate(markers):
+            try:
+                frame = int(marker.findtext("in", "0"))
+                name = marker.findtext("name", "")
+                note = marker.findtext("comment", "")
+                if (frame, name) in existing_keys:
+                    continue
+                raw_out = marker.findtext("out", "-1")
+                duration = max(int(raw_out) - frame, 1) if raw_out != "-1" else 1
+                marker_data = source_markers[marker_index] if marker_index < len(source_markers) else {}
+                color_index = marker_data.get("color_index")
+                color = {0: "Green", 1: "Red", 2: "Sand", 3: "Yellow", 4: "Cream",
+                         5: "Blue", 6: "Lavender", 7: "Cyan"}.get(color_index, "Blue")
+                timeline.AddMarker(frame, color, name, note, duration)
+            except (TypeError, ValueError, RuntimeError):
+                continue
+    label_records: list[dict[str, Any]] = []
+    for key, value in opaque.get("unknown", []):
+        if key.startswith("track-state:"):
+            try:
+                _, track_type, track_index_text = key.split(":", 2)
+                track_index = int(track_index_text)
+                track_data = json.loads(value)
+                if track_data.get("name") and hasattr(timeline, "SetTrackName"):
+                    timeline.SetTrackName(track_type, track_index, track_data["name"])
+                if hasattr(timeline, "SetTrackEnable"):
+                    timeline.SetTrackEnable(track_type, track_index, not track_data.get("muted", False))
+                if hasattr(timeline, "SetTrackLock"):
+                    timeline.SetTrackLock(track_type, track_index, track_data.get("locked", False))
+            except (ValueError, TypeError, json.JSONDecodeError, RuntimeError):
+                pass
+            continue
+        if not key.startswith("clip-label:"):
+            continue
+        try:
+            record = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if record.get("preset"):
+            label_records.append(record)
+    item_indexes: dict[tuple[str, int], dict[tuple[str, int, int], list[Any]]] = {}
+    for record in label_records:
+        try:
+            track_type = str(record["media_type"])
+            track_index = int(record["track_index"])
+            expected_name = str(record["name"])
+            expected_start = int(record["start"])
+            expected_duration = int(record["end"]) - expected_start
+            track_key = (track_type, track_index)
+            if track_key not in item_indexes:
+                item_index: dict[tuple[str, int, int], list[Any]] = {}
+                for item in timeline.GetItemListInTrack(track_type, track_index) or []:
+                    try:
+                        item_key = (str(item.GetName()), int(item.GetStart()), int(item.GetDuration()))
+                    except (AttributeError, TypeError, ValueError):
+                        continue
+                    item_index.setdefault(item_key, []).append(item)
+                item_indexes[track_key] = item_index
+            preset = str(record["preset"])
+            suffix = preset.rsplit(".", 1)[-1]
+            preset_index = int(suffix) if suffix.isdigit() else -1
+            color = {0: "Purple", 1: "Lavender", 2: "Cyan", 3: "Lavender",
+                     4: "Blue", 5: "Green", 6: "Rose", 7: "Sand", 8: "Purple",
+                     9: "Blue", 10: "Cyan", 11: "Fuchsia", 12: "Sand", 13: "Green",
+                     14: "Cocoa", 15: "Yellow"}.get(preset_index)
+            if color is None:
+                continue
+            for item in item_indexes[track_key].get((expected_name, expected_start, expected_duration), []):
+                if hasattr(item, "SetClipColor"):
+                    item.SetClipColor(color)
+                    break
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            continue
 
 
 # --- Feature: Bin Structure Extraction ---
