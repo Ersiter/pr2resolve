@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import io
 import base64
-import hashlib
-import colorsys
 import json
 import math
 import os
@@ -18,7 +16,8 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
-from pr2_constants import LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS
+from pr2_constants import PP_LABEL_TO_RESOLVE_COLOR
+
 
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -32,215 +31,9 @@ _MOTION_PROFILES = {
 }
 _MOTION_PROFILE_GEOMETRY = (1920, 1080, 1080, 1920)
 
-# Resolve 21's native LUT version payload, captured from a clean project.  It
-# is a structural seed only; the LUT asset beside the DRP is generated below.
-_LUT_BODY_HEX = (
-    "8128b52ffd20e4650600040c0adc01080110011a4808800f10b8081d0000803f20"
-    "800f28b808350000803f38800f40b80848ffffffff0f7a240000803f003a670801"
-    "100120be0128b4013801402c4a440a3b080118013235123308011a0a08a08180b008"
-    "120210061a2308a11b2a19414345535c4c4d5420414345532076302e312e312e637562"
-    "6512050304050612520c0a0a08818080800c1202100260e7a69f0d4a0e080110501a"
-    "080801104018012001520e080210401a08080210401802200160cecdbe1a20f8bdbe"
-    "1a03007e116aa667e50050"
-)
-
-
-# Premiere's IDs are stable schema keys.  Values remain data-driven: every
-# encountered record is retained in the DRP even when Resolve cannot express
-# that operation in a 3D LUT.
-_CURVE_IDS = {"39", "42", "106", "108", "110", "112"}
-
-
-def _clamp(value: float) -> float:
-    return max(0.0, min(1.0, value))
-
-
-def _record_values(grade: Any) -> tuple[dict[str, float], dict[str, bytes]]:
-    """Decode all static records without relying on a particular fixture."""
-    scalars = dict(getattr(grade, "parameters", {}) or {})
-    blobs: dict[str, bytes] = {}
-    for record in getattr(grade, "parameter_records", []) or []:
-        parameter_id = str(record.parameter_id)
-        if record.is_time_varying:
-            continue
-        raw = record.start_keyframe or record.raw_value
-        if record.encoding == "scalar" and parameter_id not in scalars:
-            fields = raw.split(",")
-            candidate = fields[1] if len(fields) > 1 else raw
-            try:
-                value = float(candidate)
-                if math.isfinite(value):
-                    scalars[parameter_id] = value
-            except ValueError:
-                pass
-        encoded = record.start_keyframe_value or (record.raw_value if record.encoding == "blob" else "")
-        if encoded:
-            try:
-                blobs[parameter_id] = base64.b64decode(encoded.strip(), validate=True)
-            except (ValueError, TypeError):
-                pass
-    return scalars, blobs
-
-
-def _curve_blocks(data: bytes) -> list[list[tuple[float, float]]]:
-    """Decode Premiere's fixed 520-byte curve blocks."""
-    result = []
-    for offset in range(0, len(data), 520):
-        block = data[offset:offset + 520]
-        if len(block) != 520:
-            return []
-        _kind, count = struct.unpack_from("<II", block)
-        if count > 32:
-            return []
-        points = [struct.unpack_from("<dd", block, 8 + index * 16) for index in range(count)]
-        if all(math.isfinite(x) and math.isfinite(y) for x, y in points):
-            result.append(sorted(points))
-    return result
-
-
-def _curve(value: float, points: list[tuple[float, float]], identity: float | None = None) -> float:
-    if not points:
-        return value if identity is None else identity
-    if value <= points[0][0]:
-        return points[0][1]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if value <= x1:
-            return y0 + (value - x0) * (y1 - y0) / max(x1 - x0, 1e-12)
-    return points[-1][1]
-
-
-def _wheel_triplets(data: bytes) -> list[tuple[float, float, float]]:
-    if len(data) % 24:
-        return []
-    values = struct.unpack(f"<{len(data) // 8}d", data)
-    return [tuple(values[index:index + 3]) for index in range(0, len(values), 3)]
-
-
-def _wheel_offset(wheel: tuple[float, float, float]) -> tuple[float, float, float]:
-    hue, center, amount = wheel
-    rgb = colorsys.hsv_to_rgb((hue % 360.0) / 360.0, 1.0, 1.0)
-    strength = amount * (0.5 + abs(center - 0.5))
-    mean = sum(rgb) / 3.0
-    return tuple((channel - mean) * strength for channel in rgb)
-
-
-def _apply_lumetri(rgb: list[float], values: dict[str, float], blobs: dict[str, bytes]) -> list[float]:
-    """Apply static point operations in Lumetri panel order."""
-    gain = 2.0 ** values.get("11", 0.0)
-    contrast = max(0.01, 1.0 + values.get("12", 0.0) / 100.0)
-    rgb = [((value - 0.18) * contrast + 0.18) * gain for value in rgb]
-    luma = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-    shadow, highlight = values.get("14", 0.0) / 100.0, values.get("13", 0.0) / 100.0
-    black, white = values.get("16", 0.0) / 100.0, values.get("15", 0.0) / 100.0
-    rgb = [value + shadow * (1.0 - _clamp(luma)) ** 2 * 0.25 + highlight * _clamp(luma) ** 2 * 0.25
-           + black * (1.0 - _clamp(value)) ** 3 * 0.15 + white * _clamp(value) ** 3 * 0.15 for value in rgb]
-    temperature, tint = values.get("7", 0.0) / 300.0, values.get("8", 0.0) / 300.0
-    rgb[0] += temperature * 0.05 + tint * 0.015
-    rgb[1] += tint * 0.03
-    rgb[2] -= temperature * 0.05 + tint * 0.015
-
-    wheels = _wheel_triplets(blobs.get("47", b""))
-    if wheels:
-        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
-        weights = ((1.0 - luma) ** 2, 4.0 * luma * (1.0 - luma), luma ** 2, 1.0)
-        for wheel, weight in zip(wheels, weights):
-            offset = _wheel_offset(wheel)
-            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
-
-    creative = blobs.get("32", b"")
-    if len(creative) == 32:
-        shadow_hue, shadow_amount, highlight_hue, highlight_amount = struct.unpack("<4d", creative)
-        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
-        balance = _clamp(0.5 + values.get("33", 0.0) / 200.0)
-        for wheel, weight in (((shadow_hue, 0.5, shadow_amount), (1.0 - luma) * (1.0 - balance)),
-                              ((highlight_hue, 0.5, highlight_amount), luma * balance)):
-            offset = _wheel_offset(wheel)
-            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
-
-    hdr_wheels = _wheel_triplets(blobs.get("85", b""))
-    if hdr_wheels:
-        luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
-        for index, wheel in enumerate(hdr_wheels):
-            center = index / max(len(hdr_wheels) - 1, 1)
-            weight = math.exp(-((luma - center) / 0.2) ** 2)
-            offset = _wheel_offset(wheel)
-            rgb = [channel + weight * delta for channel, delta in zip(rgb, offset)]
-
-    master = _curve_blocks(blobs.get("39", b""))
-    if master:
-        rgb = [_curve(_clamp(channel), master[0]) for channel in rgb]
-        for index, points in enumerate(master[1:4]):
-            rgb[index] = _curve(_clamp(rgb[index]), points)
-
-    fade = _clamp(values.get("28", 0.0) / 100.0)
-    rgb = [value * (1.0 - fade) + 0.12 * fade for value in rgb]
-    luma = _clamp(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
-    saturation = max(0.0, values.get("20", 100.0) / 100.0)
-    saturation *= max(0.0, 1.0 + values.get("30", 0.0) / 100.0)
-    saturation *= max(0.0, values.get("31", 100.0) / 100.0)
-    saturation *= max(0.0, values.get("63", 100.0) / 100.0)
-    saturation *= max(0.0, values.get("66", 100.0) / 100.0)
-    rgb = [luma + (value - luma) * saturation for value in rgb]
-
-    hdr_contrast = max(0.01, values.get("65", 100.0) / 100.0)
-    hdr_highlight = values.get("64", 0.0) / 100.0
-    rgb = [(value - 0.5) * hdr_contrast + 0.5 + hdr_highlight * _clamp(value) ** 2 * 0.2 for value in rgb]
-
-    h, s, v = colorsys.rgb_to_hsv(*[_clamp(channel) for channel in rgb])
-    curves = {key: (_curve_blocks(blobs.get(key, b"")) or [[]])[0] for key in _CURVE_IDS - {"39"}}
-    s *= max(0.0, 1.0 + _curve(h, curves["42"], 0.0))
-    h = (h + 0.5 * _curve(h, curves["106"], 0.0)) % 1.0
-    v += 0.25 * _curve(h, curves["108"], 0.0)
-    s *= max(0.0, 1.0 + _curve(v, curves["110"], 0.0))
-    s *= max(0.0, 1.0 + _curve(s, curves["112"], 0.0))
-    h = (h + values.get("86", 0.0) / 360.0) % 1.0
-    s *= max(0.0, 1.0 + values.get("87", 0.0) / 100.0)
-    v = (v - 0.5) * max(0.01, 1.0 + values.get("88", 0.0) / 100.0) + 0.5
-    v += values.get("89", 0.0) / 200.0
-    s *= max(0.0, values.get("90", 100.0) / 100.0)
-    rgb = list(colorsys.hsv_to_rgb(h, _clamp(s), _clamp(v)))
-    return [_clamp(value) for value in rgb]
-
-
-def _lumetri_cube_text(grade: Any) -> str:
-    """Return a deterministic LUT for every static pointwise Lumetri record."""
-    values, blobs = _record_values(grade)
-    stream = io.StringIO()
-    stream.write('TITLE "pr2resolve Lumetri static transform"\nLUT_3D_SIZE 33\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 1 1 1\n')
-    for b in range(33):
-        for g in range(33):
-            for r in range(33):
-                rgb = _apply_lumetri([r / 32.0, g / 32.0, b / 32.0], values, blobs)
-                stream.write(f"{rgb[0]:.9f} {rgb[1]:.9f} {rgb[2]:.9f}\n")
-    return stream.getvalue()
-
-
-def _lut_body_for_asset(asset_name: str) -> str:
-    """Bind a relative LUT name into the verified native Body payload."""
-    body = bytearray(bytes.fromhex(_LUT_BODY_HEX))
-    if body[:2] != b"\x81\x28" or body[1:5] != b"(\xb5/\xfd":
-        raise ValueError("native LUT Body seed is not the expected zstd frame")
-    old = b"ACES\\LMT ACES v0.1.1.cube"
-    new = asset_name.encode("ascii")
-    if len(new) != len(old):
-        raise ValueError("native LUT asset name must retain the template path length")
-    offset = body.find(old)
-    if offset < 0:
-        raise ValueError("native LUT Body seed has no LUT path")
-    body[offset:offset + len(old)] = new
-    if len(body) != len(bytes.fromhex(_LUT_BODY_HEX)):
-        raise ValueError("native LUT Body length changed")
-    return body.hex()
-
-
 def _grade_manifest(grade: Any) -> dict[str, Any]:
     records = []
     for record in getattr(grade, "parameter_records", []) or []:
-        representation = "preserved"
-        if not record.is_time_varying and record.parameter_id in LUMETRI_POINTWISE_IDS:
-            representation = "native_lut"
-        elif not record.is_time_varying and record.parameter_id in LUMETRI_SPATIAL_IDS:
-            representation = "spatial_source_record"
         records.append({
             "id": record.parameter_id,
             "name": record.name,
@@ -255,7 +48,7 @@ def _grade_manifest(grade: Any) -> dict[str, Any]:
             "start_keyframe_value": record.start_keyframe_value,
             "binary_hash": record.binary_hash,
             "decoded_sha256": record.decoded_sha256,
-            "representation": representation,
+            "representation": "manifest_only_native",
         })
     return {
         "clip": grade.clip_name,
@@ -299,35 +92,6 @@ def _configure_color(members: dict[str, bytes], profiles: dict[str, Any] | None)
         raise ValueError("native project has no SM_Config FieldsBlob")
     members["project.xml"] = text.encode("utf-8")
     return plan
-
-
-def _expand_lut_placeholders(data: bytes) -> bytes:
-    """Expand ET-safe placeholders into Resolve's historical double-colon tags."""
-    text = data.decode("utf-8")
-    pattern = re.compile(r"<PR2LutVersion data-id=\"([^\"]+)\"><HasCorrection>true</HasCorrection><Body>([^<]+)</Body></PR2LutVersion>")
-    def replace(match: re.Match[str]) -> str:
-        version_id, body = match.group(1), match.group(2)
-        return (
-            '<pLmVerTable><ListMgt::LmVersionTable DbId="' + _uid() + '"><FieldsBlob/>'
-            '<VerType>0</VerType><pActive>' + version_id + '</pActive><Locals><Element>'
-            '<ListMgt::LmVersion DbId="' + version_id + '"><FieldsBlob/><Name>Version 1</Name>'
-            '<HasCorrection>true</HasCorrection><VerType>0</VerType><ImplVersion>1</ImplVersion>'
-            '<IncludedInRecording>true</IncludedInRecording><FlatPassEnabled>false</FlatPassEnabled>'
-            '<RGBAOutputEnabled>false</RGBAOutputEnabled><Body>' + body + '</Body>'
-            '<UseVersionClipProcParams>true</UseVersionClipProcParams></ListMgt::LmVersion>'
-            '</Element></Locals><DbSavedTime>0</DbSavedTime></ListMgt::LmVersionTable></pLmVerTable>'
-        )
-    return pattern.sub(replace, text).encode("utf-8")
-
-
-def _ensure_lut_version(node: ET.Element) -> ET.Element:
-    """Create the minimal Resolve version container when clean templates omit it."""
-    version = next((element for element in node.iter() if element.tag in ("ListMgt::LmVersion", "ListMgt::LmLocalVersion")), None)
-    if version is not None:
-        return version
-    version_id = _uid()
-    version = ET.SubElement(node, "PR2LutVersion", {"data-id": version_id})
-    return version
 
 
 def _uid() -> str:
@@ -448,6 +212,46 @@ def _decode_wrapper_hex(value: str) -> bytes:
 
 def _encode_wrapper_hex(data: bytes) -> str:
     return (b"\0\0\0\2" + (len(data) + 1).to_bytes(4, "big") + b"\x80" + data).hex()
+
+
+def _set_native_clip_color(node: ET.Element, resolve_color: int) -> None:
+    """Patch only the verified nested clip-color enum in the template blob."""
+    blob = node.find("FieldsBlob")
+    if blob is None or not blob.text:
+        raise ValueError("native clip has no FieldsBlob")
+    root_fields = _protobuf_fields(_decode_wrapper_hex(blob.text))
+    payload_index = next((i for i, (number, wire, _) in enumerate(root_fields)
+                          if number == 1 and wire == 2), None)
+    if payload_index is None:
+        raise ValueError("native clip FieldsBlob has no payload")
+    payload_fields = _protobuf_fields(bytes(root_fields[payload_index][2]))
+    color_fields = [(number, wire, resolve_color) if number == 6 and wire == 0
+                    else (number, wire, value)
+                    for number, wire, value in payload_fields]
+    if not any(number == 6 and wire == 0 for number, wire, _ in payload_fields):
+        color_fields.append((6, 0, resolve_color))
+    root_fields[payload_index] = (1, 2, _protobuf_encode(color_fields))
+    blob.text = _encode_wrapper_hex(_protobuf_encode(root_fields))
+
+
+def _timeline_clip_labels(state: dict[str, Any]) -> dict[tuple[str, int, str, int, int], int]:
+    labels: dict[tuple[str, int, str, int, int], int] = {}
+    for key, raw in state.get("unknown", []):
+        if not str(key).startswith("clip-label:"):
+            continue
+        try:
+            record = json.loads(raw)
+            preset = str(record.get("preset", "")).rsplit(".", 1)[-1]
+            label_index = int(preset)
+            color = PP_LABEL_TO_RESOLVE_COLOR[label_index]
+            media_type = str(record["media_type"])
+            track_index = int(record["track_index"])
+            name, start = str(record["name"]), int(record["start"])
+            duration = int(record["end"]) - start
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        labels[(media_type, track_index, name, start, duration)] = color
+    return labels
 
 
 def _rewrite_av_clone(node: ET.Element, full_path: str, preserve_audio_identity: bool = False, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0) -> ET.Element:
@@ -593,7 +397,7 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
             effect_id = (effect.findtext("effectid") or "").strip().lower()
             if effect_id == "lumetri":
                 if name not in warned_lumetri:
-                    print(f"  Warning: {name}: static Lumetri point operations use a native LUT; spatial operations remain losslessly recorded")
+                    print(f"  Warning: {name}: Lumetri is preserved in the manifest; native grade is not applied")
                     warned_lumetri.add(name)
                 continue
             if effect_id not in allowed_video and (effect.findtext("mediatype") or "video").strip().lower() == "video":
@@ -686,16 +490,13 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     if video_template is None or still_template is None or audio_template is None or audio_only_template is None:
         raise ValueError("codec template lacks required timeline nodes")
     tracks = {kind: ET.fromstring(ET.tostring(native.find(f"{vec}/Element/Sm2TiTrack"))) for vec, kind in (("VideoTrackVec", "video"), ("AudioTrackVec", "audio"))}
-    grade_map = {(g.track_index, g.start_frame, g.end_frame): g for g in (grades or [])}
-    compact_video_track = 0
+    clip_labels = _timeline_clip_labels(_timeline_state_manifest(root))
     for vector_name, kind, generic in (("VideoTrackVec", "video", video_template), ("AudioTrackVec", "audio", audio_template)):
         vector = native.find(vector_name)
         if vector is None or tracks[kind] is None:
             raise ValueError("codec template lacks required track")
         vector.clear()
-        for fcp_track in source.findall(f"media/{kind}/track"):
-            if kind == "video" and fcp_track.findall("clipitem"):
-                compact_video_track += 1
+        for track_index, fcp_track in enumerate(source.findall(f"media/{kind}/track"), 1):
             wrapper, track = ET.SubElement(vector, "Element"), ET.fromstring(ET.tostring(tracks[kind]))
             track.set("DbId", _uid())
             items = track.find("Items")
@@ -750,14 +551,12 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
                 if motion_payload is not None:
                     _set_child(node, "EffectFiltersBA", motion_payload)
-                grade = None
-                if kind == "video":
-                    grade = grade_map.get((compact_video_track, _int_text(clip, "start"), _int_text(clip, "end")))
-                if grade is not None:
-                    lut_id = hashlib.sha256((file_node.get("id", "") + (clip.findtext("name") or "") + str(compact_video_track) + (clip.findtext("start") or "") + (clip.findtext("end") or "")).encode("utf-8")).hexdigest()[:16]
-                    version = _ensure_lut_version(node)
-                    _set_child(version, "HasCorrection", "true")
-                    _set_child(version, "Body", _lut_body_for_asset(f"pr2/{lut_id}.cube"))
+                label_key = (
+                    kind, track_index, clip.findtext("name") or "",
+                    _int_text(clip, "start"), int(_clip_duration(clip)),
+                )
+                if label_key in clip_labels:
+                    _set_native_clip_color(node, clip_labels[label_key])
                 item = ET.SubElement(items, "Element")
                 item.append(node)
             for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
@@ -859,16 +658,6 @@ def export_native_drp(
     pool = re.sub(r"(?is)<Element>\s*<(?:Sm2MpVideoClip|Sm2MpAudioClip)\b.*?</(?:Sm2MpVideoClip|Sm2MpAudioClip)>\s*</Element>", "", pool)
     pool = re.sub(r"(?is)(<MediaVec>)(.*?)(</MediaVec>)", lambda m: m.group(1) + m.group(2) + "\n" + "\n".join(generated) + m.group(3), pool, count=1)
     members[pool_name] = pool.encode("utf-8")
-    grade_map = {(g.track_index, g.start_frame, g.end_frame): g for g in (grades or [])}
-    compact_video_track = 0
-    for track in source.findall("media/video/track"):
-        if track.findall("clipitem"):
-            compact_video_track += 1
-        for clip in track.findall("clipitem"):
-            grade = grade_map.get((compact_video_track, _int_text(clip, "start"), _int_text(clip, "end")))
-            if grade is not None:
-                lut_id = hashlib.sha256(((clip.find("file").get("id", "") if clip.find("file") is not None else "") + (clip.findtext("name") or "") + str(compact_video_track) + (clip.findtext("start") or "") + (clip.findtext("end") or "")).encode("utf-8")).hexdigest()[:16]
-                members[f"pr2/{lut_id}.cube"] = _lumetri_cube_text(grade).encode("ascii")
     color_plan = _configure_color(members, color_profiles)
     members["pr2/conversion.json"] = json.dumps({
         "format": 1,
@@ -890,8 +679,6 @@ def export_native_drp(
                 text = re.sub(r"(?is)(<Sm2Timeline\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
                 text = text.replace("<Name>Unified Native Template</Name>", f"<Name>{sequence_name}</Name>").replace("<Name>Codec Native Template</Name>", f"<Name>{sequence_name}</Name>")
                 data = text.encode("utf-8")
-            elif name.startswith("SeqContainer/"):
-                data = _expand_lut_placeholders(data)
             target.writestr(name, data)
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)

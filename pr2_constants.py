@@ -33,6 +33,16 @@ LUMETRI_POINTWISE_IDS = frozenset({
     "88", "89", "90", "106", "108", "110", "112",
 })
 LUMETRI_SPATIAL_IDS = frozenset({"29", "51", "52", "53", "54", "81", "82"})
+PP_LABEL_TO_RESOLVE_COLOR = {
+    0: 15, 1: 13, 2: 11, 3: 5, 4: 12, 5: 9, 6: 8, 7: 10,
+    8: 4, 9: 3, 10: 2, 11: 14, 12: 6, 13: 1, 14: 7, 15: 16,
+}
+RESOLVE_CLIP_COLORS = {
+    1: "Green", 2: "Teal", 3: "Blue", 4: "Purple", 5: "Pink",
+    6: "Tan", 7: "Brown", 8: "Apricot", 9: "Beige", 10: "Chocolate",
+    11: "Lime", 12: "Navy", 13: "Olive", 14: "Orange", 15: "Violet",
+    16: "Yellow",
+}
 
 
 def _is_ntsc(timebase: float) -> bool:

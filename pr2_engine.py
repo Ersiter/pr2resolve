@@ -25,6 +25,7 @@ from xml.dom import minidom
 
 from pr2_constants import (
     VERSION, DEFAULT_FPS, MICROSECOND, NTSC_RATES, PAL_RATES, FPS_TOLERANCE,
+    PP_LABEL_TO_RESOLVE_COLOR, RESOLVE_CLIP_COLORS,
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
     Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
@@ -3543,10 +3544,8 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> None:
             preset = str(record["preset"])
             suffix = preset.rsplit(".", 1)[-1]
             preset_index = int(suffix) if suffix.isdigit() else -1
-            color = {0: "Purple", 1: "Lavender", 2: "Cyan", 3: "Lavender",
-                     4: "Blue", 5: "Green", 6: "Rose", 7: "Sand", 8: "Purple",
-                     9: "Blue", 10: "Cyan", 11: "Fuchsia", 12: "Sand", 13: "Green",
-                     14: "Cocoa", 15: "Yellow"}.get(preset_index)
+            resolve_enum = PP_LABEL_TO_RESOLVE_COLOR.get(preset_index)
+            color = RESOLVE_CLIP_COLORS.get(resolve_enum) if resolve_enum is not None else None
             if color is None:
                 continue
             for item in item_indexes[track_key].get((expected_name, expected_start, expected_duration), []):

@@ -496,7 +496,7 @@ def _run_pipeline(
                     _apply_fixes(fcp, issues_s)
                     native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
                     if native_grades:
-                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records; {_lumetri_conversion_summary(native_grades)}; static point operations are applied")
+                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records preserved in the manifest; native grade not applied")
                     safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
                     destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
                     destination = _next_available_path(destination)
@@ -506,7 +506,7 @@ def _run_pipeline(
                     print(f"    Native DRP {index}: {destination}")
             else:
                 if lumetri_data:
-                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records; {_lumetri_conversion_summary(lumetri_data)}; static point operations are applied")
+                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records preserved in the manifest; native grade not applied")
                 profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
                             if prproj_root is not None and selected_seqs else None)
                 export_native_drp(root, native_drp, input_path.stem, lumetri_data, profiles)
@@ -681,10 +681,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--report", action="store_true", help="Generate fix report (.md)")
     parser.add_argument("--drt", action="store_true", help="Generate DRT via DaVinci Scripting API")
     parser.add_argument("--drp", nargs="?", const=True, type=Path, default=None,
-                        help="DRP background export for all non-empty sequences")
+                        help="Explicit API compatibility fallback: background DRP export for all non-empty sequences")
     parser.add_argument("--drp-gui", nargs="?", const=True, type=Path, default=None,
                         dest="drp_gui",
-                        help="DRP interactive export for all non-empty sequences")
+                        help="Explicit API compatibility fallback: interactive DRP export for all non-empty sequences")
     parser.add_argument("--native-drp", nargs="?", const=True, type=Path, default=None,
                         help="Pure-data native DRP export; no Resolve required")
     parser.add_argument("--all-sequences", action="store_true",
