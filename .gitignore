@@ -43,11 +43,16 @@ AGENTS.md
 docs/
 test/
 tests/
+!tests/
+tests/*
+!tests/_test_validator.py
+!tests/run_local_tests.py
 test_samples/
 _test_output/
 
 # Local audit/debug artifacts
 _*.py
+!tests/_test_validator.py
 _*.xml
 _ffmpeg_src/
 
