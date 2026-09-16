@@ -2,6 +2,12 @@
 
 All notable changes to pr2resolve.
 
+## [v1.5.1] — 2026-09-17
+
+### Fixed
+- Native DRP now packages selected Premiere timelines into one Resolve project, retains verified clip-label enums, and honors the output name suffix.
+- API DRP imports source clips from the generated FCP7 XML, normalizes file URIs, and removes every intermediate XML after export.
+
 ## [v1.5.0] — 2026-09-16
 
 ### Added

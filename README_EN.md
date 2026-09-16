@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.5.0 — native clip colors and lossless Lumetri manifest*
+> *v1.5.1 — project-wide native DRP and reliable media linking*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 

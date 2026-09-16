@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.5.0 — 原生片段标签颜色与可靠 Lumetri 清单*
+> *v1.5.1 — 整工程原生 DRP 与可靠素材链接*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
