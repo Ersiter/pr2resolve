@@ -2,6 +2,16 @@
 
 All notable changes to pr2resolve.
 
+## [v1.5.3] — 2026-09-17
+
+### Fixed
+- Native DRP gives every timeline a distinct native media-pool name, retains the directly owned Premiere media-bin hierarchy, and deduplicates shared media entries.
+- Native multi-timeline merge rewrites private container references when cloning Resolve timeline records, preventing cross-timeline container reuse.
+- Native tracks now retain their Premiere names.
+
+### Changed
+- Removed the unused `pr2/conversion.json` payload from native DRP output. Lumetri grades remain detected and are not represented as a native conversion.
+
 ## [v1.5.2] — 2026-09-17
 
 ### Fixed

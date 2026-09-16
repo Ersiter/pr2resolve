@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.5.2 — native multi-timeline project merge fix*
+> *v1.5.3 — native media-bin and multi-timeline stability fix*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -161,7 +161,7 @@ Two input formats:
 
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
-- Native DRP — primary delivery path; writes timelines, verified clip-label color enums, color configuration, and a complete reverse-engineering manifest without starting Resolve
+- Native DRP — primary delivery path; writes timelines, media bins, track names, verified clip-label color enums, and color configuration without starting Resolve
 - API DRT/DRP — explicit compatibility fallback, selected by the user for unsupported native schemas or failed import validation; requires DaVinci Studio
 
 ---
@@ -190,7 +190,7 @@ Three output formats:
 
 - **How are timeline state and grades migrated?**
 
-    Native DRP writes Premiere clip-label colors using the verified Resolve enum mapping and preserves empty-track topology plus the full `timeline_state` manifest; other UI states without a verified equivalent are not guessed. API DRP visibly synchronizes sequence In/Out, sequence markers, track name/mute/lock, and approximate clip label colors; select it explicitly only when native import is unsupported. All Lumetri records remain in `pr2/conversion.json`; native grade writing is unverified, so no cube LUT is embedded.
+    Native DRP writes verified clip-label colors, empty-track topology, track names, and directly owned media bins. Markers, sequence In/Out, and track mute/lock are not written without a verified native representation. API DRP is an explicit compatibility fallback for those UI states. Lumetri grades are detected but native grade writing is unverified, so no cube LUT is embedded.
 
 ---
 
@@ -204,7 +204,7 @@ Three output formats:
 | `--drt` | flag | Generate DRT (requires DaVinci Studio) |
 | `--drp` | flag/path | Background DRP export (all non-empty sequences) |
 | `--drp-gui` | flag/path | Interactive DRP export (all non-empty sequences) |
-| `--native-drp` | flag/path | Pure-data native DRP (one file per batch sequence; no Resolve required) |
+| `--native-drp` | flag/path | Pure-data native DRP (one project with every non-empty timeline; no Resolve required) |
 | `--all-sequences` | flag | Export all non-empty sequences from .prproj |
 | `--sequence` | str | Sequence name in .prproj |
 | `--no-suffix` | flag | Omit `_pr2resolve` suffix from output filename |
@@ -244,7 +244,7 @@ Output:
 | C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media order | Move video before audio |
-| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: full record only, native grade unverified |
+| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: detected only, native grade unverified |
 | M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | Generate `<link>` for same-source clips |
 | M5 | file details | Fill missing samplecharacteristics |
@@ -263,8 +263,8 @@ All rules apply automatically. They're not optional — skip them and the import
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
-6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP preserves those records and states without claiming an equivalent conversion.
-7. **Color-space vocabularies differ** — Native DRP is live-verified for Rec.709, ACEScct, and Rec.2100 HLG project/timeline settings. API DRP also assigns known input spaces by media path. Unknown Premiere profiles remain explicit in the manifest.
+6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP detects them without claiming an equivalent conversion.
+7. **Color-space vocabularies differ** — Native DRP is live-verified for Rec.709, ACEScct, and Rec.2100 HLG project/timeline settings. API DRP also assigns known input spaces by media path.
 
 ---
 
