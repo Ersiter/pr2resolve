@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.3.0 — Lumetri 参数清单、色彩空间读取与纯数据 DRP*
+> *v1.4.0 — 同步 Premiere 时间线状态*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -162,7 +162,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 三种输出格式：
 - FCP7 XML — 零依赖，所有达芬奇版本均可导入
 - native DRP — 主交付路径；无需启动 Resolve，写入时间线、片段调色节点、包内 LUT、色彩配置及完整逆向清单
-- API DRT/DRP — 兼容路径；需达芬奇 Studio，基础静态调色以近似 CDL 应用
+- API DRT/DRP — 兼容路径；需达芬奇 Studio，API DRP 还会同步可见时间线状态
 
 ---
 
@@ -188,9 +188,9 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
     PR 自带的 XML 导出是二次加工——先生成删减版 XML 再输出，数据已失真。.prproj 是 PR 原生工程文件（gzip 压缩的 XML），可提供更多时间线、素材和效果上下文。直接提供 .prproj 即可，无需先导出 XML 再修正。
 
-- **调色如何迁移？**
+- **时间线状态与调色如何迁移？**
 
-    `.prproj` 读取器按时间线片段身份保存遇到的全部 ParameterID、原始值、边界、动画状态和二进制摘要。native DRP 将基础校正、创意调色、RGB/色相曲线、色轮、HDR 与 HSL 的静态点运算编入片段 LUT；空间运算和动画参数原样写入 `pr2/conversion.json`，不会静默丢弃。API DRT/DRP 保留三参数 CDL 兼容路径。
+    `.prproj` 读取器按时间线片段身份保存遇到的全部 ParameterID、原始值、边界、动画状态和二进制摘要。API DRP 会同步序列 In/Out、序列 marker、轨道名称/静音/锁定状态，并按 Premiere 标签预设近似映射片段颜色。native DRP 保留空轨拓扑和完整 `timeline_state` 清单；Resolve 的 opaque UI 字节尚无可验证映射，因此不猜写。Lumetri 静态点运算写入片段 LUT，空间运算和动画参数保存在 `pr2/conversion.json`。
 
 ---
 

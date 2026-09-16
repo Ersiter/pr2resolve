@@ -2,6 +2,13 @@
 
 All notable changes to pr2resolve.
 
+## [v1.4.0] — 2026-09-16
+
+### Added
+- Premiere timeline state extraction retains sequence In/Out, sequence and track markers, track metadata, clip label presets, and raw unknown state.
+- API DRP visibly applies sequence In/Out and markers, track name/mute/lock, and approximate clip label colors.
+- Native DRP preserves empty-track topology and the complete `timeline_state` manifest in `pr2/conversion.json`; opaque Resolve UI bytes remain unmapped.
+
 ## [v1.3.0] — 2026-09-15
 
 - Lumetri extraction retains every encountered ParameterID, raw encoding, bounds, animation state, and binary digest by clip identity.
@@ -89,7 +96,10 @@ All notable changes to pr2resolve.
 
 First production release. Architecture refactor complete — domain model separated from XML rendering. Dual-entry: FCP7 XML and `.prproj`.
 
-[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.1.0...HEAD
+[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.4.0...HEAD
+[v1.4.0]: https://github.com/Ersiter/pr2resolve/compare/v1.3.0...v1.4.0
+[v1.3.0]: https://github.com/Ersiter/pr2resolve/compare/v1.2.0...v1.3.0
+[v1.2.0]: https://github.com/Ersiter/pr2resolve/compare/v1.1.0...v1.2.0
 [v1.1.0]: https://github.com/Ersiter/pr2resolve/compare/v1.0.4...v1.1.0
 [v1.0.4]: https://github.com/Ersiter/pr2resolve/compare/v1.0.3...v1.0.4
 [v1.0.3]: https://github.com/Ersiter/pr2resolve/compare/v1.0.1...v1.0.3

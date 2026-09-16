@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.3.0 — complete Lumetri inventory, color profiles, and native DRP*
+> *v1.4.0 — Premiere timeline state synchronization*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -162,7 +162,7 @@ Two input formats:
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
 - Native DRP — primary delivery path; writes timelines, clip grades, bundled LUTs, color configuration, and a complete reverse-engineering manifest without starting Resolve
-- API DRT/DRP — compatibility path; needs DaVinci Studio and applies a basic static CDL approximation
+- API DRT/DRP — compatibility path; needs DaVinci Studio, with API DRP also syncing visible timeline state
 
 ---
 
@@ -188,9 +188,9 @@ Three output formats:
 
     PR's built-in XML export is second-hand — PR generates a stripped-down copy before you even get it. The .prproj file is what PR saves natively (gzip-compressed XML), with richer timeline, media, and effect context. Feed it .prproj directly, no need to export XML first.
 
-- **How are grades migrated?**
+- **How are timeline state and grades migrated?**
 
-    The `.prproj` reader retains every encountered ParameterID, raw value, bound, animation state, and binary digest by timeline clip identity. Native DRP compiles static point operations from Basic, Creative, RGB/Hue curves, wheels, HDR, and HSL into a per-clip LUT. Spatial and animated records remain lossless in `pr2/conversion.json`; API DRT/DRP keeps the three-parameter CDL compatibility path.
+    API DRP synchronizes sequence In/Out, sequence markers, track name/mute/lock state, and approximate clip label colors mapped from Premiere presets. Native DRP preserves empty-track topology and the complete `timeline_state` manifest; Resolve's opaque UI bytes have no verified mapping, so they are not guessed. Static Lumetri point operations compile into per-clip LUTs, while spatial and animated records remain in `pr2/conversion.json`.
 
 ---
 
