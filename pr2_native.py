@@ -12,6 +12,7 @@ import struct
 import tempfile
 import uuid
 import zipfile
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -31,35 +32,6 @@ _MOTION_PROFILES = {
     (146.0, 270.0): "00000002000000e88128b52ffd603b01ed0600140a0aef01080438144a0f082a1a0b0a09113e0ad7438941e43f4a0f082b004a0f08286d2fa1bd84f672bf4a0f082922efeeeeeeeeae3f4a9601082f00fcffffff7f5640528401ffffff804200000000000d003f5840697f562ac04a0ab602087638204a08083b1a040a0220024a9901083c529401ffffff7035e803e0bf4a8901083d0d009a9999999999e93fe803f0406fc00a0e082c38124a004a004a004a004a001900a1cc10f0400bc0452007e01006405a590381b30409011e306e54c09e336e5030381c828ba6842367824c19755e53b37d9a926c5e1a92a713",
 }
 _MOTION_PROFILE_GEOMETRY = (1920, 1080, 1080, 1920)
-
-def _grade_manifest(grade: Any) -> dict[str, Any]:
-    records = []
-    for record in getattr(grade, "parameter_records", []) or []:
-        records.append({
-            "id": record.parameter_id,
-            "name": record.name,
-            "control_type": record.control_type,
-            "encoding": record.encoding,
-            "raw_value": record.raw_value,
-            "lower_bound": record.lower_bound,
-            "upper_bound": record.upper_bound,
-            "is_time_varying": record.is_time_varying,
-            "start_keyframe": record.start_keyframe,
-            "start_keyframe_position": record.start_keyframe_position,
-            "start_keyframe_value": record.start_keyframe_value,
-            "binary_hash": record.binary_hash,
-            "decoded_sha256": record.decoded_sha256,
-            "representation": "manifest_only_native",
-        })
-    return {
-        "clip": grade.clip_name,
-        "track": grade.track_index,
-        "start": grade.start_frame,
-        "end": grade.end_frame,
-        "track_item_id": grade.track_item_id,
-        "parameters": records,
-    }
-
 
 def _profile_name(value: object) -> str:
     return str(value or "").casefold().replace("rec. ", "rec.")
@@ -562,6 +534,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 item.append(node)
             for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
                 _set_child(track, field, "")
+            _set_child(track, "Name", fcp_track.findtext("name") or "")
             wrapper.append(track)
     members[seq_name] = _xml(native)
     return members, source
@@ -573,17 +546,17 @@ def export_native_drp(
     project_name: str,
     grades: list[Any] | None = None,
     color_profiles: dict[str, Any] | None = None,
+    bin_members: list[tuple[str, list[str]]] | None = None,
 ) -> Path:
     """Export one project package, optionally containing multiple sequences."""
     if isinstance(sequence, list):
         if not sequence:
             raise ValueError("native DRP requires at least one sequence")
-        return _export_native_project(sequence, output_path, project_name, grades, color_profiles)
+        return _export_native_project(sequence, output_path, project_name, grades, color_profiles, bin_members)
     if not TEMPLATE.is_file():
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     _validate_sequence_capabilities(root)
-    timeline_state = _timeline_state_manifest(root)
     members, source = _build_timeline(sequence, grades)
     pool_name = "MediaPool/Master/MpFolder.xml"
     with zipfile.ZipFile(TEMPLATE) as archive:
@@ -663,13 +636,7 @@ def export_native_drp(
     pool = re.sub(r"(?is)<Element>\s*<(?:Sm2MpVideoClip|Sm2MpAudioClip)\b.*?</(?:Sm2MpVideoClip|Sm2MpAudioClip)>\s*</Element>", "", pool)
     pool = re.sub(r"(?is)(<MediaVec>)(.*?)(</MediaVec>)", lambda m: m.group(1) + m.group(2) + "\n" + "\n".join(generated) + m.group(3), pool, count=1)
     members[pool_name] = pool.encode("utf-8")
-    color_plan = _configure_color(members, color_profiles)
-    members["pr2/conversion.json"] = json.dumps({
-        "format": 1,
-        "color": color_plan,
-        "lumetri": [_grade_manifest(grade) for grade in (grades or [])],
-        "timeline_state": timeline_state,
-    }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    _configure_color(members, color_profiles)
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as target:
@@ -682,6 +649,7 @@ def export_native_drp(
             elif name == pool_name:
                 text = data.decode("utf-8", "replace")
                 text = re.sub(r"(?is)(<Sm2Timeline\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
+                text = re.sub(r"(?is)(<Sm2MpTimelineClip\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
                 text = text.replace("<Name>Unified Native Template</Name>", f"<Name>{sequence_name}</Name>").replace("<Name>Codec Native Template</Name>", f"<Name>{sequence_name}</Name>")
                 data = text.encode("utf-8")
             target.writestr(name, data)
@@ -697,6 +665,7 @@ def _export_native_project(
     project_name: str,
     grades: list[Any] | None = None,
     color_profiles: dict[str, Any] | None = None,
+    bin_members: list[tuple[str, list[str]]] | None = None,
 ) -> Path:
     """Combine native timeline packages into one Resolve project archive."""
     grade_sets = (grades if len(grades) == len(sequences) and all(isinstance(item, list) for item in grades)
@@ -712,10 +681,6 @@ def _export_native_project(
         pool = members[pool_name].decode("utf-8", "replace")
         if "<MediaVec>" not in pool:
             raise ValueError("native project has no media pool vector")
-        conversion_manifests = []
-        for package in packages:
-            with zipfile.ZipFile(package) as archive:
-                conversion_manifests.append(json.loads(archive.read("pr2/conversion.json")))
         for package in packages[1:]:
             with zipfile.ZipFile(package) as archive:
                 extra_pool = archive.read(pool_name).decode("utf-8", "replace")
@@ -743,18 +708,87 @@ def _export_native_project(
             timeline_block = re.sub(r'(<Sm2Sequence DbId=")[^"]+', rf'\g<1>{new_sequence}', timeline_block, count=1)
             timeline_block = re.sub(r'(<UniqueSequenceId>)[^<]+', rf'\g<1>{new_sequence_unique}', timeline_block, count=1)
             timeline_block = re.sub(r'(<Parent>)[^<]+', rf'\g<1>{new_timeline}', timeline_block, count=1)
+            timeline_block = timeline_block.replace(
+                old_container.group(1).encode("utf-16le").hex(),
+                new_container.encode("utf-16le").hex(),
+            )
             extra_media = re.search(r"(?s)<MediaVec>(.*?)</MediaVec>", extra_pool)
             if extra_media is None:
                 raise ValueError("native timeline package has no media pool vector")
             extra_media_text = extra_media.group(1).replace(timeline_match.group(1), timeline_block, 1)
             pool = re.sub(r"(?s)(<MediaVec>.*?)(</MediaVec>)", lambda match: match.group(1) + "\n" + extra_media_text + match.group(2), pool, count=1)
             members[f"SeqContainer/{new_container}.xml"] = extra_seq.encode("utf-8")
+        canonical_media: dict[tuple[str, ...], str] = {}
+        media_refs: dict[str, str] = {}
+
+        def keep_first_media(match: re.Match[str]) -> str:
+            block = match.group(0)
+            clip = match.group(1)
+            tag = re.match(r"<(?P<tag>Sm2Mp(?:Video|Audio)Clip)\b", clip)
+            item_id = re.search(r'\bDbId="([^"]+)"', clip)
+            source = re.search(r"<Bt(?:Video|Audio)Info\b.*?<Clip>([^<]+)</Clip>", clip, re.S)
+            if tag is None or item_id is None or source is None:
+                return block
+            fields = _protobuf_fields(_decode_wrapper_hex(source.group(1)))
+            location = tuple(
+                bytes(value).decode("utf-8", "replace")
+                for number, wire, value in fields
+                if wire == 2 and number in (1, 2)
+            )
+            if len(location) != 2:
+                return block
+            key = (tag.group("tag"), *location)
+            if key not in canonical_media:
+                canonical_media[key] = item_id.group(1)
+                return block
+            media_refs[item_id.group(1)] = canonical_media[key]
+            return ""
+
+        pool = re.sub(
+            r"(?s)<Element>\s*(<Sm2Mp(?:Video|Audio)Clip\b.*?</Sm2Mp(?:Video|Audio)Clip>)\s*</Element>",
+            keep_first_media,
+            pool,
+        )
+        for name, data in list(members.items()):
+            if not name.startswith("SeqContainer/"):
+                continue
+            text = data.decode("utf-8", "replace")
+            for duplicate, canonical in media_refs.items():
+                text = text.replace(f"<MediaRef>{duplicate}</MediaRef>", f"<MediaRef>{canonical}</MediaRef>")
+            members[name] = text.encode("utf-8")
+        if bin_members:
+            master = re.search(r'<Sm2MpFolder\b[^>]*\bDbId="([^"]+)".*?<MediaPool>([^<]+)</MediaPool>', pool, re.S)
+            if master is None:
+                raise ValueError("native project has no master media folder")
+            master_id, media_pool_id = master.groups()
+            item_pattern = r"(?s)<Element>\s*(<Sm2Mp(?:Video|Audio|Timeline)Clip\b.*?</Sm2Mp(?:Video|Audio|Timeline)Clip>)\s*</Element>"
+            folder_blob = "0000000200000027800a061090d395a40d1890d395a40d2090d395a40d5a100a0c3030303030302030303030301200"
+            for index, (folder_name, item_names) in enumerate(bin_members):
+                folder_id = _uid()
+                members_by_name = set(item_names)
+                moved: list[str] = []
+
+                def move_to_folder(match: re.Match[str]) -> str:
+                    block, item = match.group(0), match.group(1)
+                    name = re.search(r"<Name>(.*?)</Name>", item, re.S)
+                    if name is None or unescape(name.group(1)) not in members_by_name:
+                        return block
+                    moved.append(re.sub(r"(<MpFolder>)[^<]*(</MpFolder>)", rf"\g<1>{folder_id}\g<2>", block, count=1))
+                    return ""
+
+                pool = re.sub(item_pattern, move_to_folder, pool)
+                safe_folder = re.sub(r'[\\/:*?"<>|]+', "_", folder_name)
+                folder_path = f"MediaPool/Master/{index:03d}_{safe_folder}/MpFolder.xml"
+                members[folder_path] = (
+                    '<?xml version="1.0" encoding="UTF-8"?>\n'
+                    f'<Sm2MpFolder DbId="{folder_id}"><FieldsBlob>{folder_blob}</FieldsBlob>'
+                    f'<Name>{escape(folder_name)}</Name><MpFolder>{master_id}</MpFolder>'
+                    f'<UniqueMediaPoolItemId>{_uid()}</UniqueMediaPoolItemId><MediaVec>'
+                    + "\n".join(moved)
+                    + f'</MediaVec><MediaPool>{media_pool_id}</MediaPool><Folded>true</Folded>'
+                    '<ColorTag>FOLDER_COLOR_NONE</ColorTag><LockSysId/><DbSavedTime>0</DbSavedTime></Sm2MpFolder>'
+                ).encode("utf-8")
         members[pool_name] = pool.encode("utf-8")
-        merged_conversion = dict(conversion_manifests[0])
-        merged_conversion["lumetri"] = [grade for item in conversion_manifests for grade in item.get("lumetri", [])]
-        merged_conversion["timeline_state"] = [item.get("timeline_state", {}) for item in conversion_manifests]
-        merged_conversion["timelines"] = conversion_manifests
-        members["pr2/conversion.json"] = json.dumps(merged_conversion, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         destination = Path(output_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target:

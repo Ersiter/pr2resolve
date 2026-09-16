@@ -3563,6 +3563,26 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
     return bins
 
 
+def _prproj_get_bin_members(prproj_root: ET.Element) -> list[tuple[str, list[str]]]:
+    """Return top-level Premiere bins with their directly owned item names."""
+    idx = _PrprojIndex.build(prproj_root)
+    result: list[tuple[str, list[str]]] = []
+    for bin_el in prproj_root.findall("BinProjectItem"):
+        name = bin_el.findtext("ProjectItem/Name") or bin_el.findtext("Name") or ""
+        if not name:
+            continue
+        members = []
+        for item in bin_el.findall("ProjectItemContainer/Items/Item"):
+            target = idx.resolve_uref(item.get("ObjectURef", ""))
+            if target is None:
+                continue
+            member_name = target.findtext("ProjectItem/Name") or target.findtext("Name") or ""
+            if member_name:
+                members.append(member_name)
+        result.append((name, members))
+    return result
+
+
 def _prproj_get_color_profiles(prproj_root: ET.Element, sequence_uid: str = "") -> dict[str, Any]:
     """Read sequence-scoped Premiere profiles by following its object graph."""
     import json as _json
