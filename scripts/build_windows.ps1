@@ -1,6 +1,6 @@
 # pr2resolve - Windows build script
 # Usage: powershell -File scripts/build_windows.ps1 [-PythonExecutable <path>] [-OutputFolder <path>]
-# Prerequisites: Python, requirements-build.txt, optional upx (PATH), MSVC Build Tools 2022
+# Prerequisites: Python 3.14, requirements-build.txt, optional upx (PATH), MSVC Build Tools 2022
 # Output: dist/windows-x86_64-{run-id}/pr2resolve-v{VERSION}-windows-x86_64.zip
 
 param(
@@ -44,7 +44,88 @@ if (-not $PYTHON_BIN) {
     }
     exit 1
 }
-Write-Host "  Python: $PYTHON_BIN"
+$pythonVersion = & $PYTHON_BIN -c "import sys; print('.'.join(map(str, sys.version_info[:2])))"
+if ($LASTEXITCODE -ne 0 -or $pythonVersion.Trim() -ne "3.14") {
+    Write-Host "FATAL: Windows package must use Python 3.14; selected '$PYTHON_BIN' reports '$($pythonVersion.Trim())'." -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Python: $PYTHON_BIN (3.14)"
+
+# fusionscript is a CPython extension. When Resolve is installed, import its
+# public module under the exact interpreter that Nuitka will embed; version
+# reporting alone cannot detect an ABI mismatch.
+$apiProbe = @'
+import os
+import string
+import sys
+from pathlib import Path
+
+program_data = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+module_candidates = [Path(os.environ[p]) for p in ("RESOLVE_SCRIPT_API",) if os.environ.get(p)]
+module_candidates.append(program_data / r"Blackmagic Design\DaVinci Resolve\Support\Developer\Scripting\Modules")
+
+install_candidates = [Path(os.environ["RESOLVE_INSTALL_DIR"])] if os.environ.get("RESOLVE_INSTALL_DIR") else []
+install_candidates.extend(Path(os.environ[p]) / r"Blackmagic Design\DaVinci Resolve"
+                          for p in ("PROGRAMFILES", "PROGRAMFILES(X86)")
+                          if os.environ.get(p))
+system_drive = os.environ.get("SystemDrive", "C:")
+install_candidates.extend([
+    Path(system_drive) / "Program Files" / r"Blackmagic Design\DaVinci Resolve",
+    Path(system_drive) / "ProgramData" / r"Blackmagic Design\DaVinci Resolve",
+])
+install_candidates.extend(Path(f"{letter}:\\Program Files") / r"Blackmagic Design\DaVinci Resolve"
+                          for letter in string.ascii_uppercase)
+
+install = next((path for path in install_candidates if (path / "fusionscript.dll").is_file()), None)
+modules = next((path for path in module_candidates if (path / "DaVinciResolveScript.py").is_file()), None)
+if install is None or modules is None:
+    print("Resolve scripting module or fusionscript.dll not found; ABI probe skipped.")
+    raise SystemExit(2)
+
+os.environ["RESOLVE_SCRIPT_LIB"] = str(install / "fusionscript.dll")
+sys.path.insert(0, str(modules))
+import DaVinciResolveScript as dvr
+if not callable(getattr(dvr, "scriptapp", None)):
+    raise RuntimeError("DaVinciResolveScript imported without callable scriptapp")
+print(f"Resolve API import OK: {sys.executable}")
+'@
+$apiProbePath = Join-Path $env:TEMP "pr2resolve-api-probe-$([guid]::NewGuid().ToString('N')).py"
+try {
+    [System.IO.File]::WriteAllText($apiProbePath, $apiProbe, [System.Text.UTF8Encoding]::new($false))
+    $apiProbeInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $apiProbeInfo.FileName = $PYTHON_BIN
+    $apiProbeInfo.Arguments = '"' + $apiProbePath + '"'
+    $apiProbeInfo.UseShellExecute = $false
+    $apiProbeInfo.CreateNoWindow = $true
+    $apiProbeInfo.RedirectStandardOutput = $true
+    $apiProbeInfo.RedirectStandardError = $true
+    $apiProbeProcess = New-Object System.Diagnostics.Process
+    $apiProbeProcess.StartInfo = $apiProbeInfo
+    [void]$apiProbeProcess.Start()
+    $apiStdoutTask = $apiProbeProcess.StandardOutput.ReadToEndAsync()
+    $apiStderrTask = $apiProbeProcess.StandardError.ReadToEndAsync()
+    if (-not $apiProbeProcess.WaitForExit(15000)) {
+        $apiProbeProcess.Kill()
+        $apiProbeProcess.WaitForExit()
+        throw "Resolve API import probe timed out after 15 seconds."
+    }
+    $apiStdout = $apiStdoutTask.Result.Trim()
+    $apiStderr = $apiStderrTask.Result.Trim()
+    if ($apiProbeProcess.ExitCode -eq 2) {
+        Write-Host "  WARNING: $apiStdout" -ForegroundColor Yellow
+    } elseif ($apiProbeProcess.ExitCode -ne 0) {
+        throw "Resolve API import failed (exit $($apiProbeProcess.ExitCode)). $apiStdout $apiStderr"
+    } else {
+        Write-Host "  $apiStdout"
+    }
+} catch {
+    Write-Host "FATAL: Selected Python cannot load the installed Resolve scripting API. $_" -ForegroundColor Red
+    exit 1
+} finally {
+    if (Test-Path -LiteralPath $apiProbePath) {
+        Remove-Item -LiteralPath $apiProbePath -Force
+    }
+}
 
 # Read version from source
 $VERSION = (& $PYTHON_BIN -c "from pr2_constants import VERSION; print(VERSION)").Trim()
