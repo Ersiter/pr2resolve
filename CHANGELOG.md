@@ -2,6 +2,19 @@
 
 All notable changes to pr2resolve.
 
+## [v1.5.0] — 2026-09-16
+
+### Added
+- Native DRP writes Premiere clip-label colors through the verified nested `FieldsBlob` protobuf field 6; flag bits remain independent.
+
+### Changed
+- Removed native cube LUT references and generated assets after Resolve reported missing LUT files. All Lumetri source records remain in `pr2/conversion.json`; native grade application is not claimed.
+- API DRT/DRP is documented as an explicitly selected compatibility fallback; native DRP remains the primary data-writing path.
+- API clip-color fallback now uses the same 16-color Premiere-to-Resolve mapping as the verified native enum path.
+
+### Fixed
+- Replaced stale workstation tests that called removed ffprobe helpers with pure `.prproj` source-timecode and missing-metadata coverage.
+
 ## [v1.4.0] — 2026-09-16
 
 ### Added
@@ -96,7 +109,8 @@ All notable changes to pr2resolve.
 
 First production release. Architecture refactor complete — domain model separated from XML rendering. Dual-entry: FCP7 XML and `.prproj`.
 
-[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.4.0...HEAD
+[unreleased]: https://github.com/Ersiter/pr2resolve/compare/v1.5.0...HEAD
+[v1.5.0]: https://github.com/Ersiter/pr2resolve/compare/v1.4.0...v1.5.0
 [v1.4.0]: https://github.com/Ersiter/pr2resolve/compare/v1.3.0...v1.4.0
 [v1.3.0]: https://github.com/Ersiter/pr2resolve/compare/v1.2.0...v1.3.0
 [v1.2.0]: https://github.com/Ersiter/pr2resolve/compare/v1.1.0...v1.2.0

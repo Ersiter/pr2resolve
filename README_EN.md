@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.4.0 — Premiere timeline state synchronization*
+> *v1.5.0 — native clip colors and lossless Lumetri manifest*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -161,8 +161,8 @@ Two input formats:
 
 Three output formats:
 - FCP7 XML — zero dependencies, works with any DaVinci version
-- Native DRP — primary delivery path; writes timelines, clip grades, bundled LUTs, color configuration, and a complete reverse-engineering manifest without starting Resolve
-- API DRT/DRP — compatibility path; needs DaVinci Studio, with API DRP also syncing visible timeline state
+- Native DRP — primary delivery path; writes timelines, verified clip-label color enums, color configuration, and a complete reverse-engineering manifest without starting Resolve
+- API DRT/DRP — explicit compatibility fallback, selected by the user for unsupported native schemas or failed import validation; requires DaVinci Studio
 
 ---
 
@@ -190,7 +190,7 @@ Three output formats:
 
 - **How are timeline state and grades migrated?**
 
-    API DRP synchronizes sequence In/Out, sequence markers, track name/mute/lock state, and approximate clip label colors mapped from Premiere presets. Native DRP preserves empty-track topology and the complete `timeline_state` manifest; Resolve's opaque UI bytes have no verified mapping, so they are not guessed. Static Lumetri point operations compile into per-clip LUTs, while spatial and animated records remain in `pr2/conversion.json`.
+    Native DRP writes Premiere clip-label colors using the verified Resolve enum mapping and preserves empty-track topology plus the full `timeline_state` manifest; other UI states without a verified equivalent are not guessed. API DRP visibly synchronizes sequence In/Out, sequence markers, track name/mute/lock, and approximate clip label colors; select it explicitly only when native import is unsupported. All Lumetri records remain in `pr2/conversion.json`; native grade writing is unverified, so no cube LUT is embedded.
 
 ---
 
@@ -244,7 +244,7 @@ Output:
 | C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media order | Move video before audio |
-| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: full record plus static point operations |
+| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: full record only, native grade unverified |
 | M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | Generate `<link>` for same-source clips |
 | M5 | file details | Fill missing samplecharacteristics |
