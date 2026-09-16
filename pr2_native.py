@@ -9,6 +9,7 @@ import math
 import os
 import re
 import struct
+import tempfile
 import uuid
 import zipfile
 from pathlib import Path
@@ -567,13 +568,17 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
 
 
 def export_native_drp(
-    sequence: ET.Element | ET.ElementTree,
+    sequence: ET.Element | ET.ElementTree | list[ET.Element | ET.ElementTree],
     output_path: str | Path,
     project_name: str,
     grades: list[Any] | None = None,
     color_profiles: dict[str, Any] | None = None,
 ) -> Path:
-    """Export one FCP7 sequence using the verified codec native template."""
+    """Export one project package, optionally containing multiple sequences."""
+    if isinstance(sequence, list):
+        if not sequence:
+            raise ValueError("native DRP requires at least one sequence")
+        return _export_native_project(sequence, output_path, project_name, grades, color_profiles)
     if not TEMPLATE.is_file():
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
@@ -684,6 +689,84 @@ def export_native_drp(
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(result.getvalue())
     return destination
+
+
+def _export_native_project(
+    sequences: list[ET.Element | ET.ElementTree],
+    output_path: str | Path,
+    project_name: str,
+    grades: list[Any] | None = None,
+    color_profiles: dict[str, Any] | None = None,
+) -> Path:
+    """Combine native timeline packages into one Resolve project archive."""
+    grade_sets = (grades if len(grades) == len(sequences) and all(isinstance(item, list) for item in grades)
+                  else [None] * len(sequences)) if isinstance(grades, list) else [None] * len(sequences)
+    with tempfile.TemporaryDirectory(prefix="pr2resolve-native-") as temp_dir:
+        packages = [
+            export_native_drp(item, Path(temp_dir) / f"timeline-{index}.drp", project_name, grade_sets[index], color_profiles)
+            for index, item in enumerate(sequences)
+        ]
+        with zipfile.ZipFile(packages[0]) as first:
+            members = {info.filename: first.read(info.filename) for info in first.infolist()}
+        pool_name = "MediaPool/Master/MpFolder.xml"
+        pool = ET.fromstring(members[pool_name])
+        media_vec = pool.find("MediaVec")
+        if media_vec is None:
+            raise ValueError("native project has no media pool vector")
+        project = ET.fromstring(members["project.xml"])
+        conversion_manifests = []
+        for package in packages:
+            with zipfile.ZipFile(package) as archive:
+                conversion_manifests.append(json.loads(archive.read("pr2/conversion.json")))
+        for package in packages[1:]:
+            with zipfile.ZipFile(package) as archive:
+                extra_pool = ET.fromstring(archive.read(pool_name))
+                extra_seq_name = next(name for name in archive.namelist() if name.startswith("SeqContainer/"))
+                extra_seq = archive.read(extra_seq_name).decode("utf-8", "replace")
+            timeline_clip = extra_pool.find(".//Sm2MpTimelineClip")
+            timeline = extra_pool.find(".//Sm2Timeline")
+            nested_sequence = timeline.find("Sequence/Sm2Sequence") if timeline is not None else None
+            if timeline_clip is None or timeline is None or nested_sequence is None:
+                raise ValueError("native timeline package has incomplete sequence topology")
+            old_container = re.search(r"<Sm2SequenceContainer\b[^>]*\bDbId=\"([^\"]+)\"", extra_seq)
+            if old_container is None:
+                raise ValueError("native sequence container has no DbId")
+            old_sequence = nested_sequence.get("DbId") or ""
+            new_container, new_sequence = _uid(), _uid()
+            new_timeline, new_timeline_clip = _uid(), _uid()
+            new_sequence_unique, new_media_unique = _uid(), _uid()
+            extra_seq = extra_seq.replace(old_container.group(1), new_container, 1)
+            if old_sequence:
+                extra_seq = re.sub(r"(<Sequence>)" + re.escape(old_sequence) + r"(</Sequence>)", rf"\g<1>{new_sequence}\g<2>", extra_seq)
+            nested_sequence.set("DbId", new_sequence)
+            sequence_unique = nested_sequence.find("UniqueSequenceId")
+            if sequence_unique is not None:
+                sequence_unique.text = new_sequence_unique
+            if nested_sequence.find("Parent") is not None:
+                nested_sequence.find("Parent").text = new_timeline
+            timeline.set("DbId", new_timeline)
+            timeline.find("MpTimelineClip").text = new_timeline_clip
+            timeline_clip.set("DbId", new_timeline_clip)
+            unique_media = timeline_clip.find("UniqueMediaPoolItemId")
+            if unique_media is not None:
+                unique_media.text = new_media_unique
+            for element in extra_pool.find("MediaVec") or []:
+                media_vec.append(element)
+            members.pop(extra_seq_name, None)
+            members[f"SeqContainer/{new_container}.xml"] = extra_seq.encode("utf-8")
+        members[pool_name] = _xml(pool)
+        merged_conversion = conversion_manifests[0]
+        merged_conversion["lumetri"] = [grade for item in conversion_manifests for grade in item.get("lumetri", [])]
+        merged_conversion["timeline_state"] = [item.get("timeline_state", {}) for item in conversion_manifests]
+        merged_conversion["timelines"] = conversion_manifests
+        members["pr2/conversion.json"] = json.dumps(merged_conversion, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        members["project.xml"] = _xml(project)
+        destination = Path(output_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as target:
+            for name, data in members.items():
+                target.writestr(name, data)
+        return destination
 
 
 __all__ = ["export_native_drp"]

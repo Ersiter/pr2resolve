@@ -327,7 +327,7 @@ def _run_pipeline(
     if drp_gui is True:
         drp_gui = output_dir / f"{stem}.drp"
     if native_drp is True:
-        native_drp = output_dir / f"{stem}.drp"
+        native_drp = output_dir / f"{Path(_make_output_name(stem, add_suffix=not no_suffix)).stem}.drp"
     if drp_path is not None:
         drp_path = _next_available_path(drp_path)
     if drp_gui is not None:
@@ -382,14 +382,16 @@ def _run_pipeline(
                 print(f"  Batch mode ({export_mode}): exporting {len(selected_seqs)} sequences")
                 xml_paths: list[Path] = []
                 seq_names: list[str] = []
+                need_batch_xml = drt or report or not (native_drp or drp_path or drp_gui)
                 for s in selected_seqs:
                     fcp = _prproj_parse_sequence(prproj_root, s["uid"], input_path)
                     tmp_xml = output_dir / _make_output_name(s["name"], add_suffix=not no_suffix)
                     # Scan + fix + write (single write after fix pass)
                     issues = _scan(fcp)
                     _apply_fixes(fcp, issues)
-                    _write_fixed_xml(fcp, tmp_xml)
-                    xml_paths.append(tmp_xml)
+                    if need_batch_xml:
+                        _write_fixed_xml(fcp, tmp_xml)
+                        xml_paths.append(tmp_xml)
                     seq_names.append(s["name"])
                     print(f"    {s['name'][:30]}: {s['clip_count']} clips, {len(issues)} issues")
 
@@ -489,27 +491,30 @@ def _run_pipeline(
     if native_drp:
         print(f"  Native DRP (pure data / no Resolve required): {native_drp}")
         try:
-            if prproj_root is not None and len(selected_seqs) > 1:
-                for index, selected_sequence in enumerate(selected_seqs, start=1):
+            native_project_name = Path(_make_output_name(stem, add_suffix=not no_suffix)).stem
+            if prproj_root is not None:
+                native_sequences = []
+                native_grade_sets = []
+                for selected_sequence in selected_seqs:
                     fcp = _prproj_parse_sequence(prproj_root, selected_sequence["uid"], input_path)
                     issues_s = _scan(fcp)
                     _apply_fixes(fcp, issues_s)
-                    native_grades = _prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"])
-                    if native_grades:
-                        print(f"    Native DRP: {len(native_grades)} Lumetri grade records preserved in the manifest; native grade not applied")
-                    safe_name = Path(_make_output_name(selected_sequence["name"], add_suffix=False)).stem
-                    destination = native_drp.parent / f"{native_drp.stem}-{safe_name}.drp"
-                    destination = _next_available_path(destination)
-                    profiles = _prproj_get_color_profiles(prproj_root, selected_sequence["uid"])
-                    export_native_drp(fcp, destination, input_path.stem, native_grades, profiles)
-                    native_outputs.append(destination)
-                    print(f"    Native DRP {index}: {destination}")
+                    native_sequences.append(fcp)
+                    native_grade_sets.append(_prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"]))
+                native_grades = native_grade_sets
+                if native_grades:
+                    print(f"  Native DRP: {sum(len(grades) for grades in native_grade_sets)} Lumetri grade records preserved in the manifest; native grade not applied")
+                profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
+                            if selected_seqs else None)
+                export_native_drp(native_sequences, native_drp, native_project_name, native_grades, profiles)
+                native_outputs.append(native_drp)
+                print(f"  Native DRP written: {native_drp} ({len(native_sequences)} timelines)")
             else:
                 if lumetri_data:
                     print(f"  Native DRP: {len(lumetri_data)} Lumetri grade records preserved in the manifest; native grade not applied")
                 profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
                             if prproj_root is not None and selected_seqs else None)
-                export_native_drp(root, native_drp, input_path.stem, lumetri_data, profiles)
+                export_native_drp(root, native_drp, native_project_name if prproj_root is not None else input_path.stem, lumetri_data, profiles)
                 native_outputs.append(native_drp)
                 print(f"  Native DRP written: {native_drp}")
         except Exception as exc:
@@ -519,7 +524,7 @@ def _run_pipeline(
     # Write intermediate XML — always needed for DRP/DRT (DaVinci imports from file)
     xml_written = False
     needs_intermediate = drt or drp_path or drp_gui
-    if not no_xml or needs_intermediate:
+    if (not no_xml and not (drp_path or drp_gui)) or drt:
         print(f"  Writing: {output_path}")
         _write_fixed_xml(root, output_path)
         xml_written = output_path.exists()
@@ -574,10 +579,8 @@ def _run_pipeline(
                 print("  DRP skipped: DaVinci not available")
 
         # Cleanup DRP intermediate XMLs (not the user's main output)
-        if not no_xml:
-            for tmp in drp_xml_paths:
-                if tmp != output_path:
-                    tmp.unlink(missing_ok=True)
+        for tmp in drp_xml_paths:
+            tmp.unlink(missing_ok=True)
 
     # DRT output — second (can reuse GUI instance opened by DRP)
     drt_path: Path = output_dir / "drt_default.drt"  # Pylance guard: re-assigned below if drt=True

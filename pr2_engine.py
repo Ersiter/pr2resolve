@@ -3338,27 +3338,14 @@ def _drp_export(
             print(f"  Premiere color profile: output={project_profiles.get('OutputColorSpace', 'unknown')}; working={project_profiles.get('WorkingColorSpace', 'unknown')}; media={project_profiles.get('media', 'unknown')}")
         _apply_resolve_color_settings(project, project_profiles, "project")
 
-        # ── Step 1: Extract and import individual media files ──
-        all_files: set[str] = set()
-        for xml_path in xml_paths:
-            all_files.update(_extract_media_files(xml_path))
-        if all_files:
-            imported = _import_media_to_pool(media_pool, sorted(all_files))
-            print(f"  Media pool: {imported}/{len(all_files)} files imported")
-            media_profiles = [item for profiles in profiles_by_name.values() for item in profiles.get("media_profiles", [])]
-            _apply_media_color_profiles(media_pool, media_profiles)
-        else:
-            print("  Media pool: no local media found (offline mode)")
-
-        # ── Step 2: Recreate bin structure from PR project ──
+        # ── Step 1: Recreate bin structure from PR project ──
         if prproj_root is not None:
             bins = _prproj_get_bin_structure(prproj_root)
             if bins:
                 _create_bin_structure(media_pool, bins)
                 print(f"  Bins: {len(bins)} folder(s) created")
 
-        # ── Step 3: Import timelines ──
-        # importSourceClips=False — media already in pool from Step 1
+        # ── Step 2: Import timelines and let Resolve bind source media ──
         import_failed = False
         failed_xmls: list[tuple[str, Path]] = []
         for seq_index, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
@@ -3368,8 +3355,7 @@ def _drp_export(
             print(f"  SIZE: {xml_path.stat().st_size:,} bytes")
             timeline = media_pool.ImportTimelineFromFile(
                 str(xml_path),
-                {"timelineName": seq_name, "importSourceClips": False,
-                 "sourceClipsFolders": [media_pool.GetRootFolder()]},
+                {"timelineName": seq_name, "importSourceClips": True},
             )
             if timeline is not None and profiles_by_name.get(seq_name):
                 try:
@@ -3394,13 +3380,15 @@ def _drp_export(
                 print(f"  Timeline import FAILED: {seq_name}")
                 failed_xmls.append((seq_name, xml_path))
                 import_failed = True
+        media_profiles = [item for profiles in profiles_by_name.values() for item in profiles.get("media_profiles", [])]
+        _apply_media_color_profiles(media_pool, media_profiles)
         if failed_xmls:
             print("=" * 60)
             print(f"  FAILED {len(failed_xmls)}/{len(xml_paths)} sequences:")
             for nm, xp in failed_xmls:
                 print(f"    {nm}  ({xp.stat().st_size:,} bytes)  {xp}")
 
-        # ── Step 4: Export DRP ──
+        # ── Step 3: Export DRP ──
         if import_failed:
             print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
         else:
@@ -3685,14 +3673,22 @@ def _resolve_pathurl(url: str) -> Optional[str]:
     Applies percent-decoding (unquote) for both.
     Returns None for unrecognized or empty URLs.
     """
-    from urllib.parse import unquote
+    from urllib.parse import unquote, urlparse
     if not url:
         return None
-    if url.startswith("file://localhost/"):
-        return unquote(url[len("file://localhost/"):]).replace("/", "\\")
-    if url.startswith("file:///"):
-        return unquote(url[8:]).replace("/", "\\")
-    return None
+    parsed = urlparse(url)
+    if parsed.scheme.casefold() != "file":
+        return None
+    path = unquote(parsed.path)
+    host = parsed.netloc
+    if host and host.casefold() != "localhost":
+        if len(host) == 2 and host[1] == ":":
+            path = f"{host}{path}"
+        else:
+            path = f"//{host}{path}"
+    if re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    return path.replace("/", "\\")
 
 
 def _extract_media_files(xml_path: Path) -> list[str]:
