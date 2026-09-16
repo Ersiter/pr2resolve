@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.5.1 — 整工程原生 DRP 与可靠素材链接*
+> *v1.5.2 — 原生多时间线工程合并修复*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 

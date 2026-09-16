@@ -2,6 +2,11 @@
 
 All notable changes to pr2resolve.
 
+## [v1.5.2] — 2026-09-17
+
+### Fixed
+- Native multi-timeline export now handles Resolve private `ListMgt::` XML as opaque data and retains every sequence container.
+
 ## [v1.5.1] — 2026-09-17
 
 ### Fixed

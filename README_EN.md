@@ -1,7 +1,7 @@
 <div align="center">
 
 > **Current Status: Stable**  
-> *v1.5.1 — project-wide native DRP and reliable media linking*
+> *v1.5.2 — native multi-timeline project merge fix*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
