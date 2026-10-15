@@ -30,6 +30,10 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 ## 行业实现中值得采用的做法
 
+Lumetri 现在按源组件顺序、blob 内关键帧与 shader 顺序读取；每个效果保留全部参数和原 XML。目标以每个 Lumetri 一个串行节点生成 DRX；native 的 clip version Body 与 API `GetNodeGraph().ApplyGradeFromDRX` 使用相同字节。空视频轨不再压缩调色身份索引，API 匹配计入时间线起始帧；应用失败不会继续把 DRT/DRP 报为成功。原生版本表的 `pActive`、`HasCorrection` 与双冒号类名按实际导出结构写入。
+
+DRX 节点字段依据[第三方 DRX codec](https://github.com/samuelgursky/davinci-resolve-mcp/tree/main/resolve-advanced/vendor/drx-codec)及实录 fixture 独立实现，参考仓库为 MIT 许可，未复制其代码。独立解码器已核对多节点及连接，测试覆盖 20 个节点时的标识冲突。跨软件公式仅为近似：曝光 → gain `2^stops`，对比度 → `1 + PR/100`，饱和度 → Resolve UI `PR/2`。这些公式未经跨软件画面对照；LUT、其他 shader、曲线和动画未映射。含动画的源效果不会被悄悄压成静态值。相同 Body 只证明两条路径共用调色数据，不证明 Resolve 已加载或渲染相同。
+
 字幕源解析按实际 `FormattedTextData` 的 FlatBuffer 表、offset 和字符串长度读取文本 runs，并按 BlockVector 顺序拼接；不扫描“看起来像文字”的字节。无法识别的结构保留原负载并标记解码失败。28 条实际工程字幕均能读取，字体列表、原 ticks、BinaryHash 和 block 引用保存在 XML 状态中。最小原生 Subtitle 编码器已有独立测试，但尚未接入工程输出；完整样式及 native/API 字幕转换仍未完成。
 
 - [Blackmagic Resolve scripting API](https://www.blackmagicdesign.com/developer/) 提供导入后读取与设置时间线、轨道和片段属性的正式接口。它适合作为验收通道；用户正在工作的 Resolve 会话不应成为自动测试环境。

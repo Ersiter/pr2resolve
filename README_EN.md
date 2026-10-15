@@ -195,7 +195,7 @@ Three output formats:
 
 - **How are timeline state and grades migrated?**
 
-    Native DRP writes clip-label colors, empty-track topology, track names, directly owned media bins, and timeline markers. Lumetri grades are detected but native grade writing is unverified, so no cube LUT is embedded.
+    The `.prproj` reader retains Lumetri effect order, shaders and keyframes by timeline clip identity. Native DRP and API share one DRX graph, with a serial node per Lumetri effect. Static exposure, contrast and saturation are approximate; other controls and animation remain source records. Node data has offline cross-checks; actual color and Resolve loading remain unverified. No cube LUT is embedded.
 
 | State | Native DRP | API DRT / DRP |
 |---|---|---|
@@ -206,6 +206,7 @@ Three output formats:
 | Track name, mute, lock | Writes custom names and lock/disable bits; offline-validated | Uses the same source state with official API methods and reports failures |
 | Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
 | Captions | Decodes FormattedTextData text runs, font lists and source ticks; retains raw payloads; full styling/target tracks are incomplete | Same source records; an API path for arbitrary caption cues is not established |
+| Lumetri layers | One serial node per source effect using the shared DRX Body; three static controls are approximate, other controls/animation unmapped | Applies the same DRX; matching or application failures prevent successful export reporting |
 
 Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. These writes have offline test coverage; visible results still need verification in an idle Resolve environment. See [format evidence and verification limits](NATIVE_FORMAT.md).
 
@@ -261,7 +262,7 @@ Output:
 | C3-C4 | rate | Fill missing `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media order | Move video before audio |
-| M0 | Lumetri | XML: remove; DRT/API DRP: static three-parameter CDL approximation; native DRP: detected only, native grade unverified |
+| M0 | Lumetri | XML: remove unsupported plugin blocks; native/API: shared serial DRX graph with three approximate static controls; other controls and keyframes remain source records |
 | M1-M2 | clipid/track | Fill `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | Generate `<link>` for same-source clips |
 | M5 | file details | Fill missing samplecharacteristics |
@@ -280,9 +281,9 @@ All rules apply automatically. They're not optional — skip them and the import
 3. **Moved media** — XML stores absolute paths. Relink in DaVinci after moving files.
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
-6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP detects them without claiming an equivalent conversion.
+6. **Lumetri spatial and temporal operations** — The DRX graph approximates exposure, contrast and saturation. Denoise, sharpen, blur, vignette, curves and keyframes remain unmapped. Multiple Lumetri effects retain their order; cross-application color equivalence is not established.
 7. **Color-space vocabularies differ** — Native DRP maps Rec.709, ACEScct and Rec.2100 HLG configurations through its templates; HDR projects and input color spaces still need live verification. API DRP also assigns known input spaces by media path.
-8. **Native projects still need import verification** — offline registration, media-reference, marker and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Visible marker and source start-timecode application remains unverified; native In/Out, track mute/lock and flags are not applied. `--report` works without XML output and generated reports remain available after an export is rejected.
+8. **Native projects still need import verification** — offline registration, media-reference, marker, grade and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Visible marker and source start-timecode application remains unverified; native In/Out and flags are not applied. Track mute/lock is written and needs live verification. `--report` works without XML output and generated reports remain available after an export is rejected.
 
 See [conversion implementation notes](NATIVE_FORMAT.md) for field evidence, industry references and the remaining acceptance checks.
 

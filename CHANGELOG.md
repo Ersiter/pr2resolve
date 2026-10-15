@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Native DRP and API export share an ordered DRX graph, with one serial node per source Lumetri effect. Static Exposure/Contrast/Saturation use explicit approximate mappings; other shaders, parameters and keyframes remain source records.
+- Grade identity preserves empty video tracks and timeline-start offsets. Required graph application failures prevent successful API export reporting. Native clip version tables receive the exact same DRX Body; Resolve loading and color rendering remain unverified.
+
 - Premiere caption extraction follows FormattedTextData FlatBuffer references and text-run order. Text, font lists, source ticks and raw payloads survive normalization; unknown structures are rejected rather than guessed. Caption target/style parity remains incomplete.
 
 - Mixed-rate Premiere trims are converted directly from source ticks to the XML clip clock; native output reads that clock instead of the media frame rate. Source tick values and trim residuals remain available.

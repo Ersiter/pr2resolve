@@ -184,15 +184,15 @@ class FilterSpec:
 
 @dataclass
 class LumetriGrade:
-    """Static Lumetri grade identified by its timeline clip identity."""
+    """One shared DRX node graph identified by its source timeline clip."""
 
     track_index: int
     start_frame: int
     end_frame: int
     track_item_id: str
     clip_name: str
-    parameters: dict[str, float]
-    cdl: dict[str, str] = field(default_factory=dict)
+    drx_payload: bytes = b""
+    node_count: int = 0
     skipped_reason: str = ""
     warnings: list[str] = field(default_factory=list)
     parameter_records: list["LumetriParameter"] = field(default_factory=list)
@@ -220,6 +220,9 @@ class LumetriParameter:
     start_keyframe_encoding: str = ""
     start_value_encoding: str = ""
     decoded_sha256: str = ""
+    component_ref: str = ""
+    effect_order: int = 0
+    raw_xml: str = ""
 
 
 @dataclass

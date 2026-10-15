@@ -522,7 +522,7 @@ def _run_pipeline(
                 native_grade_sets = [_prproj_extract_all_lumetri(prproj_root, s["uid"]) for s in selected_seqs]
                 native_grades = native_grade_sets
                 if native_grades:
-                    print(f"  Native DRP: {sum(len(grades) for grades in native_grade_sets)} Lumetri grades detected; native grade not applied")
+                    print(f"  Native DRP: writing shared DRX graphs for {sum(len(grades) for grades in native_grade_sets)} Lumetri clip identities")
                 profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
                             if selected_seqs else None)
                 export_native_drp(
@@ -533,7 +533,7 @@ def _run_pipeline(
                 print(f"  Native DRP written: {native_drp} ({len(native_sequences)} timelines)")
             else:
                 if lumetri_data:
-                    print(f"  Native DRP: {len(lumetri_data)} Lumetri grades detected; native grade not applied")
+                    print(f"  Native DRP: writing shared DRX graphs for {len(lumetri_data)} Lumetri clip identities")
                 profiles = (_prproj_get_color_profiles(prproj_root, selected_seqs[0]["uid"])
                             if prproj_root is not None and selected_seqs else None)
                 export_native_drp(root, native_drp, native_project_name if prproj_root is not None else input_path.stem, lumetri_data, profiles)

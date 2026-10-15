@@ -195,7 +195,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **时间线状态与调色如何迁移？**
 
-    `.prproj` 读取器按时间线片段身份提取状态与全部 Lumetri ParameterID。native DRP 写入片段标签颜色、空轨拓扑、轨道名称、直接媒体夹层级和时间线 marker。Lumetri 会被检测，但 native grade 未验证，不写入或嵌入 cube LUT。
+    `.prproj` 读取器按时间线片段身份提取状态、Lumetri 效果顺序、shader 与关键帧。native DRP 和 API 使用相同的 DRX 调色图，每个 Lumetri 对应一个串行节点；曝光、对比度和饱和度作静态近似，其他效果与动画保留原记录。节点数据经过离线交叉检查，实际颜色及 Resolve 导入仍未验收；不嵌入 cube LUT。
 
 | 状态 | native DRP | API DRT / DRP |
 |---|---|---|
@@ -206,6 +206,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | 轨道名称、静音、锁定 | 写入自定义名称及锁定/禁用位；离线验证 | 使用相同源状态调用官方 API，失败会告警 |
 | 工作区、轨道/源片段 marker | 工作区与已提取轨道 marker 保留源记录，未应用 | 未应用 |
 | 字幕 | 解析 FormattedTextData 的文本 runs、字体列表与源 ticks；保留原始负载，完整样式/目标轨道未实现 | 相同源记录；任意字幕 cue 的 API 写入路径未确立 |
+| Lumetri 层 | 每个源效果一个串行节点，使用共同 DRX Body；静态三参数近似，其他控制与动画未映射 | 应用同一 DRX；身份匹配或写入失败时不报告导出成功 |
 
 marker 的源颜色索引保留在 XML 状态注释；有索引时会提示颜色未映射。上述写入经过离线测试，仍需在闲置的 Resolve 环境中验证可见结果；详见 [格式依据与验收边界](NATIVE_FORMAT.md)。
 
@@ -261,7 +262,7 @@ marker 的源颜色索引保留在 XML 状态注释；有索引时会提示颜�
 | C3-C4 | rate | 补全 `<ntsc>` / `<timebase>` |
 | C5 | pathurl | `file://localhost/...` → `file:///...` |
 | C6 | media 顺序 | video 移到 audio 前面 |
-| M0 | Lumetri | XML: 删除；DRT/API DRP: 静态三参数近似 CDL；native DRP: 仅检测，未验证 native grade |
+| M0 | Lumetri | XML: 移除不可识别效果；native/API: 共用串行 DRX 图，静态三参数近似，其他参数与关键帧保留源记录 |
 | M1-M2 | clipid/track | 补全 `<masterclipid>` / `<sourcetrack>` |
 | M4 | link | 同源素材生成 `<link>` |
 | M5 | file details | 补全 `<file>` 的 samplecharacteristics |
@@ -280,9 +281,9 @@ marker 的源颜色索引保留在 XML 状态注释；有索引时会提示颜�
 3. **素材移动** — XML 存储绝对路径，素材搬移后需在达芬奇 relink。
 4. **达芬奇导入设置** — 建议取消 "Use sizing information"，避免双重缩放。
 5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
-6. **Lumetri 空间与时间运算** — 3D LUT 无法表达降噪、锐化、模糊、暗角和关键帧。native DRP 会检测但不伪装为等价转换。
+6. **Lumetri 空间与时间运算** — 当前 DRX 图仅近似曝光、对比度、饱和度；降噪、锐化、模糊、暗角、曲线及关键帧尚未映射。多 Lumetri 顺序已保留，尚不能视为跨软件调色等价。
 7. **色彩空间词汇差异** — native DRP 按模板映射 Rec.709、ACEScct 与 Rec.2100 HLG 配置；不同 HDR 项目与输入色彩空间仍需实机核对。API DRP 还会按素材路径设置已知输入色彩空间。
-8. **原生工程仍需导入验收** — 序列注册、媒体引用、marker 和时映射的离线检查不能证明画面、音频、Fairlight 多音轨及切换稳定性。marker 和源起始时码的可见应用仍未验证；原生 In/Out、轨道静音/锁定和旗标尚未应用。`--report` 不依赖 XML 输出，导出拒绝后也可查看已生成的报告。
+8. **原生工程仍需导入验收** — 序列注册、媒体引用、marker、调色图和时间映射的离线检查不能证明画面、音频、Fairlight 多音轨及切换稳定性。marker 和源起始时码的可见应用仍未验证；原生 In/Out 和旗标尚未应用，轨道静音/锁定已写入但仍需实机核对。`--report` 不依赖 XML 输出，导出拒绝后也可查看已生成的报告。
 
 原生字段依据、行业实现比较和后续验收方法见 [转换实现说明](NATIVE_FORMAT.md)。
 

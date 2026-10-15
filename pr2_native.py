@@ -21,6 +21,7 @@ from xml.etree import ElementTree as ET
 
 from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
 from pr2_native_project import update_sequence_settings, update_timeline_handles
+from pr2_native_grade import attach_native_grade
 from pr2_native_time import build_media_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
@@ -75,7 +76,14 @@ def _uid() -> str:
 
 
 def _xml(root: ET.Element) -> bytes:
-    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="utf-8", short_empty_elements=True) + b"\n"
+    payload = ET.tostring(root, encoding="utf-8", short_empty_elements=True)
+    payload = payload.replace(b"<ListMgt__", b"<ListMgt::").replace(b"</ListMgt__", b"</ListMgt::")
+    return b'<?xml version="1.0" encoding="UTF-8"?>\n' + payload + b"\n"
+
+
+def _parse_native_xml(data: bytes) -> ET.Element:
+    # Resolve's double-colon class names are not XML namespace prefixes.
+    return ET.fromstring(data.replace(b"<ListMgt::", b"<ListMgt__").replace(b"</ListMgt::", b"</ListMgt__"))
 
 
 def _set_child(node: ET.Element, name: str, value: object) -> None:
@@ -443,7 +451,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     seq_name = next((name for name in members if name.startswith("SeqContainer/") and name.endswith(".xml")), None)
     if seq_name is None:
         raise ValueError("codec template has no sequence container")
-    native = ET.fromstring(members[seq_name])
+    native = _parse_native_xml(members[seq_name])
     files, video_ids = _build_file_index(root), set()
     for branch in ("video", "audio"):
         for track in source.findall(f"media/{branch}/track"):
@@ -485,6 +493,10 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     tracks = {kind: ET.fromstring(ET.tostring(native.find(f"{vec}/Element/Sm2TiTrack"))) for vec, kind in (("VideoTrackVec", "video"), ("AudioTrackVec", "audio"))}
     state_manifest = _timeline_state_manifest(root)
     clip_labels = _timeline_clip_labels(state_manifest)
+    grade_index = {(grade.track_index, grade.start_frame, grade.end_frame): grade for grade in grades or []}
+    if len(grade_index) != len(grades or []):
+        raise ValueError("native Lumetri clip identity is ambiguous")
+    applied_grades: set[tuple[int, int, int]] = set()
     for warning in unwritten_state_warnings(source, state_manifest):
         print(f"  Warning: {warning}")
     track_states = {(track.type, track.index): track for track in _timeline_track_states(source)}
@@ -551,6 +563,13 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     )
                     motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
                 _set_child(node, "EffectFiltersBA", motion_payload or "")
+                grade_key = (track_index, _int_text(clip, "start"), _int_text(clip, "end"))
+                if kind == "video" and grade_key in grade_index:
+                    grade = grade_index[grade_key]
+                    attach_native_grade(node, grade.drx_payload)
+                    applied_grades.add(grade_key)
+                    for warning in grade.warnings:
+                        print(f"  Warning: {grade.clip_name}: {warning}")
                 label_key = (
                     kind, track_index, clip.findtext("name") or "",
                     _int_text(clip, "start"), int(_clip_duration(clip)),
@@ -568,6 +587,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
             flags = (_int_text(track, "Flags") & ~3) | int(state.locked) | (0 if state.enabled else 2)
             _set_child(track, "Flags", str(flags))
             wrapper.append(track)
+    if set(grade_index) != applied_grades:
+        raise ValueError("native Lumetri clip identity could not be matched")
     members[seq_name] = _xml(native)
     return members, source, refs
 
@@ -645,7 +666,7 @@ def export_native_drp(
     for name, data in list(members.items()):
         if not name.startswith("SeqContainer/"):
             continue
-        xml = ET.fromstring(data)
+        xml = _parse_native_xml(data)
         for clip in xml.iter():
             if clip.tag not in ("Sm2TiVideoClip", "Sm2TiAudioClip"):
                 continue

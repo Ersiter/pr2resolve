@@ -14,6 +14,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
@@ -31,10 +32,11 @@ from pr2_constants import (
     Issue, ScaleIssue, ClipData, FileData, ProjectBin, LinkMember, LinkGroup,
     FilterParam, FilterSpec, TrackData, TransitionData, TimelineState, TimelineMarkerData,
     _SourceTCInfo, LumetriGrade, LumetriParameter,
-    LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, _timeline_track_states, load_xml, load_prproj,
 )
+from pr2_lumetri import extract_lumetri_clips
+from pr2_native_grade import build_lumetri_drx, build_lumetri_node_plan
 from pr2_captions import extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
 
@@ -1335,7 +1337,7 @@ def _generate_report(
                 f"- Retimed clips: {retimed}. Native video supports forward constant speed and explicit monotone graphdict points as a linear-segment approximation. Audio retiming, holds, reverse, Bezier handles and transition offsets remain unsupported.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
                 "- Native sequence markers and track name/mute/lock have offline coverage; Resolve UI application is unverified. Marker color mapping, native in/out and work area, independent track colors, and clip flags are unsupported or unverified.",
-                "- Native Lumetri and visible source start-timecode application remain unverified. Retained source state does not prove UI application.",
+                "- Lumetri: native and API use one shared DRX graph, with a serial node per source effect. Exposure, Contrast and Saturation are approximate; other controls, shader stages and animation remain source records. Resolve loading/rendering and visible source start-timecode application are unverified.",
                 "",
             ]
             for clip in seq.iter("clipitem"):
@@ -1350,14 +1352,31 @@ def _generate_report(
                     lines.append(f"- Native retime rejected for {identity}: {exc}")
             lines.append("")
             source_records: list[dict[str, Any]] = []
+            lumetri_records: list[dict[str, Any]] = []
             caption_records: list[dict[str, Any]] = []
+            trim_records: list[dict[str, Any]] = []
             for comment in root:
                 if comment.tag is not ET.Comment or not (comment.text or "").strip().startswith("pr2resolve-timeline-state:"):
                     continue
                 state = json.loads(base64.b64decode(comment.text.strip().split(":", 1)[1]).decode("utf-8"))
                 source_records.extend(json.loads(raw) for key, raw in state.get("unknown", [])
                                       if key.startswith("unconverted-source:"))
+                lumetri_records.extend(json.loads(raw) for key, raw in state.get("unknown", []) if key.startswith("lumetri-source:"))
                 caption_records.extend(json.loads(raw) for key, raw in state.get("unknown", []) if key.startswith("caption-source:"))
+                trim_records.extend(json.loads(raw) for key, raw in state.get("unknown", []) if key.startswith("clip-trim:"))
+            if trim_records:
+                errors = [abs(record[key]) for record in trim_records for key in ("in_error_seconds", "out_error_seconds") if record.get(key) is not None]
+                lines += [f"- Source trims: {len(trim_records)} raw tick records retained; maximum reported trim quantization/clamping error={max(errors, default=0):.9g}s.", ""]
+            if lumetri_records:
+                lines += ["### Lumetri source stacks", "", "Serial-node mapping is approximate; ordered raw shader XML, keyframes and parameters remain in the timeline-state comment.", ""]
+                for record in lumetri_records:
+                    effects = record.get("effects", [])
+                    lines.append(f"- {record['clip_name']} on V{record['track_index']}: {len(effects)} ordered effects.")
+                    for effect in effects:
+                        keyframes = (effect.get("blob") or {}).get("keyframes", [])
+                        stages = list(dict.fromkeys(shader.get("name", "") for keyframe in keyframes for shader in keyframe.get("shaders", [])))
+                        lines.append(f"  - {effect.get('display_name') or effect['component_ref']}: {len(effect.get('parameters', []))} parameter records, {len(keyframes)} source keyframes; stages: {', '.join(stages)}. Only supported static scalar candidates are written.")
+                lines.append("")
             if caption_records:
                 decoded = sum(record.get("text") is not None and not record.get("decode_errors") for record in caption_records)
                 lines += [f"- Captions: {decoded}/{len(caption_records)} text records decoded from FormattedTextData. Text runs, fonts, source ticks and raw payloads are retained; subtitle styling and native/API caption application remain incomplete.", ""]
@@ -1940,299 +1959,69 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
     return sequences
 
 
-def _prproj_extract_lumetri(
-    idx: _PrprojIndex,
-    component_chain_id: str,
-) -> tuple[dict[str, float], list[str], list[LumetriParameter]]:
-    """Extract Lumetri parameters from a VideoComponentChain.
-
-    Args:
-        idx: The prproj index
-        component_chain_id: ObjectID of the VideoComponentChain
-
-    Returns:
-        A CDL candidate map, diagnostics, and one lossless record for every
-        Lumetri parameter encountered.  The record list is deliberately
-        broader than the CDL map so unsupported controls are never silent.
-    """
-    params: dict[str, float] = {}
-    warnings: list[str] = []
-    records: list[LumetriParameter] = []
-    chain = idx.resolve_ref(component_chain_id)
-    if chain is None:
-        return params, warnings, records
-
-    # Components are nested inside ComponentChain/Components
-    inner_cc = chain.find("ComponentChain")
-    if inner_cc is None:
-        return params, warnings, records
-    comps = inner_cc.find("Components")
-    if comps is None:
-        return params, warnings, records
-
-    for comp_ref in comps.findall("Component"):
-        ref = comp_ref.get("ObjectRef")
-        if not ref:
-            continue
-        comp = idx.resolve_ref(ref)
-        if comp is None:
-            continue
-
-        # Check if this is a Lumetri filter
-        match_name = comp.findtext("MatchName", "")
-        if "Lumetri" not in match_name:
-            continue
-
-        # Extract params
-        params_section = comp.find(".//Params")
-        if params_section is None:
-            continue
-
-        for param_ref in params_section.findall("Param"):
-            pref = param_ref.get("ObjectRef")
-            if not pref:
-                continue
-            param = idx.resolve_ref(pref)
-            if param is None:
-                continue
-
-            parameter_id = param.findtext("ParameterID", "")
-            start_keyframe = param.find("StartKeyframe")
-            start_value = param.find("StartKeyframeValue")
-            raw = (start_keyframe.text if start_keyframe is not None else "") or (start_value.text if start_value is not None else "") or ""
-            encoding = "blob" if start_value is not None else "scalar"
-            decoded_digest = ""
-            if start_value is not None and raw:
-                digest = hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
-                try:
-                    decoded_digest = hashlib.sha256(base64.b64decode(raw.strip(), validate=True)).hexdigest()
-                except (ValueError, TypeError):
-                    decoded_digest = ""
-            else:
-                digest = ""
-            records.append(LumetriParameter(
-                parameter_id,
-                param.findtext("Name", ""),
-                param.findtext("ParameterControlType", ""),
-                raw,
-                param.findtext("LowerBound", ""),
-                param.findtext("UpperBound", ""),
-                encoding,
-                digest,
-                param.findtext("IsTimeVarying", "false").lower() == "true",
-                start_keyframe=start_keyframe.text or "" if start_keyframe is not None else "",
-                start_keyframe_position=param.findtext("StartKeyframePosition", ""),
-                start_keyframe_value=start_value.text or "" if start_value is not None else "",
-                binary_hash=start_value.get("BinaryHash", "") if start_value is not None else "",
-                start_keyframe_encoding=start_keyframe.get("Encoding", "") if start_keyframe is not None else "",
-                start_value_encoding=start_value.get("Encoding", "") if start_value is not None else "",
-                decoded_sha256=decoded_digest,
-            ))
-            defaults = {
-                "7": 0.0, "8": 0.0, "13": 0.0, "14": 0.0, "15": 0.0,
-                "16": 0.0, "26": 100.0, "28": 0.0, "29": 0.0, "30": 0.0,
-                "31": 100.0, "33": 0.0, "51": 0.0, "52": 50.0,
-                "53": 0.0, "54": 50.0, "63": 100.0, "64": 0.0,
-                "65": 100.0, "66": 100.0, "81": 0.0, "82": 0.0,
-                "86": 0.0, "87": 0.0, "88": 0.0, "89": 0.0,
-                "90": 100.0, "123": 50.0,
-            }
-            defaults.update({"11": 0.0, "12": 0.0, "20": 100.0})
-            if records[-1].is_time_varying:
-                warnings.append(f"animated parameter {parameter_id} preserved")
-                records[-1].conversion = "unsupported"
-                records[-1].reason = "animated"
-                continue
-            if encoding == "scalar":
-                parts = raw.split(",")
-                candidate = parts[1] if len(parts) >= 2 else raw
-                try:
-                    normalized = candidate.strip().lower()
-                    value = {"true": 1.0, "false": 0.0}[normalized] if normalized in {"true", "false"} else float(candidate)
-                except ValueError:
-                    records[-1].conversion = "invalid" if parameter_id in LUMETRI_POINTWISE_IDS else "preserved"
-                    records[-1].reason = "non-numeric point value" if parameter_id in LUMETRI_POINTWISE_IDS else ""
-                    continue
-                if not math.isfinite(value):
-                    records[-1].conversion = "invalid"
-                    records[-1].reason = "non-finite value"
-                    continue
-                params[parameter_id] = value
-                if parameter_id in LUMETRI_POINTWISE_IDS:
-                    records[-1].conversion = "candidate"
-                elif parameter_id in LUMETRI_SPATIAL_IDS and abs(value - defaults.get(parameter_id, value)) > 1e-9:
-                    records[-1].conversion = "unsupported"
-                    records[-1].reason = "spatial operation preserved"
-                    warnings.append(f"spatial parameter {parameter_id} preserved")
-                elif parameter_id in defaults:
-                    records[-1].conversion = "identity"
-                else:
-                    records[-1].conversion = "preserved"
-            elif not raw:
-                records[-1].conversion = "identity" if parameter_id in LUMETRI_POINTWISE_IDS else "preserved"
-            elif not decoded_digest:
-                records[-1].conversion = "invalid"
-                records[-1].reason = "invalid base64 payload"
-            elif parameter_id in LUMETRI_POINTWISE_IDS:
-                records[-1].conversion = "candidate"
-            else:
-                records[-1].conversion = "preserved"
-
-    return params, warnings, records
-
-
 def _prproj_extract_all_lumetri(
     prproj_root: ET.Element,
     sequence_uid: str,
 ) -> list[LumetriGrade]:
-    """Extract Lumetri parameters for all clips in a sequence.
-
-    Walks the Sequence → TrackGroup → TrackItem → SubClip → ComponentChain
-    reference chain and calls _prproj_extract_lumetri on each clip's chain.
-
-    Args:
-        prproj_root: The <PremiereData> root element
-        sequence_uid: ObjectUID of the target sequence
-
-    Returns:
-        One identity record per Lumetri-bearing video clip.
-    """
+    """Build a shared serial DRX graph without merging source effects."""
     idx = _PrprojIndex.build(prproj_root)
-    lumetri_data: list[LumetriGrade] = []
-
-    seq_el = None
-    for s in prproj_root.findall("Sequence"):
-        if s.get("ObjectUID") == sequence_uid:
-            seq_el = s
-            break
-    if seq_el is None:
-        return lumetri_data
-
-    tg_section = seq_el.find("TrackGroups")
-    if tg_section is None:
-        return lumetri_data
-
-    compact_track_index = 0
-    for tg_pair in tg_section.findall("TrackGroup"):
-        second = tg_pair.find("Second")
-        if second is None:
+    sequence = idx.resolve_uref(sequence_uid)
+    fps = DEFAULT_FPS
+    width, height = 1920, 1080
+    for reference in sequence.findall("TrackGroups/TrackGroup/Second") if sequence is not None else []:
+        group = idx.resolve_ref(reference.get("ObjectRef", ""))
+        if group is None or group.tag != "VideoTrackGroup":
             continue
-        ref = second.get("ObjectRef")
-        tg_el = idx.resolve_ref(ref) if ref else None
-        if tg_el is None or tg_el.tag != "VideoTrackGroup":
-            continue
-
-        tracks_el = tg_el.find("TrackGroup/Tracks")
-        if tracks_el is None:
-            continue
-
-        for track_ref in tracks_el.findall("Track"):
-            uref = track_ref.get("ObjectURef")
-            track_el = idx.resolve_uref(uref) if uref else None
-            if track_el is None:
-                continue
-
-            ct = track_el.find("ClipTrack")
-            if ct is None:
-                continue
-            ti_section = ct.find(".//TrackItems")
-            if ti_section is None:
-                continue
-            track_items = ti_section.findall("TrackItem")
-            if not track_items:
-                continue
-            compact_track_index += 1
-            frame_rate = tg_el.find(".//FrameRate")
-            try:
-                track_fps = _prproj_adobe_timebase_to_fps(int(frame_rate.text)) if frame_rate is not None and frame_rate.text else DEFAULT_FPS
-            except ValueError:
-                track_fps = DEFAULT_FPS
-            for item_index, ti_ref in enumerate(track_items):
-                ref = ti_ref.get("ObjectRef")
-                ti_el = idx.resolve_ref(ref) if ref else None
-                if ti_el is None:
-                    continue
-
-                cti = ti_el.find("ClipTrackItem")
-                if cti is None:
-                    continue
-
-                # Get clip identity and timeline range from the object graph.
-                subclip = cti.find("SubClip")
-                clip_name = "(unknown)"
-                if subclip is not None:
-                    sc_ref = subclip.get("ObjectRef")
-                    sc_el = idx.resolve_ref(sc_ref) if sc_ref else None
-                    if sc_el is not None:
-                        clip_name = sc_el.findtext("Name", clip_name)
-
-                track_item = cti.find("TrackItem")
-                start = _prproj_ticks_to_frames(track_item.findtext("Start", "0"), track_fps) if track_item is not None else 0
-                end = _prproj_ticks_to_frames(track_item.findtext("End", "0"), track_fps) if track_item is not None else 0
-                params: dict[str, float] = {}
-                warnings: list[str] = []
-                records: list[LumetriParameter] = []
-                has_cdl = False
-                # Get ComponentChain → Lumetri params
-                co = cti.find("ComponentOwner")
-                if co is not None:
-                    comps = co.find("Components")
-                    if comps is not None:
-                        chain_ref = comps.get("ObjectRef")
-                        if chain_ref:
-                            params, warnings, records = _prproj_extract_lumetri(idx, chain_ref)
-                if params:
-                    clean: dict[str, float] = {}
-                    limits = {"11": (-5.0, 5.0), "12": (-100.0, 100.0), "20": (0.0, 200.0)}
-                    for key, value in params.items():
-                        lo, hi = limits.get(key, (-1e6, 1e6))
-                        if key not in limits:
-                            record = next((item for item in records if item.parameter_id == key), None)
-                            try:
-                                lo = float(record.lower_bound) if record and record.lower_bound else lo
-                                hi = float(record.upper_bound) if record and record.upper_bound else hi
-                            except ValueError:
-                                pass
-                        if math.isfinite(value) and lo <= value <= hi:
-                            clean[key] = value
-                        else:
-                            warnings.append(f"invalid or out-of-range value {key}")
-                    params = clean
-                    defaults = {"11": 0.0, "12": 0.0, "20": 100.0}
-                    changed = any(key in params and abs(params[key] - default) > 1e-9 for key, default in defaults.items())
-                    if params and changed:
-                        exposure, contrast, saturation = params.get("11", 0.0), params.get("12", 0.0), params.get("20", 100.0)
-                        factor = max(0.01, min(2.0, 1.0 + contrast / 100.0))
-                        gain = 2.0 ** exposure
-                        offset = gain * 0.18 * (1.0 - factor)
-                        lumetri_data.append(LumetriGrade(compact_track_index, start, end, ref or "", clip_name, params, {
-                            "Slope": f"{gain * factor:.9g} {gain * factor:.9g} {gain * factor:.9g}",
-                            "Offset": f"{offset:.9g} {offset:.9g} {offset:.9g}",
-                            "Power": "1 1 1", "Saturation": f"{saturation / 100.0:.9g}",
-                        }, warnings=warnings, parameter_records=records))
-                        has_cdl = True
-                    elif not params and not warnings:
-                        warnings.append("invalid or out-of-range static parameters")
-                if (warnings or records) and not has_cdl:
-                    if not warnings:
-                        warnings.append("no supported static CDL parameters; parameters preserved")
-                    lumetri_data.append(LumetriGrade(
-                        compact_track_index, start, end, ref or "", clip_name, params,
-                        skipped_reason="; ".join(warnings), warnings=warnings,
-                        parameter_records=records,
-                    ))
-
-    return lumetri_data
+        fps = _prproj_adobe_timebase_to_fps(int(group.findtext(".//FrameRate", "0")))
+        rect = group.findtext("FrameRect", "").split(",")
+        if len(rect) == 4:
+            width, height = int(rect[2]), int(rect[3])
+        break
+    grades: list[LumetriGrade] = []
+    for clip in extract_lumetri_clips(prproj_root, sequence_uid):
+        plan = build_lumetri_node_plan(clip)
+        warnings: list[str] = []
+        records: list[LumetriParameter] = []
+        for effect, node in zip(clip.effects, plan.nodes):
+            warnings.extend(f"{node.label}: {note}" for note in node.approximation_notes)
+            if node.unmapped_parameter_ids:
+                warnings.append(f"{node.label}: unmapped ParameterIDs {', '.join(node.unmapped_parameter_ids)}")
+            if node.unmapped_shader_names:
+                warnings.append(f"{node.label}: unmapped stages {', '.join(node.unmapped_shader_names)}")
+            for record in effect.parameters:
+                candidate = record.parameter_id in {"11", "12", "20"} and record.parameter_id not in node.unmapped_parameter_ids
+                records.append(LumetriParameter(
+                    parameter_id=record.parameter_id, name=record.name,
+                    control_type=record.control_type, raw_value=record.raw_value,
+                    lower_bound=record.lower_bound, upper_bound=record.upper_bound,
+                    encoding=record.encoding, is_time_varying=record.is_time_varying,
+                    conversion="candidate" if candidate else "preserved",
+                    reason="approximate DRX control" if candidate else "source record retained; not applied",
+                    start_keyframe_position=record.start_keyframe_position,
+                    start_keyframe_encoding=record.start_keyframe_encoding,
+                    start_value_encoding=record.start_value_encoding,
+                    binary_hash=record.binary_hash, component_ref=effect.component_ref,
+                    effect_order=effect.order, raw_xml=record.raw_xml,
+                ))
+        grades.append(LumetriGrade(
+            track_index=clip.track_index,
+            start_frame=_prproj_ticks_to_frames(clip.start_ticks, fps),
+            end_frame=_prproj_ticks_to_frames(clip.end_ticks, fps),
+            track_item_id=clip.track_item_ref, clip_name=clip.clip_name,
+            drx_payload=build_lumetri_drx(clip, width, height), node_count=len(plan.nodes),
+            warnings=warnings, parameter_records=records,
+        ))
+    return grades
 
 
 def _lumetri_conversion_summary(grades: list[LumetriGrade]) -> dict[str, int]:
     """Count the explicit conversion outcome of extracted Lumetri controls."""
-    counts = {"converted": 0, "identity": 0, "preserved": 0, "unsupported": 0, "invalid": 0}
+    counts = {"candidate": 0, "identity": 0, "preserved": 0, "unsupported": 0, "invalid": 0}
     for grade in grades:
         for record in grade.parameter_records:
             outcome = record.conversion
             if outcome == "candidate":
-                counts["converted"] += 1
+                counts["candidate"] += 1
             elif outcome in counts:
                 counts[outcome] += 1
             else:
@@ -2633,6 +2422,11 @@ def _prproj_parse_sequence(
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
     timeline_state = _prproj_extract_timeline_state(seq_el, idx, fps)
+    for clip in extract_lumetri_clips(prproj_root, sequence_uid):
+        timeline_state.unknown.append((
+            f"lumetri-source:{clip.track_item_ref}",
+            json.dumps(asdict(clip), ensure_ascii=False, sort_keys=True),
+        ))
     for caption in extract_captions(prproj_root, sequence_uid):
         timeline_state.unknown.append((
             f"caption-source:{caption.item_object_id}",
@@ -3458,7 +3252,11 @@ def _drt_batch_export(
             results.append((False, None))
             continue
         if lumetri_grades and i < len(lumetri_grades) and lumetri_grades[i]:
-            _apply_lumetri_cdl(timeline, lumetri_grades[i])
+            grade_result = _apply_lumetri_grade(timeline, lumetri_grades[i])
+            if grade_result["failed"] or grade_result["skipped"]:
+                print("    Export skipped: Lumetri graph could not be applied")
+                results.append((False, None))
+                continue
 
         # Force timeline start timecode to 00:00:00:00
         # (DaVinci defaults to 01:00:00:00 regardless of XML sequence timecode)
@@ -3657,7 +3455,9 @@ def _drp_export(
                 for warning in _apply_fcp_timeline_state_to_resolve(timeline, xml_path):
                     print(f"  Warning: {warning}")
                 if lumetri_grades and seq_index < len(lumetri_grades):
-                    _apply_lumetri_cdl(timeline, lumetri_grades[seq_index])
+                    grade_result = _apply_lumetri_grade(timeline, lumetri_grades[seq_index])
+                    if grade_result["failed"] or grade_result["skipped"]:
+                        import_failed = True
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
                     timeline_color = "Rec.709 Gamma 2.4"
@@ -3680,7 +3480,7 @@ def _drp_export(
 
         # ── Step 3: Export DRP ──
         if import_failed:
-            print(f"  DRP export ABORTED: timeline import failed — no timelines in project.")
+            print("  DRP export ABORTED: timeline import or required grade application failed.")
         else:
             try:
                 pm.SaveProject()
@@ -4386,7 +4186,13 @@ def _drt_sandbox_export(
             print(f"  Warning: {warning}")
 
         if lumetri_grades:
-            _apply_lumetri_cdl(timeline, lumetri_grades)
+            grade_result = _apply_lumetri_grade(timeline, lumetri_grades)
+            if grade_result["failed"] or grade_result["skipped"]:
+                print("  Error: Lumetri graph could not be applied")
+                pm.CloseProject(project)
+                if original_name:
+                    pm.LoadProject(original_name)
+                return False
 
         # Export DRT
         export_result = timeline.Export(
@@ -4530,36 +4336,37 @@ def _ensure_resolve_running(timeout: int = 60, nogui: bool = True) -> Any:
     return None
 
 
-def _apply_lumetri_cdl(timeline: Any, grades: list[LumetriGrade]) -> dict[str, int]:
-    """Apply static extracted grades by track and exact timeline frame range."""
+def _apply_lumetri_grade(timeline: Any, grades: list[LumetriGrade]) -> dict[str, int]:
+    """Apply the same DRX Body used by native output to each matched clip."""
     result = {"applied": 0, "partial": 0, "skipped": 0, "failed": 0}
-    for grade in grades:
-        if not grade.cdl:
-            result["skipped"] += 1
-            if grade.skipped_reason:
+    timeline_start = int(timeline.GetStartFrame())
+    with tempfile.TemporaryDirectory(prefix="pr2resolve-grade-") as temp:
+        for index, grade in enumerate(grades):
+            if not grade.drx_payload:
+                result["skipped"] += 1
                 print(f"  Lumetri skipped: {grade.clip_name}: {grade.skipped_reason}")
-            continue
-        matches = []
-        for item in timeline.GetItemListInTrack("video", grade.track_index) or []:
-            if item.GetStart() == grade.start_frame and item.GetEnd() == grade.end_frame:
-                matches.append(item)
-        if len(matches) != 1:
-            result["skipped"] += 1
-            print(f"  Lumetri skipped: {grade.clip_name} ({len(matches)} identity matches)")
-            continue
-        try:
-            applied = matches[0].SetCDL({"NodeIndex": "1", **grade.cdl})
-            if applied is True:
-                result["applied"] += 1
-            else:
-                result["failed"] += 1
-                print(f"  Lumetri failed: {grade.clip_name}: SetCDL returned {applied!r}")
                 continue
-            if grade.warnings:
-                result["partial"] += 1
-                print(f"  Lumetri partial: {grade.clip_name}: {'; '.join(grade.warnings)}")
-        except Exception as exc:
-            result["failed"] += 1
-            print(f"  Lumetri failed: {grade.clip_name}: {exc}")
-    print("  Lumetri CDL: " + ", ".join(f"{key}={value}" for key, value in result.items()))
+            matches = [item for item in timeline.GetItemListInTrack("video", grade.track_index) or []
+                       if item.GetStart() - timeline_start == grade.start_frame
+                       and item.GetEnd() - timeline_start == grade.end_frame]
+            if len(matches) != 1:
+                result["skipped"] += 1
+                print(f"  Lumetri skipped: {grade.clip_name} ({len(matches)} identity matches)")
+                continue
+            path = Path(temp) / f"grade-{index}.drx"
+            path.write_bytes(grade.drx_payload)
+            try:
+                applied = matches[0].GetNodeGraph().ApplyGradeFromDRX(str(path), 0)
+                if applied is not True:
+                    result["failed"] += 1
+                    print(f"  Lumetri failed: {grade.clip_name}: ApplyGradeFromDRX returned {applied!r}")
+                    continue
+                result["applied"] += 1
+                if grade.warnings:
+                    result["partial"] += 1
+                    print(f"  Lumetri partial: {grade.clip_name}: {'; '.join(grade.warnings)}")
+            except (AttributeError, TypeError, RuntimeError) as exc:
+                result["failed"] += 1
+                print(f"  Lumetri failed: {grade.clip_name}: {exc}")
+    print("  Lumetri DRX: " + ", ".join(f"{key}={value}" for key, value in result.items()))
     return result
