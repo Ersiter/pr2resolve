@@ -70,6 +70,9 @@ jobs:
       - name: Run public smoke tests
         run: python .github/scripts/ci_smoke_tests.py
 
+      - name: Run conversion regressions
+        run: python -m unittest discover -s .github/scripts -p '*_tests.py' -v
+
       - name: Verify workflow and issue template YAML
         run: |
           python -m pip install PyYAML
@@ -113,7 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-package
-          path: dist/windows-x86_64/pr2resolve-v${{ needs.validate.outputs.version }}-windows-x86_64.zip
+          path: dist/windows-x86_64-*/pr2resolve-v${{ needs.validate.outputs.version }}-windows-x86_64.zip
           if-no-files-found: error
 
   build-macos:

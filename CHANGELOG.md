@@ -10,6 +10,7 @@ All notable changes to pr2resolve.
 - Portable conversion regressions in CI and a documented native-format evidence/verification boundary.
 
 ### Fixed
+- Windows release uploads follow the build script's unique output directory instead of the obsolete fixed path.
 - Sequence inventory includes every video and audio track, including audio-only timelines.
 - Fractional Premiere playback speeds retain their precision instead of rounding to whole percentages.
 - Premiere Motion uses stable ParameterIDs across UI languages. XML keeps animated points as a linear approximation, with original curves retained in timeline-state comments across save/load.
