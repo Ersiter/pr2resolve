@@ -71,6 +71,29 @@ def motion_project() -> ET.Element:
 
 
 class SourceTests(unittest.TestCase):
+    def test_mixed_fps_trim_uses_clip_rate_without_rounding_via_source_frames(self) -> None:
+        project = motion_project()
+        ET.SubElement(project.find(".//ClipTrackItem"), "SubClip", ObjectRef="subclip")
+        project.extend(ET.fromstring('''<Objects>
+          <SubClip ObjectID="subclip"><Name>mixed.mov</Name>
+            <MasterClip ObjectURef="master"/><Clip ObjectRef="video"/></SubClip>
+          <MasterClip ObjectUID="master"><LoggingInfo ObjectRef="logging"/></MasterClip>
+          <ClipLoggingInfo ObjectID="logging"><MediaFrameRate>8467200000</MediaFrameRate>
+            <MediaInPoint>0</MediaInPoint><MediaOutPoint>2540160000000</MediaOutPoint></ClipLoggingInfo>
+          <VideoClip ObjectID="video"><Clip><InPoint>260366400000</InPoint>
+            <OutPoint>514382400000</OutPoint></Clip></VideoClip>
+          </Objects>'''))
+        root = pe._prproj_parse_sequence(project, "sequence", Path("sample.prproj"))
+        clip = root.find(".//clipitem")
+        self.assertEqual(clip.findtext("rate/timebase"), "25")
+        self.assertEqual(clip.findtext("file/rate/timebase"), "30")
+        # 1.025 s -> 26 sequence frames; rounding to 31 source frames first
+        # would give 25.833 frames and obscures the original trim precision.
+        self.assertEqual((clip.findtext("in"), clip.findtext("out")), ("26", "51"))
+        self.assertEqual((clip.findtext("start"), clip.findtext("end")), ("0", "25"))
+        state = pn._timeline_state_manifest(root)
+        self.assertIn('"source_in_ticks": "260366400000"', str(state))
+
     def test_fractional_playback_speed_is_not_rounded_to_whole_percent(self) -> None:
         project = motion_project()
         ET.SubElement(project.find(".//ClipTrackItem"), "SubClip", ObjectRef="subclip")
@@ -165,6 +188,20 @@ class SourceTests(unittest.TestCase):
 
 
 class NativeProjectTests(unittest.TestCase):
+    def test_native_source_in_uses_clip_rate_and_preserves_timeline_range(self) -> None:
+        root = sequence(fps=25)
+        clip = root.find(".//clipitem")
+        ET.SubElement(ET.SubElement(clip, "rate"), "timebase").text = "50"
+        clip.find("in").text = "50"
+        clip.find("out").text = "150"
+        clip.find("file/rate/timebase").text = "100"
+        members = native_members([root])
+        written = [c for name, data in members.items() if name.startswith("SeqContainer/")
+                   for c in archive_xml(data).iter("Sm2TiVideoClip")][0]
+        self.assertEqual(written.findtext("In"), "25")
+        self.assertEqual(written.findtext("Start"), "0")
+        self.assertEqual(written.findtext("Duration"), "50")
+
     def test_native_retime_uses_source_in_in_record_domain(self) -> None:
         root = sequence()
         clip = root.find(".//clipitem")

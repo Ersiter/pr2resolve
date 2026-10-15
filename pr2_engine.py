@@ -35,6 +35,7 @@ from pr2_constants import (
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, _timeline_track_states, load_xml, load_prproj,
 )
+from pr2_native_time import extract_fcp7_retime_alignment
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1330,12 +1331,23 @@ def _generate_report(
                 "Structural validation does not verify Resolve import, rendered frames, or audio playback.",
                 "",
                 f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
-                f"- Retimed clips: {retimed}. Native forward constant-speed video uses a Resolve 21 time map; native audio retiming, reverse and variable speed are unsupported.",
+                f"- Retimed clips: {retimed}. Native video supports forward constant speed and explicit monotone graphdict points as a linear-segment approximation. Audio retiming, holds, reverse, Bezier handles and transition offsets remain unsupported.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
                 "- Native sequence markers and track name/mute/lock have offline coverage; Resolve UI application is unverified. Marker color mapping, native in/out and work area, independent track colors, and clip flags are unsupported or unverified.",
                 "- Native Lumetri and visible source start-timecode application remain unverified. Retained source state does not prove UI application.",
                 "",
             ]
+            for clip in seq.iter("clipitem"):
+                if clip.find("filter/effect/parameter[parameterid='graphdict']/keyframe") is None:
+                    continue
+                identity = (clip.findtext("name") or "clip").replace("\n", " ")
+                try:
+                    timeline_rate = float(tb) * (1000 / 1001 if seq.findtext("rate/ntsc", "FALSE").upper() == "TRUE" else 1)
+                    alignment = extract_fcp7_retime_alignment(clip, timeline_rate)
+                    lines.append(f"- Retime alignment {identity}: record In={alignment['record_in_frames']:.9g} timeline frames; source In={alignment['source_in_seconds']:.9g}s; last visible source={alignment['last_visible_sample']}; last-frame residual={alignment['source_trim_end_residual_frames']} clip frames. Timeline start/end are unchanged; the raw curve remains in XML.")
+                except ValueError as exc:
+                    lines.append(f"- Native retime rejected for {identity}: {exc}")
+            lines.append("")
             source_records: list[dict[str, Any]] = []
             for comment in root:
                 if comment.tag is not ET.Comment or not (comment.text or "").strip().startswith("pr2resolve-timeline-state:"):
@@ -2269,6 +2281,8 @@ def _extract_clip(
     media_id = ""
     in_point = 0
     out_point = 0
+    in_ticks = ""
+    out_ticks = ""
     playback_speed = 100.0
     source_tc = _SourceTCInfo()
     src_w, src_h = default_w, default_h
@@ -2335,9 +2349,11 @@ def _extract_clip(
                         ip = inner.findtext("InPoint")
                         op = inner.findtext("OutPoint")
                         if ip is not None:
+                            in_ticks = ip
                             clip_fps = _effective_source_fps(source_tc, fps)
                             in_point = _prproj_ticks_to_frames(ip, clip_fps)
                         if op is not None:
+                            out_ticks = op
                             clip_fps = _effective_source_fps(source_tc, fps)
                             out_point = _prproj_ticks_to_frames(op, clip_fps)
                         if not is_audio and _has_resolved_source_duration(source_tc):
@@ -2526,6 +2542,7 @@ def _extract_clip(
         playback_speed=playback_speed, source_tc=source_tc,
         source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
         label_name=label_name, label_raw_color=label_raw_color,
+        in_ticks=in_ticks, out_ticks=out_ticks,
     ), motion
 
 
@@ -2871,8 +2888,29 @@ def _prproj_parse_sequence(
         ET.SubElement(ci, "start").text = str(start_frame)
         ET.SubElement(ci, "end").text = str(cl.end)
         ET.SubElement(ci, "enabled").text = "TRUE"
-        ET.SubElement(ci, "in").text = str(cl.in_pt)
-        ET.SubElement(ci, "out").text = str(cl.out_pt)
+        # FCP7 in/out use clipitem.rate, which is the sequence rate here.
+        # Convert directly from ticks to avoid rounding through source frames.
+        source_rate = _effective_source_fps(cl.source_tc, fps)
+        trim_in = (_prproj_ticks_to_frames(cl.in_ticks, fps) if cl.in_ticks
+                   else int(round(cl.in_pt * fps / source_rate)))
+        trim_out = (_prproj_ticks_to_frames(cl.out_ticks, fps) if cl.out_ticks
+                    else int(round(cl.out_pt * fps / source_rate)))
+        if mediatype == "video" and _has_resolved_source_duration(cl.source_tc):
+            source_end = int(round(cl.source_tc.full_duration_frames * fps / source_rate))
+            trim_in, trim_out = min(trim_in, source_end), min(trim_out, source_end)
+        ET.SubElement(ci, "in").text = str(trim_in)
+        ET.SubElement(ci, "out").text = str(trim_out)
+        if cl.in_ticks or cl.out_ticks:
+            trim_record = {
+                "source_in_ticks": cl.in_ticks, "source_out_ticks": cl.out_ticks,
+                "clip_rate": fps, "in": trim_in, "out": trim_out,
+            }
+            for label, ticks, frame in (("in", cl.in_ticks, trim_in), ("out", cl.out_ticks, trim_out)):
+                try:
+                    trim_record[f"{label}_error_seconds"] = frame / fps - int(ticks) / 254016000000
+                except ValueError:
+                    trim_record[f"{label}_error_seconds"] = None
+            timeline_state.unknown.append((f"clip-trim:{ci_id}", json.dumps(trim_record, sort_keys=True)))
         if is_shared_file:
             # Audio: self-closing ref to existing file
             fe = ET.SubElement(ci, "file")
@@ -2951,7 +2989,7 @@ def _prproj_parse_sequence(
                     cl, motion_data = _extract_clip(cti, idx, prproj_root, w, h, fps)
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
-                    # Duration follows sequence-rate timeline coordinates; in/out remain source-rate.
+                    # Timeline range and rendered clip trim share the sequence rate.
                     clip_dur = max(cl.end - start, 0)
                     file_dur_val = (cl.source_tc.full_duration_frames
                                     if _has_resolved_source_duration(cl.source_tc)

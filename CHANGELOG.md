@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Mixed-rate Premiere trims are converted directly from source ticks to the XML clip clock; native output reads that clock instead of the media frame rate. Source tick values and trim residuals remain available.
+- Native graphdict video maps preserve source/record coordinates and edit boundaries with piecewise-linear interpolation. Alignment uses `speedkfin` and checks the last visible frame against Apple's `speedkfout` rule; holds, reverse, Bezier, audio retiming and transition offsets remain unsupported. Native/API rendered parity is unverified.
+
 - Native and API exports share track name, enable/mute, and lock semantics. Native names use `UserDefinedName`; lock/disable bits follow a paired Resolve 21 DRP/XML export.
 - Track-state regressions check all four lock/enable combinations in the generated native archive and API calls. Visible Resolve behavior still requires import validation.
 

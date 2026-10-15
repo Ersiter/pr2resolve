@@ -21,7 +21,7 @@ from xml.etree import ElementTree as ET
 
 from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
 from pr2_native_project import update_sequence_settings, update_timeline_handles
-from pr2_native_time import build_media_timemap, retimed_source_in
+from pr2_native_time import build_media_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
     marker_blob_elements,
@@ -405,8 +405,13 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
                     continue
                 if speed <= 0 or (values.get("reverse") or "FALSE").upper() == "TRUE":
                     problems.append(f"{name}: reverse or non-positive retime")
+                elif effect.find("parameter[parameterid='graphdict']/keyframe") is not None:
+                    try:
+                        extract_fcp7_retime_alignment(clip, _rate((root.findall('.//sequence') or [root])[0]))
+                    except ValueError as exc:
+                        problems.append(f"{name}: {exc}")
                 elif variable != 0:
-                    problems.append(f"{name}: variable retime")
+                    problems.append(f"{name}: variable retime without graphdict")
     if problems:
         raise ValueError("native DRP unsupported features: " + "; ".join(dict.fromkeys(problems)))
 
@@ -513,8 +518,17 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 _set_child(node, "Start", clip.findtext("start") or "0")
                 _set_child(node, "Duration", _clip_duration(clip))
                 input_fps = _rate(file_node) if file_node is not None and file_node.find("rate") is not None else _rate(source)
-                speed = clip_speed(clip)
-                _set_child(node, "In", "86400" if suffix in IMAGE_SUFFIXES else retimed_source_in(_int_text(clip, "in"), input_fps, _rate(source), speed))
+                clip_fps = _rate(clip) if clip.find("rate") is not None else _rate(source)
+                alignment = (extract_fcp7_retime_alignment(clip, _rate(source))
+                             if clip.find("filter/effect/parameter[parameterid='graphdict']/keyframe") is not None else None)
+                speed = 100.0 if alignment else clip_speed(clip)
+                source_in = (alignment["encoded_in"] if alignment else
+                             retimed_source_in(_int_text(clip, "in"), clip_fps, _rate(source), speed))
+                _set_child(node, "In", "86400" if suffix in IMAGE_SUFFIXES else source_in)
+                if alignment:
+                    residual = alignment["source_trim_end_residual_frames"]
+                    print(f"  Warning: {clip.findtext('name')}: piecewise-linear retime; "
+                          f"last-frame alignment residual={residual!r} clip frames; Resolve render unverified")
                 if file_node is not None:
                     file_id = file_node.get("id") or ""
                     _set_child(node, "MediaRef", refs.get(file_id, ""))
@@ -524,7 +538,10 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                         _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
                     # Still sources retain Resolve's virtual one-day source.
                     if suffix not in IMAGE_SUFFIXES:
-                        _set_child(node, "MediaTimemapBA", build_media_timemap(source_frames[file_id], input_fps, speed, audio=kind == "audio"))
+                        _set_child(node, "MediaTimemapBA", build_media_timemap(
+                            source_frames[file_id], input_fps, speed, audio=kind == "audio",
+                            keyframes=alignment["points"] if alignment else None,
+                        ))
                 motion_payload = None
                 if kind == "video":
                     sample = file_node.find("media/video/samplecharacteristics") if file_node is not None else None

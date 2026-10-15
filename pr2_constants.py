@@ -103,6 +103,8 @@ class ClipData:
     rotation: float = 0.0                 # PR Motion Rotation (StartKeyframe)
     label_name: str = ""                  # Premiere label preset name, if present
     label_raw_color: str = ""              # Premiere color payload, encoding not assumed
+    in_ticks: str = ""                    # unquantized Premiere source trim
+    out_ticks: str = ""
 
 
 @dataclass
