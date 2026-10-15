@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Premiere caption extraction follows FormattedTextData FlatBuffer references and text-run order. Text, font lists, source ticks and raw payloads survive normalization; unknown structures are rejected rather than guessed. Caption target/style parity remains incomplete.
+
 - Mixed-rate Premiere trims are converted directly from source ticks to the XML clip clock; native output reads that clock instead of the media frame rate. Source tick values and trim residuals remain available.
 - Native graphdict video maps preserve source/record coordinates and edit boundaries with piecewise-linear interpolation. Alignment uses `speedkfin` and checks the last visible frame against Apple's `speedkfout` rule; holds, reverse, Bezier, audio retiming and transition offsets remain unsupported. Native/API rendered parity is unverified.
 

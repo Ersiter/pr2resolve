@@ -17,7 +17,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -35,6 +35,7 @@ from pr2_constants import (
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
     _is_ntsc, _timeline_track_states, load_xml, load_prproj,
 )
+from pr2_captions import extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
 
 
@@ -1349,12 +1350,17 @@ def _generate_report(
                     lines.append(f"- Native retime rejected for {identity}: {exc}")
             lines.append("")
             source_records: list[dict[str, Any]] = []
+            caption_records: list[dict[str, Any]] = []
             for comment in root:
                 if comment.tag is not ET.Comment or not (comment.text or "").strip().startswith("pr2resolve-timeline-state:"):
                     continue
                 state = json.loads(base64.b64decode(comment.text.strip().split(":", 1)[1]).decode("utf-8"))
                 source_records.extend(json.loads(raw) for key, raw in state.get("unknown", [])
                                       if key.startswith("unconverted-source:"))
+                caption_records.extend(json.loads(raw) for key, raw in state.get("unknown", []) if key.startswith("caption-source:"))
+            if caption_records:
+                decoded = sum(record.get("text") is not None and not record.get("decode_errors") for record in caption_records)
+                lines += [f"- Captions: {decoded}/{len(caption_records)} text records decoded from FormattedTextData. Text runs, fonts, source ticks and raw payloads are retained; subtitle styling and native/API caption application remain incomplete.", ""]
             if source_records:
                 lines += ["### Source features requiring conversion", "",
                           "These records were captured from the Premiere graph before XML normalization. Native export rejects them; raw records remain in the XML comment.", ""]
@@ -2627,6 +2633,11 @@ def _prproj_parse_sequence(
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
     timeline_state = _prproj_extract_timeline_state(seq_el, idx, fps)
+    for caption in extract_captions(prproj_root, sequence_uid):
+        timeline_state.unknown.append((
+            f"caption-source:{caption.item_object_id}",
+            json.dumps(asdict(caption), ensure_ascii=False, sort_keys=True),
+        ))
     if tg_section is not None:
         for group_index, group_ref in enumerate(tg_section.findall("TrackGroup"), 1):
             second = group_ref.find("Second")

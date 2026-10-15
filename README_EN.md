@@ -205,6 +205,7 @@ Three output formats:
 | Sequence In/Out | Not written; explicit state produces warnings | Sets pairs, clears explicitly unset marks; warns on one-sided state |
 | Track name, mute, lock | Writes custom names and lock/disable bits; offline-validated | Uses the same source state with official API methods and reports failures |
 | Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
+| Captions | Decodes FormattedTextData text runs, font lists and source ticks; retains raw payloads; full styling/target tracks are incomplete | Same source records; an API path for arbitrary caption cues is not established |
 
 Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. These writes have offline test coverage; visible results still need verification in an idle Resolve environment. See [format evidence and verification limits](NATIVE_FORMAT.md).
 

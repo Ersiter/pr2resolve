@@ -30,6 +30,8 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 ## 行业实现中值得采用的做法
 
+字幕源解析按实际 `FormattedTextData` 的 FlatBuffer 表、offset 和字符串长度读取文本 runs，并按 BlockVector 顺序拼接；不扫描“看起来像文字”的字节。无法识别的结构保留原负载并标记解码失败。28 条实际工程字幕均能读取，字体列表、原 ticks、BinaryHash 和 block 引用保存在 XML 状态中。最小原生 Subtitle 编码器已有独立测试，但尚未接入工程输出；完整样式及 native/API 字幕转换仍未完成。
+
 - [Blackmagic Resolve scripting API](https://www.blackmagicdesign.com/developer/) 提供导入后读取与设置时间线、轨道和片段属性的正式接口。它适合作为验收通道；用户正在工作的 Resolve 会话不应成为自动测试环境。
 - [Apple XMEML 时间规则](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/FinalCutPro_XML/Topics/Topics.html) 区分时间线区间与源区间。源帧率、序列帧率、速度和端点约定必须一起处理，不能从片段时长推断完整源时长。
 - [OpenTimelineIO FCP7 adapter](https://github.com/OpenTimelineIO/otio-fcp-adapter) 提供编辑时间结构与互通参考；其支持范围不能代替私有效果和 Resolve 原生序列化的实现。当前仍保留零运行时外部依赖。
