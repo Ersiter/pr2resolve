@@ -3426,12 +3426,17 @@ def _drp_export(
         media_pool = project.GetMediaPool()
 
         # ── Set project color science from the first exported sequence ──
-        profiles_by_name: dict[str, dict[str, Any]] = {}
+        profiles_by_uid: dict[str, dict[str, Any]] = {}
         if prproj_root is not None:
             index = _PrprojIndex.build(prproj_root)
             for sequence in _prproj_list_sequences(prproj_root, index):
-                profiles_by_name[sequence["name"]] = _prproj_get_color_profiles(prproj_root, sequence["uid"])
-        project_profiles = profiles_by_name.get(sequence_names[0], {}) if sequence_names else {}
+                profiles_by_uid[sequence["uid"]] = _prproj_get_color_profiles(prproj_root, sequence["uid"])
+        sequence_profiles: list[dict[str, Any]] = []
+        for xml_path in xml_paths:
+            source_sequence = ET.parse(xml_path).find("sequence")
+            source_uid = source_sequence.get("id", "") if source_sequence is not None else ""
+            sequence_profiles.append(profiles_by_uid.get(source_uid, {}))
+        project_profiles = sequence_profiles[0] if sequence_profiles else {}
         if project_profiles:
             print(f"  Premiere color profile: output={project_profiles.get('OutputColorSpace', 'unknown')}; working={project_profiles.get('WorkingColorSpace', 'unknown')}; media={project_profiles.get('media', 'unknown')}")
         _apply_resolve_color_settings(project, project_profiles, "project")
@@ -3455,9 +3460,9 @@ def _drp_export(
                 str(xml_path),
                 {"timelineName": seq_name, "importSourceClips": True},
             )
-            if timeline is not None and profiles_by_name.get(seq_name):
+            if timeline is not None and sequence_profiles[seq_index]:
                 try:
-                    _apply_resolve_color_settings(timeline, profiles_by_name[seq_name], f'timeline "{seq_name}"')
+                    _apply_resolve_color_settings(timeline, sequence_profiles[seq_index], f'timeline "{seq_name}"')
                 except (AttributeError, TypeError):
                     print(f"  Warning: timeline \"{seq_name}\" does not expose color settings in this Resolve version")
             print(f"  TIMELINE: {repr(timeline)}")
@@ -3471,17 +3476,13 @@ def _drp_export(
                         import_failed = True
                 try:
                     timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
-                    timeline_color = "Rec.709 Gamma 2.4"
-                    if "HLG" in color_profile.upper():
-                        timeline_color = "Rec.2100 HLG"
-                    timeline.SetSetting("timelineColorSpace", timeline_color)
                 except Exception:
                     pass
             else:
                 print(f"  Timeline import FAILED: {seq_name}")
                 failed_xmls.append((seq_name, xml_path))
                 import_failed = True
-        media_profiles = [item for profiles in profiles_by_name.values() for item in profiles.get("media_profiles", [])]
+        media_profiles = [item for profiles in sequence_profiles for item in profiles.get("media_profiles", [])]
         _apply_media_color_profiles(media_pool, media_profiles)
         if failed_xmls:
             print("=" * 60)
@@ -3878,7 +3879,7 @@ def _prproj_get_color_profiles(prproj_root: ET.Element, sequence_uid: str = "") 
 
 
 def _resolve_color_settings(profiles: dict[str, Any]) -> dict[str, str]:
-    """Map only profile names verified against Resolve's public setting API."""
+    """Build color setting requests; Resolve acceptance and readback are separate."""
     working = str(profiles.get("WorkingColorSpace") or profiles.get("WorkingColorSpaceConfiguration") or "").casefold()
     output = str(profiles.get("OutputColorSpace") or "").casefold()
     if "acescct" in working:
@@ -3899,7 +3900,7 @@ def _resolve_color_settings(profiles: dict[str, Any]) -> dict[str, str]:
 def _apply_resolve_color_settings(target: Any, profiles: dict[str, Any], label: str) -> None:
     settings = _resolve_color_settings(profiles)
     if not settings:
-        print(f"  Warning: {label} color profile has no verified Resolve mapping: {profiles}")
+        print(f"  Warning: {label} color profile has no Resolve mapping: {profiles}")
         return
     failed = []
     for key, value in settings.items():
