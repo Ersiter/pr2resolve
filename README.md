@@ -1,7 +1,8 @@
 <div align="center">
 
-> **Current Status: Stable**  
-> *v1.5.3 — 原生媒体夹与多时间线稳定性修复*
+> **Current Status: Native DRP experimental**
+>
+> *v1.6.0 — 源参数驱动的时间线设置、Motion 与时间映射*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -85,9 +86,10 @@ python tui.py
 - **Release 包用户**：不需要安装 Python。
 - **源码运行用户**：需要 Python 3.10+。Windows 安装时建议勾选 `Add Python to PATH`。
 - **纯数据 `.prproj` 转换**：工程中的素材路径、帧率、时码、时长和分辨率直接从 `.prproj` 对象图读取，源素材可以离线或不在本机。
-- **原生 DRP 零媒体扫描**：`.prproj` 或 XML 可直接生成一个包含全部非空时间线的 native DRP，不启动 Resolve、不扫描媒体；模板面向 Resolve 21。
-- **基础 Motion 保留**：native DRP 支持已验证的静态 Basic Motion 旋转/缩放组合；动画和未验证的非默认位置会明确报错。
-- **兼容性门禁**：转场、反向/变速曲线、嵌套序列、生成器和非默认视频效果会在导出前明确拒绝；恒定正向速度会保留源区间映射。
+- **原生 DRP 零媒体扫描**：按自动选择、`--sequence` 或 `--all-sequences` 生成一个包含所选序列的 native DRP，不启动 Resolve、不扫描媒体；模板面向 Resolve 21。
+- **源参数驱动**：序列帧率、分辨率、时长及注册表从源数据生成；媒体夹按素材路径和序列 UID 保留父子关系，不按显示名称归类。
+- **Motion 与时间映射**：按 ParameterID 识别本地化 Motion；XML 保留关键帧并线性近似插值，原始曲线保存在 XML 注释中。native 静态变换及正向恒速视频由参数编码，不再套用两份样本数据。
+- **验证边界**：本版通过离线结构和原始工程回归，尚未完成 Resolve 导入及视听回归。native 缩放补偿基于模板采用 fit 的假设；不同输入缩放设置下的画面尚未验证。动画、反向/变速曲线、音频变速、非默认锚点、转场、嵌套序列和生成器会明确拒绝。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
 验证源码环境：
@@ -138,6 +140,9 @@ python pr2resolve.py "project.prproj" --native-drp
 
 # 生成修正报告
 python pr2resolve.py "input.xml" --report
+
+# 只输出原生工程及报告
+python pr2resolve.py "project.prproj" --native-drp --all-sequences --no-xml --report
 
 # 只看不改
 python pr2resolve.py "input.xml" --diagnose-only
@@ -204,7 +209,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 | `--drt` | flag | 生成 DRT 输出（需达芬奇 Studio） |
 | `--drp` | flag/path | 后台导出 DRP（所有非空序列） |
 | `--drp-gui` | flag/path | 交互式导出 DRP（所有非空序列） |
-| `--native-drp` | flag/path | 纯数据 native DRP（无需 Resolve；一个工程包含全部非空时间线） |
+| `--native-drp` | flag/path | 纯数据 native DRP（无需 Resolve；一个工程包含所选时间线，全部导出需配合 --all-sequences） |
 | `--all-sequences` | flag | 导出 .prproj 中全部非空序列 |
 | `--sequence` | str | 指定 .prproj 中的序列名 |
 | `--no-suffix` | flag | 输出文件名不加 `_pr2resolve` 后缀 |
@@ -264,7 +269,10 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 4. **达芬奇导入设置** — 建议取消 "Use sizing information"，避免双重缩放。
 5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
 6. **Lumetri 空间与时间运算** — 3D LUT 无法表达降噪、锐化、模糊、暗角和关键帧。native DRP 会检测但不伪装为等价转换。
-7. **色彩空间词汇差异** — native DRP 已实机验证 Rec.709、ACEScct 与 Rec.2100 HLG 项目/时间线配置；API DRP 还会按素材路径设置已知输入色彩空间。
+7. **色彩空间词汇差异** — native DRP 按模板映射 Rec.709、ACEScct 与 Rec.2100 HLG 配置；不同 HDR 项目与输入色彩空间仍需实机核对。API DRP 还会按素材路径设置已知输入色彩空间。
+8. **原生工程仍需导入验收** — 序列注册、媒体引用和时映射的离线检查不能证明画面、音频、Fairlight 多音轨及切换稳定性。标记、静音/锁定、源起始时码的可见应用仍未验证。`--report` 不依赖 XML 输出，导出拒绝后也可查看已生成的报告。
+
+原生字段依据、行业实现比较和后续验收方法见 [转换实现说明](NATIVE_FORMAT.md)。
 
 ---
 

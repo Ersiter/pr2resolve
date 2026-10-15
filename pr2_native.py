@@ -7,31 +7,25 @@ import base64
 import json
 import math
 import os
+import posixpath
 import re
 import struct
 import tempfile
 import uuid
 import zipfile
-from html import escape, unescape
+from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
-from pr2_constants import PP_LABEL_TO_RESOLVE_COLOR
+from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index
+from pr2_native_project import update_sequence_settings, update_timeline_handles
+from pr2_native_time import build_media_timemap, retimed_source_in
 
 
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
-
-# Resolve's static Basic Motion payloads captured from the clean Resolve 21
-# template family.  They contain only transform data; source IDs and paths are
-# not embedded.  Animated or otherwise unsupported values are rejected below.
-_MOTION_PROFILES = {
-    (100.0, 270.0): "00000002000000598128b52ffd20637d0200f4030a49080438144a0f082a1a0b0a09116abc74931804e23f4a0f082b004a004a004a0f082f00fcffffff7f56400a16082c381208085c1a040a0220034a004a00050035a5721780e43adb33c9730c",
-    (146.0, 270.0): "00000002000000e88128b52ffd603b01ed0600140a0aef01080438144a0f082a1a0b0a09113e0ad7438941e43f4a0f082b004a0f08286d2fa1bd84f672bf4a0f082922efeeeeeeeeae3f4a9601082f00fcffffff7f5640528401ffffff804200000000000d003f5840697f562ac04a0ab602087638204a08083b1a040a0220024a9901083c529401ffffff7035e803e0bf4a8901083d0d009a9999999999e93fe803f0406fc00a0e082c38124a004a004a004a004a001900a1cc10f0400bc0452007e01006405a590381b30409011e306e54c09e336e5030381c828ba6842367824c19755e53b37d9a926c5e1a92a713",
-}
-_MOTION_PROFILE_GEOMETRY = (1920, 1080, 1080, 1920)
 
 def _profile_name(value: object) -> str:
     return str(value or "").casefold().replace("rec. ", "rec.")
@@ -91,10 +85,16 @@ def _int_text(node: ET.Element, name: str) -> int:
 
 def _rate(node: ET.Element) -> float:
     try:
-        rate = float(node.findtext("rate/timebase") or "24")
+        rate = float(node.findtext("rate/timebase") or DEFAULT_FPS)
         return rate * 1000 / 1001 if (node.findtext("rate/ntsc") or "").strip().upper() == "TRUE" else rate
     except ValueError:
-        return 24.0
+        return DEFAULT_FPS
+
+
+def _path_key(path: str) -> str:
+    # Windows media paths remain case insensitive when converting on Unix.
+    windows = os.name == "nt" or bool(re.match(r"^[A-Za-z]:[/\\]", path)) or path.startswith("\\\\")
+    return posixpath.normpath(path.replace("\\", "/")).casefold() if windows else posixpath.normpath(path)
 
 
 def _clip_duration(node: ET.Element) -> str:
@@ -112,14 +112,6 @@ def _native_path(pathurl: str) -> str:
     if re.match(r"^/[A-Za-z]:", path):
         path = path[1:]
     return path.replace("/", "\\") if os.name == "nt" else path
-
-
-def _source_position_code(source_in: int, source_fps: float, timeline_fps: float) -> str:
-    if source_in <= 0 or source_fps <= 0 or timeline_fps <= 0:
-        return ""
-    mapped = source_in / source_fps * timeline_fps
-    whole, fraction = int(mapped), mapped - int(mapped)
-    return str(whole) if abs(fraction) < 1e-12 else f"{whole}|{struct.pack('<d', fraction).hex()}"
 
 
 def _read_varint(data: bytes, position: int) -> tuple[int, int]:
@@ -227,7 +219,7 @@ def _timeline_clip_labels(state: dict[str, Any]) -> dict[tuple[str, int, str, in
     return labels
 
 
-def _rewrite_av_clone(node: ET.Element, full_path: str, preserve_audio_identity: bool = False, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0) -> ET.Element:
+def _rewrite_av_clone(node: ET.Element, full_path: str, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0, source_start: int = 0) -> ET.Element:
     path = Path(full_path)
     video_uuid = _uid()
     for info in node.findall(".//BtVideoInfo") + node.findall(".//BtAudioInfo"):
@@ -247,48 +239,44 @@ def _rewrite_av_clone(node: ET.Element, full_path: str, preserve_audio_identity:
                 value = video_uuid.encode()
             rewritten.append((number, wire, value))
         clip.text = _encode_wrapper_hex(_protobuf_encode(rewritten))
-        if info.tag != "BtAudioInfo" or preserve_audio_identity:
-            continue
         old_id = info.get("DbId") or ""
-        audio_id = _uid()
-        info.set("DbId", audio_id)
+        info_id = _uid()
+        info.set("DbId", info_id)
         root_blob = node.find("FieldsBlob")
         if root_blob is None or not root_blob.text or not old_id:
             continue
         raw = _decode_wrapper_hex(root_blob.text)
-        old_bytes, new_bytes = old_id.encode("utf-16le"), audio_id.encode("utf-16le")
+        old_bytes, new_bytes = old_id.encode("utf-16le"), info_id.encode("utf-16le")
         if old_bytes not in raw:
             continue
         raw = raw.replace(old_bytes, new_bytes)
         if b"H\x00" + new_bytes not in raw:
-            raise ValueError("audio MediaRef missing after DbId rewrite")
+            raise ValueError("codec MediaRef missing after DbId rewrite")
         root_blob.text = _encode_wrapper_hex(raw)
     if duration > 0 or fps > 0 or width > 0 or height > 0:
         for info in node.findall(".//BtVideoInfo"):
             time_node = info.find("Time")
             if time_node is not None and time_node.text:
-                original = bytes.fromhex(time_node.text)
-                raw = bytearray(original[8:])
-                marker = "NumFrames".encode("utf-16le")
-                start = raw.find(marker)
-                if start >= 0 and duration > 0:
-                    raw[start + len(marker) + 4:start + len(marker) + 8] = duration.to_bytes(4, "big")
-                marker = "FrameRate".encode("utf-16le")
-                start = raw.find(marker)
-                if start >= 0 and fps > 0:
-                    raw[start + len(marker) + 8:start + len(marker) + 16] = struct.pack("<d", fps)
-                time_node.text = (original[:8] + bytes(raw)).hex()
+                raw = bytearray(bytes.fromhex(time_node.text))
+                for key, value_type, value in (
+                    ("StartFrame", 2, source_start.to_bytes(4, "big", signed=True)),
+                    ("NumFrames", 2, duration.to_bytes(4, "big", signed=True) if duration > 0 else None),
+                    ("FrameRate", 12, struct.pack(">I", 16) + struct.pack("<d", fps) + b"\0" * 8 if fps > 0 else None),
+                ):
+                    marker = key.encode("utf-16be") + struct.pack(">IB", value_type, 0)
+                    offset = raw.find(marker) + len(marker)
+                    if offset >= len(marker) and value is not None:
+                        raw[offset:offset + len(value)] = value
+                time_node.text = raw.hex()
             geometry = info.find("Geometry")
             if geometry is not None and geometry.text and width > 0 and height > 0:
-                original = bytes.fromhex(geometry.text)
-                raw = bytearray(original[8:])
-                marker = "Resolution".encode("utf-16le")
-                start = raw.find(marker)
-                if start >= 0:
-                    offset = start + len(marker) + 8
+                raw = bytearray(bytes.fromhex(geometry.text))
+                marker = "Resolution".encode("utf-16be") + struct.pack(">IBI", 12, 0, 16)
+                offset = raw.find(marker) + len(marker)
+                if offset >= len(marker):
                     raw[offset:offset + 8] = width.to_bytes(8, "big")
                     raw[offset + 8:offset + 16] = height.to_bytes(8, "big")
-                    geometry.text = (original[:8] + bytes(raw)).hex()
+                    geometry.text = raw.hex()
     if duration > 0 and fps > 0:
         units = math.ceil((duration / fps) * 187.5 / 8) * 8
         marker = "Duration".encode("utf-16be")
@@ -305,16 +293,8 @@ def _rewrite_av_clone(node: ET.Element, full_path: str, preserve_audio_identity:
     return node
 
 
-def _rewrite_still_clone(node: ET.Element, full_path: str, preserve_audio_identity: bool = False, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0) -> ET.Element:
-    return _rewrite_av_clone(node, full_path, preserve_audio_identity, duration, fps, width, height)
-
-
-def _rewrite_audio_clone(node: ET.Element, full_path: str, preserve_audio_identity: bool = False, duration: int = 0, fps: float = 0.0) -> ET.Element:
-    return _rewrite_av_clone(node, full_path, preserve_audio_identity, duration, fps)
-
-
 def _static_motion_payload(clip: ET.Element, source_geometry: tuple[int, int], timeline_geometry: tuple[int, int]) -> str | None:
-    """Return a known static Basic Motion payload, or reject unsupported motion."""
+    """Author static Resolve 21 transform curves without captured clip state."""
     basic = next((effect for effect in clip.findall("filter/effect") if (effect.findtext("effectid") or "").strip().lower() == "basic"), None)
     if basic is None:
         return None
@@ -326,15 +306,17 @@ def _static_motion_payload(clip: ET.Element, source_geometry: tuple[int, int], t
         value = parameter.find("value")
         if value is None:
             continue
-        if parameter_id in ("scale", "rotation"):
+        if parameter_id in ("scale", "rotation", "aspect"):
             try:
                 values[parameter_id] = float(value.text or "")
             except ValueError:
                 raise ValueError(f"invalid Basic Motion {parameter_id}: {clip.findtext('name') or 'clip'}")
         elif parameter_id == "center":
-            horiz, vert = value.findtext("horiz"), value.findtext("vert")
-            if (horiz and float(horiz) != 0.0) or (vert and float(vert) != 0.0):
-                raise ValueError(f"non-default Basic Motion center is unsupported: {clip.findtext('name') or 'clip'}")
+            values["pan_x"] = float(value.findtext("horiz") or 0)
+            values["pan_y"] = -float(value.findtext("vert") or 0)
+        elif parameter_id == "centerOffset":
+            if any(float(value.findtext(axis) or 0) != 0 for axis in ("horiz", "vert")):
+                raise ValueError(f"non-default anchor point is unsupported: {clip.findtext('name') or 'clip'}")
     for effect in clip.findall("filter/effect"):
         if (effect.findtext("effectid") or "").strip().lower() != "opacity":
             continue
@@ -342,19 +324,44 @@ def _static_motion_payload(clip: ET.Element, source_geometry: tuple[int, int], t
         if value is not None and value.text and float(value.text) != 100.0:
             raise ValueError(f"non-default opacity is unsupported: {clip.findtext('name') or 'clip'}")
     scale, rotation = values.get("scale", 100.0), values.get("rotation", 0.0)
-    if scale == 100.0 and rotation == 0.0:
-        return None
-    if (*source_geometry, *timeline_geometry) != _MOTION_PROFILE_GEOMETRY:
-        raise ValueError(f"unsupported Basic Motion geometry {source_geometry}->{timeline_geometry}: {clip.findtext('name') or 'clip'}")
-    try:
-        return _MOTION_PROFILES[(scale, rotation)]
-    except KeyError as exc:
-        raise ValueError(f"unsupported static Basic Motion ({scale:g}, {rotation:g}): {clip.findtext('name') or 'clip'}") from exc
+    if values.get("aspect", 0) != 0:
+        raise ValueError(f"non-uniform Basic Motion scale is unsupported: {clip.findtext('name') or 'clip'}")
+    if not all(math.isfinite(value) for value in values.values()) or scale < 0:
+        raise ValueError(f"invalid Basic Motion values: {clip.findtext('name') or 'clip'}")
+    if not all(value > 0 for value in (*source_geometry, *timeline_geometry)):
+        if scale == 100 and rotation == 0 and not values.get("pan_x") and not values.get("pan_y"):
+            return None
+        raise ValueError(f"Basic Motion requires source and timeline dimensions: {clip.findtext('name') or 'clip'}")
+    # XMEML scale operates on source pixels; Resolve's default sizing fits the
+    # unrotated source into the timeline before the Inspector zoom is applied.
+    fit = min(timeline_geometry[0] / source_geometry[0], timeline_geometry[1] / source_geometry[1])
+    zoom = scale / 100.0 / fit
+    parameters = {0: (42, zoom), 1: (43, zoom), 2: (40, values.get("pan_x", 0.0)),
+                  3: (41, values.get("pan_y", 0.0)), 5: (47, -rotation)}
+    fields: list[tuple[int, int, bytes | int]] = [(1, 0, 4), (7, 0, 20)]
+    # Resolve's section has twelve ordered slots, including empty defaults.
+    for slot in range(12):
+        if slot not in parameters:
+            fields.append((9, 2, b""))
+            continue
+        parameter_id, value = parameters[slot]
+        keyframe = _protobuf_encode([(2, 1, struct.pack("<d", value))])
+        curve = _protobuf_encode([(1, 2, keyframe)])
+        parameter = _protobuf_encode([(1, 0, parameter_id), (3, 2, curve)])
+        fields.append((9, 2, parameter))
+    return _encode_wrapper_hex(_protobuf_encode([(1, 2, _protobuf_encode(fields))]))
 
 
 def _validate_sequence_capabilities(root: ET.Element) -> None:
     """Reject FCP structures that the native writer cannot represent faithfully."""
     problems: list[str] = []
+    for key, raw in _timeline_state_manifest(root).get("unknown", []):
+        if not str(key).startswith("unconverted-source:"):
+            continue
+        record = json.loads(raw)
+        identity = record.get("clip_name") or record.get("track_uid") or "sequence"
+        feature = record.get("match_name") or record.get("kind") or "source feature"
+        problems.append(f"{identity}: unconverted Premiere {feature}")
     if root.findall(".//transitionitem"):
         problems.append("transitionitem/transition effects")
     if root.findall(".//clipitem//sequence") or root.findall(".//generatoritem"):
@@ -370,7 +377,7 @@ def _validate_sequence_capabilities(root: ET.Element) -> None:
             effect_id = (effect.findtext("effectid") or "").strip().lower()
             if effect_id == "lumetri":
                 if name not in warned_lumetri:
-                    print(f"  Warning: {name}: Lumetri is preserved in the manifest; native grade is not applied")
+                    print(f"  Warning: {name}: native Lumetri grade is not applied")
                     warned_lumetri.add(name)
                 continue
             if effect_id not in allowed_video and (effect.findtext("mediatype") or "video").strip().lower() == "video":
@@ -409,7 +416,7 @@ def _timeline_state_manifest(root: ET.Element) -> dict[str, Any]:
     return {}
 
 
-def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | None = None) -> tuple[dict[str, bytes], ET.Element]:
+def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | None = None) -> tuple[dict[str, bytes], ET.Element, dict[str, str]]:
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     source = (root.findall(".//sequence") or [root])[0]
     timeline_sample = source.find("media/video/format/samplecharacteristics")
@@ -423,7 +430,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     if seq_name is None:
         raise ValueError("codec template has no sequence container")
     native = ET.fromstring(members[seq_name])
-    files, video_ids = {}, set()
+    files, video_ids = _build_file_index(root), set()
     for branch in ("video", "audio"):
         for track in source.findall(f"media/{branch}/track"):
             for clip in track.findall("clipitem"):
@@ -431,7 +438,6 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 if file_node is None or not file_node.get("id"):
                     continue
                 key = file_node.get("id") or ""
-                files.setdefault(key, file_node)
                 if branch == "video":
                     video_ids.add(key)
     source_frames = {}
@@ -493,27 +499,19 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 _set_child(node, "Name", clip.findtext("name") or "clip")
                 _set_child(node, "Start", clip.findtext("start") or "0")
                 _set_child(node, "Duration", _clip_duration(clip))
-                input_fps = _rate(file_node) if file_node is not None else _rate(source)
-                _set_child(node, "In", "86400" if suffix in IMAGE_SUFFIXES else _source_position_code(_int_text(clip, "in"), input_fps, _rate(source)))
+                input_fps = _rate(file_node) if file_node is not None and file_node.find("rate") is not None else _rate(source)
+                speed = clip_speed(clip)
+                _set_child(node, "In", "86400" if suffix in IMAGE_SUFFIXES else retimed_source_in(_int_text(clip, "in"), input_fps, _rate(source), speed))
                 if file_node is not None:
                     file_id = file_node.get("id") or ""
                     _set_child(node, "MediaRef", refs.get(file_id, ""))
                     _set_child(node, "MediaFilePath", _native_path(file_node.findtext("pathurl") or ""))
-                    speed = clip_speed(clip)
-                    if abs(speed - 100.0) > 1e-9:
-                        source_span = _int_text(clip, "out") - _int_text(clip, "in") + 1
-                        seconds = max(source_span, 1) / _rate(file_node)
-                    else:
-                        seconds = (source_frames.get(file_id, 0) + 1) / _rate(file_node)
                     if kind == "video":
                         _set_child(node, "CurrentSelectorIdx", "0")
                         _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
-                        outer = struct.pack(">d", seconds) + b"\0" * 8
-                        middle = struct.pack(">d", seconds - 1 / 120) + b"\0" * 8
-                        tail = struct.pack(">d", seconds)
-                        _set_child(node, "MediaTimemapBA", "02" + (outer + middle + tail).hex())
-                    else:
-                        _set_child(node, "MediaTimemapBA", "02" + struct.pack(">d", seconds).hex())
+                    # Still sources retain Resolve's virtual one-day source.
+                    if suffix not in IMAGE_SUFFIXES:
+                        _set_child(node, "MediaTimemapBA", build_media_timemap(source_frames[file_id], input_fps, speed, audio=kind == "audio"))
                 motion_payload = None
                 if kind == "video":
                     sample = file_node.find("media/video/samplecharacteristics") if file_node is not None else None
@@ -522,8 +520,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                         _int_text(sample, "height") if sample is not None else 0,
                     )
                     motion_payload = _static_motion_payload(clip, source_geometry, timeline_geometry)
-                if motion_payload is not None:
-                    _set_child(node, "EffectFiltersBA", motion_payload)
+                _set_child(node, "EffectFiltersBA", motion_payload or "")
                 label_key = (
                     kind, track_index, clip.findtext("name") or "",
                     _int_text(clip, "start"), int(_clip_duration(clip)),
@@ -537,7 +534,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
             _set_child(track, "Name", fcp_track.findtext("name") or "")
             wrapper.append(track)
     members[seq_name] = _xml(native)
-    return members, source
+    return members, source, refs
 
 
 def export_native_drp(
@@ -546,7 +543,7 @@ def export_native_drp(
     project_name: str,
     grades: list[Any] | None = None,
     color_profiles: dict[str, Any] | None = None,
-    bin_members: list[tuple[str, list[str]]] | None = None,
+    bin_members: list[ProjectBin] | None = None,
 ) -> Path:
     """Export one project package, optionally containing multiple sequences."""
     if isinstance(sequence, list):
@@ -557,7 +554,7 @@ def export_native_drp(
         raise FileNotFoundError(f"codec DRP template not found: {TEMPLATE}")
     root = sequence.getroot() if isinstance(sequence, ET.ElementTree) else sequence
     _validate_sequence_capabilities(root)
-    members, source = _build_timeline(sequence, grades)
+    members, source, refs = _build_timeline(sequence, grades)
     pool_name = "MediaPool/Master/MpFolder.xml"
     with zipfile.ZipFile(TEMPLATE) as archive:
         pool = archive.read(pool_name).decode("utf-8", "replace")
@@ -565,7 +562,7 @@ def export_native_drp(
     audio_templates = re.findall(r"(?is)<Element>\s*(<Sm2MpAudioClip\b.*?</Sm2MpAudioClip>)\s*</Element>", pool)
     audio_fallback = audio_templates[0] if audio_templates else ""
     audio_by_ext = {Path(re.search(r"(?is)<Name>(.*?)</Name>", n).group(1)).suffix.lower(): n for n in audio_templates if re.search(r"(?is)<Name>neutral-audio\.[^<]+</Name>", n)}
-    files, video_ids = {}, set()
+    files, video_ids = _build_file_index(root), set()
     for branch in ("video", "audio"):
         for track in source.findall(f"media/{branch}/track"):
             for clip in track.findall("clipitem"):
@@ -573,51 +570,42 @@ def export_native_drp(
                 if file_node is None or not file_node.get("id"):
                     continue
                 key = file_node.get("id") or ""
-                files.setdefault(key, file_node)
                 if branch == "video":
                     video_ids.add(key)
-    refs = {}
-    for name, data in members.items():
-        if name.startswith("SeqContainer/"):
-            xml = ET.fromstring(data)
-            for clip in xml.iter():
-                if clip.tag in ("Sm2TiVideoClip", "Sm2TiAudioClip"):
-                    refs[(clip.findtext("Name") or "", clip.findtext("MediaFilePath") or "")] = clip.findtext("MediaRef") or ""
-    def path_key(path: str, key: str) -> str:
-        return path.casefold() if path else f"@{key}"
-    video_paths = {path_key(_native_path(node.findtext("pathurl") or ""), key) for key, node in files.items() if key in video_ids}
-    canonical, by_name, by_path = {}, {}, {}
+    video_paths = {_path_key(_native_path(node.findtext("pathurl") or "")) for key, node in files.items() if key in video_ids}
+    canonical: dict[tuple[object, ...], str] = {}
+    media_aliases: dict[str, str] = {}
     generated = []
     for key, file_node in files.items():
         path, name = _native_path(file_node.findtext("pathurl") or ""), file_node.findtext("name") or "media"
-        media_key = path_key(path, key)
+        if not path:
+            raise ValueError(f"unresolved media file reference: {key} ({name})")
+        sample = file_node.find("media/video/samplecharacteristics")
+        duration = _int_text(file_node, "duration")
+        fps = _rate(file_node) if file_node.find("rate") is not None else _rate(source)
+        width = _int_text(sample, "width") if sample is not None else 0
+        height = _int_text(sample, "height") if sample is not None else 0
+        source_start = _int_text(file_node, "timecode/frame")
+        media_key = (_path_key(path), fps, duration, width, height, source_start)
         if media_key in canonical:
+            media_aliases[refs[key]] = canonical[media_key]
             continue
-        is_video, suffix = key in video_ids or media_key in video_paths, Path(name).suffix.lower()
+        is_video, suffix = key in video_ids or _path_key(path) in video_paths, Path(name).suffix.lower()
         if is_video:
             chosen = (next((n for n in video_templates if "neutral-still.png" in n), video_templates[0]) if suffix in IMAGE_SUFFIXES else next((n for n in video_templates if "neutral-source.mp4" in n), video_templates[0]))
         else:
             chosen = audio_by_ext.get(suffix, audio_by_ext.get(".wav", audio_fallback))
         if not chosen:
             raise ValueError("codec template lacks required media node")
-        item_id = refs.get((name, path)) or next((ref for (ref_name, ref_path), ref in refs.items() if ref and path_key(ref_path, key) == media_key), _uid())
-        canonical[media_key] = item_id; by_name.setdefault(name.casefold(), item_id); by_path.setdefault(name.casefold(), path)
+        item_id = refs[key]
+        canonical[media_key] = item_id
         node = ET.fromstring(chosen); node.set("DbId", item_id)
         unique = node.find("UniqueMediaPoolItemId")
         if unique is not None:
             unique.text = _uid()
         _set_child(node, "Name", name)
-        sample = file_node.find("media/video/samplecharacteristics")
-        duration = _int_text(file_node, "duration")
-        fps = _rate(file_node)
-        width = _int_text(sample, "width") if sample is not None else 0
-        height = _int_text(sample, "height") if sample is not None else 0
-        if is_video and suffix in IMAGE_SUFFIXES:
-            _rewrite_still_clone(node, path, duration=duration, fps=fps, width=width, height=height)
-        elif is_video:
-            _rewrite_av_clone(node, path, duration=duration, fps=fps, width=width, height=height)
-        else:
-            _rewrite_audio_clone(node, path, preserve_audio_identity=suffix == ".mp3", duration=duration, fps=fps)
+        _rewrite_av_clone(node, path, duration=duration, fps=fps, width=width, height=height,
+                          source_start=source_start)
         generated.append("   <Element>\n" + ET.tostring(node, encoding="unicode") + "\n   </Element>")
     for name, data in list(members.items()):
         if not name.startswith("SeqContainer/"):
@@ -626,16 +614,15 @@ def export_native_drp(
         for clip in xml.iter():
             if clip.tag not in ("Sm2TiVideoClip", "Sm2TiAudioClip"):
                 continue
-            clip_name, clip_path = clip.findtext("Name") or "", clip.findtext("MediaFilePath") or ""
-            media_id = canonical.get(path_key(clip_path, clip_name)) or by_name.get(clip_name.casefold())
+            media_id = media_aliases.get(clip.findtext("MediaRef") or "")
             if media_id:
                 _set_child(clip, "MediaRef", media_id)
-                if not clip_path:
-                    _set_child(clip, "MediaFilePath", by_path.get(clip_name.casefold(), ""))
         members[name] = _xml(xml)
     pool = re.sub(r"(?is)<Element>\s*<(?:Sm2MpVideoClip|Sm2MpAudioClip)\b.*?</(?:Sm2MpVideoClip|Sm2MpAudioClip)>\s*</Element>", "", pool)
     pool = re.sub(r"(?is)(<MediaVec>)(.*?)(</MediaVec>)", lambda m: m.group(1) + m.group(2) + "\n" + "\n".join(generated) + m.group(3), pool, count=1)
+    pool = update_sequence_settings(pool, source)
     members[pool_name] = pool.encode("utf-8")
+    members["project.xml"] = update_timeline_handles(members["project.xml"], pool)
     _configure_color(members, color_profiles)
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
@@ -643,14 +630,14 @@ def export_native_drp(
         for name, data in members.items():
             if name == "project.xml":
                 text = data.decode("utf-8", "replace")
-                text = text.replace("_mcp_pr2resolve_codec_template_20260915", project_name)
-                text = re.sub(r"<ProjectName>.*?</ProjectName>", f"<ProjectName>{project_name}</ProjectName>", text, count=1)
+                text = text.replace("_mcp_pr2resolve_codec_template_20260915", escape(project_name))
+                text = re.sub(r"<ProjectName>.*?</ProjectName>", lambda _: f"<ProjectName>{escape(project_name)}</ProjectName>", text, count=1)
                 data = text.encode("utf-8")
             elif name == pool_name:
                 text = data.decode("utf-8", "replace")
-                text = re.sub(r"(?is)(<Sm2Timeline\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
-                text = re.sub(r"(?is)(<Sm2MpTimelineClip\b.*?<Name>).*?(</Name>)", rf"\g<1>{sequence_name}\g<2>", text)
-                text = text.replace("<Name>Unified Native Template</Name>", f"<Name>{sequence_name}</Name>").replace("<Name>Codec Native Template</Name>", f"<Name>{sequence_name}</Name>")
+                text = re.sub(r"(?is)(<Sm2Timeline\b.*?<Name>).*?(</Name>)", lambda m: m[1] + escape(sequence_name) + m[2], text)
+                text = re.sub(r"(?is)(<Sm2MpTimelineClip\b.*?<Name>).*?(</Name>)", lambda m: m[1] + escape(sequence_name) + m[2], text)
+                text = text.replace("<Name>Unified Native Template</Name>", f"<Name>{escape(sequence_name)}</Name>").replace("<Name>Codec Native Template</Name>", f"<Name>{escape(sequence_name)}</Name>")
                 data = text.encode("utf-8")
             target.writestr(name, data)
     destination = Path(output_path)
@@ -665,7 +652,7 @@ def _export_native_project(
     project_name: str,
     grades: list[Any] | None = None,
     color_profiles: dict[str, Any] | None = None,
-    bin_members: list[tuple[str, list[str]]] | None = None,
+    bin_members: list[ProjectBin] | None = None,
 ) -> Path:
     """Combine native timeline packages into one Resolve project archive."""
     grade_sets = (grades if len(grades) == len(sequences) and all(isinstance(item, list) for item in grades)
@@ -737,7 +724,10 @@ def _export_native_project(
             )
             if len(location) != 2:
                 return block
-            key = (tag.group("tag"), *location)
+            node = ET.fromstring(clip)
+            key = (tag.group("tag"), _path_key("/".join(location)),
+                   node.findtext(".//BtVideoInfo/Time") or "",
+                   node.findtext(".//BtVideoInfo/Geometry") or "")
             if key not in canonical_media:
                 canonical_media[key] = item_id.group(1)
                 return block
@@ -756,6 +746,7 @@ def _export_native_project(
             for duplicate, canonical in media_refs.items():
                 text = text.replace(f"<MediaRef>{duplicate}</MediaRef>", f"<MediaRef>{canonical}</MediaRef>")
             members[name] = text.encode("utf-8")
+        members["project.xml"] = update_timeline_handles(members["project.xml"], pool)
         if bin_members:
             master = re.search(r'<Sm2MpFolder\b[^>]*\bDbId="([^"]+)".*?<MediaPool>([^<]+)</MediaPool>', pool, re.S)
             if master is None:
@@ -763,26 +754,72 @@ def _export_native_project(
             master_id, media_pool_id = master.groups()
             item_pattern = r"(?s)<Element>\s*(<Sm2Mp(?:Video|Audio|Timeline)Clip\b.*?</Sm2Mp(?:Video|Audio|Timeline)Clip>)\s*</Element>"
             folder_blob = "0000000200000027800a061090d395a40d1890d395a40d2090d395a40d5a100a0c3030303030302030303030301200"
-            for index, (folder_name, item_names) in enumerate(bin_members):
-                folder_id = _uid()
-                members_by_name = set(item_names)
-                moved: list[str] = []
+            folder_ids = {folder.uid: _uid() for folder in bin_members}
+            folder_paths: dict[str, str] = {}
+            bins_by_uid = {folder.uid: folder for folder in bin_members}
+            sequence_bins = {uid: folder.uid for folder in bin_members for uid in folder.sequence_uids}
+            media_bins: dict[str, list[str]] = {}
+            for folder in bin_members:
+                for path in folder.media_paths:
+                    owners = media_bins.setdefault(_path_key(path), [])
+                    if folder.uid not in owners:
+                        owners.append(folder.uid)
+            timeline_sources = {}
+            timeline_blocks = re.findall(r"(?s)<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>", pool)
+            for source_tree, block in zip(sequences, timeline_blocks):
+                source_root = source_tree.getroot() if isinstance(source_tree, ET.ElementTree) else source_tree
+                source_sequence = (source_root.findall(".//sequence") or [source_root])[0]
+                timeline_id = re.search(r'\bDbId="([^"]+)"', block)
+                if timeline_id is not None:
+                    timeline_sources[timeline_id[1]] = source_sequence.get("id", "")
 
-                def move_to_folder(match: re.Match[str]) -> str:
-                    block, item = match.group(0), match.group(1)
-                    name = re.search(r"<Name>(.*?)</Name>", item, re.S)
-                    if name is None or unescape(name.group(1)) not in members_by_name:
-                        return block
-                    moved.append(re.sub(r"(<MpFolder>)[^<]*(</MpFolder>)", rf"\g<1>{folder_id}\g<2>", block, count=1))
-                    return ""
+            def bin_path(uid: str, visiting: frozenset[str] = frozenset()) -> str:
+                if uid in visiting:
+                    raise ValueError("cyclic Premiere bin hierarchy")
+                if uid not in folder_paths:
+                    folder = bins_by_uid[uid]
+                    parent_path = bin_path(folder.parent_uid, visiting | {uid}) if folder.parent_uid in bins_by_uid else "MediaPool/Master"
+                    safe_name = re.sub(r'[\\/:*?"<>|]+', "_", folder.name)
+                    folder_paths[uid] = f"{parent_path}/{len(folder_paths):03d}_{safe_name}"
+                return folder_paths[uid]
 
-                pool = re.sub(item_pattern, move_to_folder, pool)
-                safe_folder = re.sub(r'[\\/:*?"<>|]+', "_", folder_name)
-                folder_path = f"MediaPool/Master/{index:03d}_{safe_folder}/MpFolder.xml"
+            owned_items: dict[str, list[str]] = {folder.uid: [] for folder in bin_members}
+
+            def assign_folder(match: re.Match[str]) -> str:
+                block, item = match.group(0), match.group(1)
+                node = ET.fromstring(item.replace("ListMgt::", "ListMgt__"))
+                if node.tag == "Sm2MpTimelineClip":
+                    owner = sequence_bins.get(timeline_sources.get(node.get("DbId", ""), ""))
+                    owners = [owner] if owner is not None else []
+                else:
+                    source = node.find(".//BtVideoInfo/Clip")
+                    if source is None:
+                        source = node.find(".//BtAudioInfo/Clip")
+                    location = {number: bytes(value).decode("utf-8") for number, wire, value in _protobuf_fields(_decode_wrapper_hex(source.text or "")) if wire == 2 and number in (1, 2)} if source is not None else {}
+                    media_path = location.get(1, "").rstrip("/\\") + "/" + location.get(2, "")
+                    owners = media_bins.get(_path_key(media_path), [])
+                if not owners:
+                    return block
+                for index, owner in enumerate(owners):
+                    owned_block = block
+                    if index:
+                        alias = ET.fromstring(ET.tostring(node))
+                        alias.set("DbId", _uid())
+                        _set_child(alias, "UniqueMediaPoolItemId", _uid())
+                        _rewrite_av_clone(alias, media_path)
+                        owned_block = "<Element>" + ET.tostring(alias, encoding="unicode") + "</Element>"
+                    owned_items[owner].append(re.sub(r"(<MpFolder>)[^<]*(</MpFolder>)", lambda m: m[1] + folder_ids[owner] + m[2], owned_block, count=1))
+                return ""
+
+            pool = re.sub(item_pattern, assign_folder, pool)
+            for folder in bin_members:
+                folder_id, folder_name = folder_ids[folder.uid], folder.name
+                moved = owned_items[folder.uid]
+                folder_path = bin_path(folder.uid) + "/MpFolder.xml"
                 members[folder_path] = (
                     '<?xml version="1.0" encoding="UTF-8"?>\n'
                     f'<Sm2MpFolder DbId="{folder_id}"><FieldsBlob>{folder_blob}</FieldsBlob>'
-                    f'<Name>{escape(folder_name)}</Name><MpFolder>{master_id}</MpFolder>'
+                    f'<Name>{escape(folder_name)}</Name><MpFolder>{folder_ids.get(folder.parent_uid, master_id)}</MpFolder>'
                     f'<UniqueMediaPoolItemId>{_uid()}</UniqueMediaPoolItemId><MediaVec>'
                     + "\n".join(moved)
                     + f'</MediaVec><MediaPool>{media_pool_id}</MediaPool><Folded>true</Folded>'

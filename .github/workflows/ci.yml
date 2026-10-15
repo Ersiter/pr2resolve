@@ -29,12 +29,16 @@ jobs:
         run: |
           python -m py_compile pr2resolve.py
           python -m py_compile pr2_native.py
+          python -m py_compile pr2_native_project.py pr2_native_time.py
           python -m py_compile pr2_engine.py
           python -m py_compile pr2_constants.py
           python -m py_compile tui.py
 
       - name: Run public smoke tests
         run: python .github/scripts/ci_smoke_tests.py
+
+      - name: Run conversion regressions
+        run: python -m unittest discover -s .github/scripts -p '*_tests.py' -v
 
       - name: Verify VERSION consistency
         run: |

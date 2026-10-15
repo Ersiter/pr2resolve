@@ -28,7 +28,7 @@ from pr2_constants import (
     PP_LABEL_TO_RESOLVE_COLOR, RESOLVE_CLIP_COLORS,
     FCP7_VERSION, FCP7_DOCTYPE,
     CRITICAL, MAJOR, MINOR,
-    Issue, ScaleIssue, ClipData, FileData, LinkMember, LinkGroup,
+    Issue, ScaleIssue, ClipData, FileData, ProjectBin, LinkMember, LinkGroup,
     FilterParam, FilterSpec, TrackData, TransitionData, TimelineState, TimelineMarkerData,
     _SourceTCInfo, LumetriGrade, LumetriParameter,
     LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS,
@@ -506,6 +506,8 @@ def _detect_scale_mismatch(
 
     # 3. Read current Scale from basic effect
     basic_filter = clipitem.find("filter/effect/[effectid='basic']")
+    if basic_filter is not None and basic_filter.findall(".//keyframe"):
+        return None
     current_scale = 100.0  # Default when no basic effect exists
     if basic_filter is not None:
         scale_param = basic_filter.find("parameter/[name='Scale']")
@@ -960,6 +962,7 @@ def _create_basic_effect(scale: float) -> ET.Element:
     param = ET.SubElement(eff, "parameter")
     pname = ET.SubElement(param, "name")
     pname.text = "Scale"
+    ET.SubElement(param, "parameterid").text = "scale"
     pval = ET.SubElement(param, "value")
     pval.text = str(scale)
 
@@ -967,6 +970,7 @@ def _create_basic_effect(scale: float) -> ET.Element:
     param2 = ET.SubElement(eff, "parameter")
     pname2 = ET.SubElement(param2, "name")
     pname2.text = "Rotation"
+    ET.SubElement(param2, "parameterid").text = "rotation"
     pval2 = ET.SubElement(param2, "value")
     pval2.text = "0"
 
@@ -1314,6 +1318,40 @@ def _generate_report(
                 "",
             ]
 
+            animated = sum(clip.find(".//keyframe") is not None for clip in seq.iter("clipitem"))
+            retimed = sum(
+                (parameter.findtext("value") or "100") not in ("100", "100.0")
+                for effect in seq.findall(".//filter/effect") if effect.findtext("effectid") == "timeremap"
+                for parameter in effect.findall("parameter") if parameter.findtext("parameterid") == "speed"
+            )
+            lines += [
+                "## Conversion fidelity",
+                "",
+                "Structural validation does not verify Resolve import, rendered frames, or audio playback.",
+                "",
+                f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
+                f"- Retimed clips: {retimed}. Native forward constant-speed video uses a Resolve 21 time map; native audio retiming, reverse and variable speed are unsupported.",
+                f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
+                "- Native Lumetri, marker, track mute/lock and source start-timecode application are not verified. The XML state records are not proof of native application.",
+                "",
+            ]
+            source_records: list[dict[str, Any]] = []
+            for comment in root:
+                if comment.tag is not ET.Comment or not (comment.text or "").strip().startswith("pr2resolve-timeline-state:"):
+                    continue
+                state = json.loads(base64.b64decode(comment.text.strip().split(":", 1)[1]).decode("utf-8"))
+                source_records.extend(json.loads(raw) for key, raw in state.get("unknown", [])
+                                      if key.startswith("unconverted-source:"))
+            if source_records:
+                lines += ["### Source features requiring conversion", "",
+                          "These records were captured from the Premiere graph before XML normalization. Native export rejects them; raw records remain in the XML comment.", ""]
+                for record in source_records:
+                    identity = str(record.get("clip_name") or record.get("track_uid") or "sequence").replace("\n", " ")
+                    feature = record.get("match_name") or record.get("kind")
+                    representation = record.get("representation") or "not represented by FCP7 conversion"
+                    lines.append(f"- {identity}: {feature} ({representation})")
+                lines.append("")
+
     # Issues by severity with root cause hints
     for severity in [CRITICAL, MAJOR, MINOR]:
         sev_issues = [i for i in scan_issues if i.severity == severity]
@@ -1341,7 +1379,7 @@ def _generate_report(
     else:
         lines.append("## Validation")
         lines.append("")
-        lines.append("All 23 validation checks passed.")
+        lines.append("Structural XML checks passed. Resolve import/rendering is not verified.")
         lines.append("")
 
     # Footer
@@ -1851,7 +1889,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
                 if "PreviewFrameSizeHeight" in p.tag:
                     h = int(p.text or "0")
 
-        # Count clips in first video track
+        # Count every clip item across video and audio tracks.
         clip_count = 0
         tg_section = seq_el.find("TrackGroups")
         if tg_section is not None:
@@ -1860,18 +1898,16 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
                 if second is not None:
                     ref = second.get("ObjectRef")
                     tg_el = idx.resolve_ref(ref) if ref else None
-                    if tg_el is not None and tg_el.tag == "VideoTrackGroup":
+                    if tg_el is not None and tg_el.tag in ("VideoTrackGroup", "AudioTrackGroup"):
                         tracks = tg_el.find(".//Tracks")
                         if tracks is not None:
-                            first_track = tracks.find("Track")
-                            if first_track is not None:
-                                uref = first_track.get("ObjectURef")
+                            for track_ref in tracks.findall("Track"):
+                                uref = track_ref.get("ObjectURef")
                                 track_el = idx.resolve_uref(uref) if uref else None
                                 if track_el is not None:
                                     items = track_el.find(".//TrackItems")
                                     if items is not None:
-                                        clip_count = len(items.findall("TrackItem"))
-                        break
+                                        clip_count += len(items.findall("TrackItem"))
 
         sequences.append({
             "uid": uid,
@@ -2218,7 +2254,7 @@ def _extract_clip(
     fps: float,
     *,
     is_audio: bool = False,
-) -> ClipData:
+) -> tuple[ClipData, dict[str, Any]]:
     """Extract ClipData from a .prproj ClipTrackItem chain.
 
     All external dependencies are explicit parameters (no closure capture).
@@ -2230,13 +2266,15 @@ def _extract_clip(
     media_id = ""
     in_point = 0
     out_point = 0
-    playback_speed = 100
+    playback_speed = 100.0
     source_tc = _SourceTCInfo()
     src_w, src_h = default_w, default_h
     scale_val = 100.0
     rotation_val = 0.0
     label_name = ""
     label_raw_color = ""
+    motion: dict[str, Any] = {"center": [0.0, 0.0], "centerOffset": [0.0, 0.0], "keyframes": {}}
+    source_unsupported: list[dict[str, Any]] = []
 
     # Timeline position
     ti_inner = cti.find("TrackItem")
@@ -2308,45 +2346,176 @@ def _extract_clip(
                     if ps:
                         try:
                             raw_speed = float(ps)
-                            playback_speed = int(round(raw_speed * 100 if abs(raw_speed) <= 10 else raw_speed))
+                            playback_speed = raw_speed * 100 if abs(raw_speed) <= 10 else raw_speed
                         except ValueError:
                             pass
 
-    # Motion data
-    co = cti.find("ComponentOwner")
-    if co is not None:
-        comps = co.find("Components")
-        if comps is not None:
-            chain = idx.resolve_ref(comps.get("ObjectRef", ""))
-            if chain is not None and chain.findtext("DefaultMotion") == "false":
-                chain_comps = chain.find("Components")
-                if chain_comps is not None:
-                    for c in chain_comps.findall("Component"):
-                        c_el = idx.resolve_ref(c.get("ObjectRef", ""))
-                        if c_el is None:
+    def _motion_value(raw: str) -> float | list[float] | None:
+        parts = raw.strip().split(":")
+        try:
+            values = [float(part) for part in parts]
+        except ValueError:
+            return None
+        return values[0] if len(values) == 1 else values[:2]
+
+    def _map_motion_point(target: str, value: float | list[float]) -> float | list[float]:
+        if target not in ("center", "centerOffset") or not isinstance(value, list) or len(value) < 2:
+            return value
+        return [value[0] - 0.5, value[1] - 0.5]
+
+    def _parameter_record(param: ET.Element) -> dict[str, str | bool]:
+        return {
+            "parameter_id": param.findtext("ParameterID", ""),
+            "name": param.findtext("Name", ""),
+            "start_keyframe": param.findtext("StartKeyframe", ""),
+            "keyframes": param.findtext("Keyframes", ""),
+            "is_time_varying": param.findtext("IsTimeVarying", "false").lower() == "true",
+            "xml": ET.tostring(param, encoding="unicode"),
+        }
+
+    def _start_value(param: ET.Element) -> str:
+        parts = (param.findtext("StartKeyframe", "") or "").split(",")
+        return parts[1].strip() if len(parts) > 1 else ""
+
+    def _matches_default(raw: str, default: str) -> bool:
+        if default in ("true", "false"):
+            return raw.strip().lower() == default
+        try:
+            return math.isclose(float(raw), float(default), rel_tol=0.0, abs_tol=1e-9)
+        except ValueError:
+            return False
+
+    # Premiere stores Motion names in the project UI language; ParameterID is stable.
+    if not is_audio:
+        co = cti.find("ComponentOwner")
+        comps = co.find("Components") if co is not None else None
+        chain = idx.resolve_ref(comps.get("ObjectRef", "")) if comps is not None else None
+        chain_comps = chain.find("Components") if chain is not None else None
+        if chain_comps is None and chain is not None:
+            chain_comps = chain.find("ComponentChain/Components")
+        if chain_comps is not None:
+            for component_ref in chain_comps.findall("Component"):
+                component = idx.resolve_ref(component_ref.get("ObjectRef", ""))
+                if component is None:
+                    continue
+                match_name = component.findtext("MatchName", "")
+                normalized_match = match_name.lower()
+                params_section = component.find(".//Params")
+                params = [
+                    resolved for ref in (params_section.findall("Param") if params_section is not None else [])
+                    if (resolved := idx.resolve_ref(ref.get("ObjectRef", ""))) is not None
+                ]
+                if "adbe motion" in normalized_match:
+                    unrepresented: list[dict[str, str | bool]] = []
+                    motion_defaults = {"3": "100", "4": "true", "7": "0", "8": "0", "9": "0", "10": "0", "11": "0"}
+                    for p_el in params:
+                        parameter_id = p_el.findtext("ParameterID", "")
+                        target = {"1": "center", "2": "scale", "5": "rotation", "6": "centerOffset"}.get(parameter_id)
+                        raw_keyframes = p_el.findtext("Keyframes", "") or ""
+                        is_time_varying = p_el.findtext("IsTimeVarying", "false").lower() == "true"
+                        if target is None:
+                            default = motion_defaults.get(parameter_id)
+                            start_value = _start_value(p_el)
+                            if (raw_keyframes or is_time_varying or
+                                    (default is not None and start_value and not _matches_default(start_value, default))):
+                                unrepresented.append(_parameter_record(p_el))
                             continue
-                        inner_c = c_el.find(".//Params")
-                        if inner_c is None:
-                            continue
-                        for p_ref in inner_c.findall("Param"):
-                            p_el = idx.resolve_ref(p_ref.get("ObjectRef", ""))
-                            if p_el is None:
-                                continue
-                            pname = p_el.findtext("Name", "")
-                            sk = p_el.findtext("StartKeyframe", "")
-                            if not pname or not sk:
-                                continue
-                            parts = sk.split(",")
-                            if len(parts) < 2:
+                        value = _motion_value(_start_value(p_el))
+                        if value is not None:
+                            if target == "scale" and isinstance(value, float):
+                                scale_val = value
+                            elif target == "rotation" and isinstance(value, float):
+                                rotation_val = value
+                            else:
+                                motion[target] = _map_motion_point(target, value)
+                        points: list[dict[str, Any]] = []
+                        for raw_point in raw_keyframes.split(";"):
+                            fields = raw_point.split(",")
+                            if len(fields) < 2:
                                 continue
                             try:
-                                val = float(parts[1])
+                                ticks = int(fields[0])
                             except ValueError:
                                 continue
-                            if pname == "Scale":
-                                scale_val = val
-                            elif pname == "Rotation":
-                                rotation_val = val
+                            point_value = _motion_value(fields[1])
+                            if point_value is None:
+                                continue
+                            points.append({
+                                "when": _prproj_ticks_to_frames(str(ticks), fps),
+                                "value": _map_motion_point(target, point_value),
+                            })
+                        if points:
+                            motion["keyframes"][target] = points
+                            motion.setdefault("source_keyframes", {})[target] = {
+                                "parameter_id": parameter_id,
+                                "start_keyframe": p_el.findtext("StartKeyframe", ""),
+                                "keyframes": raw_keyframes,
+                            }
+                    if unrepresented:
+                        source_unsupported.append({
+                            "kind": "non-default-motion-properties",
+                            "match_name": match_name,
+                            "component_id": component.get("ObjectID", ""),
+                            "component_class_id": component.get("ClassID", ""),
+                            "parameters": unrepresented,
+                        })
+                    continue
+                if "lumetri" in normalized_match:
+                    continue
+                if "adbe opacity" in normalized_match:
+                    opacity_param = next((p for p in params if p.findtext("ParameterID", "") == "1"), None)
+                    opacity_value = _start_value(opacity_param) if opacity_param is not None else ""
+                    if opacity_value:
+                        try:
+                            motion["opacity"] = float(opacity_value)
+                        except ValueError:
+                            pass
+                    opacity_defaults = {"1": "100", "2": "18", "3": "0"}
+                    nondefault = any(
+                        p.findtext("Keyframes", "")
+                        or p.findtext("IsTimeVarying", "false").lower() == "true"
+                        or (p.findtext("ParameterID", "") in opacity_defaults
+                            and _start_value(p)
+                            and not _matches_default(_start_value(p), opacity_defaults[p.findtext("ParameterID", "")]))
+                        for p in params
+                    )
+                    if nondefault:
+                        animated = any(
+                            p.findtext("Keyframes", "")
+                            or p.findtext("IsTimeVarying", "false").lower() == "true"
+                            for p in params
+                        )
+                        extra_fields_changed = any(
+                            p.findtext("ParameterID", "") in {"2", "3"}
+                            and _start_value(p)
+                            and not _matches_default(
+                                _start_value(p), opacity_defaults[p.findtext("ParameterID", "")]
+                            )
+                            for p in params
+                        )
+                        source_unsupported.append({
+                            "kind": "video-effect",
+                            "match_name": match_name,
+                            "component_id": component.get("ObjectID", ""),
+                            "component_class_id": component.get("ClassID", ""),
+                            "representation": (
+                                "FCP7 initial opacity value only" if animated
+                                else "FCP7 opacity value; additional fields unsupported" if extra_fields_changed
+                                else "FCP7 static opacity value"
+                            ),
+                            "parameters": [_parameter_record(p) for p in params],
+                        })
+                    continue
+                source_unsupported.append({
+                    "kind": "unconverted-video-component",
+                    "match_name": match_name,
+                    "component_id": component.get("ObjectID", ""),
+                    "component_class_id": component.get("ClassID", ""),
+                    "parameters": [_parameter_record(p) for p in params],
+                })
+
+    if source_unsupported:
+        motion["source_unsupported"] = source_unsupported
 
     return ClipData(
         name=mc_name, media_path=media_path, media_id=media_id,
@@ -2354,7 +2523,7 @@ def _extract_clip(
         playback_speed=playback_speed, source_tc=source_tc,
         source_w=src_w, source_h=src_h, scale=scale_val, rotation=rotation_val,
         label_name=label_name, label_raw_color=label_raw_color,
-    )
+    ), motion
 
 
 def _prproj_parse_sequence(
@@ -2438,8 +2607,40 @@ def _prproj_parse_sequence(
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
     timeline_state = _prproj_extract_timeline_state(seq_el, idx, fps)
+    if tg_section is not None:
+        for group_index, group_ref in enumerate(tg_section.findall("TrackGroup"), 1):
+            second = group_ref.find("Second")
+            group = idx.resolve_ref(second.get("ObjectRef", "")) if second is not None else None
+            if group is None or not ("Data" in group.tag or "Caption" in group.tag):
+                continue
+            tracks = group.find(".//Tracks")
+            for track_index, track_ref in enumerate(tracks.findall("Track") if tracks is not None else [], 1):
+                track_uid = track_ref.get("ObjectURef", "")
+                track = idx.resolve_uref(track_uid) if track_uid else None
+                items_section = track.find(".//TrackItems") if track is not None else None
+                item_refs = items_section.findall("TrackItem") if items_section is not None else []
+                raw_items = []
+                for item_ref in item_refs:
+                    item = idx.resolve_ref(item_ref.get("ObjectRef", ""))
+                    if item is not None:
+                        raw_items.append({
+                            "object_id": item.get("ObjectID", ""),
+                            "type": item.tag,
+                            "xml": ET.tostring(item, encoding="unicode"),
+                        })
+                if raw_items:
+                    timeline_state.unknown.append((
+                        f"unconverted-source:track-data:{sequence_uid}:{group_index}:{track_index}",
+                        json.dumps({
+                            "kind": "unconverted-data-track",
+                            "track_group": group.tag,
+                            "track_type": track.tag if track is not None else "",
+                            "track_uid": track_uid,
+                            "items": raw_items,
+                        }, ensure_ascii=False, sort_keys=True),
+                    ))
 
-    def _render_sequence_skeleton(seq_name: str, timebase: int, is_ntsc: bool):
+    def _render_sequence_skeleton(seq_name: str, timebase: int, is_ntsc: bool) -> tuple[ET.Element, ET.Element, ET.Element, ET.Element]:
         """Build DC-format sequence skeleton. Returns (xmeml, dur_elem, video_et, audio_et)."""
         xmeml = ET.Element("xmeml")
         xmeml.set("version", FCP7_VERSION)
@@ -2475,6 +2676,7 @@ def _prproj_parse_sequence(
     xmeml, dur_elem, video_section, audio_section = _render_sequence_skeleton(seq_name, timebase, is_ntsc)
     fcp_sequence = xmeml.find("sequence")
     if fcp_sequence is not None:
+        fcp_sequence.set("id", sequence_uid)
         fcp_sequence.find("in").text = str(timeline_state.in_frame if timeline_state.in_frame is not None else -1)
         fcp_sequence.find("out").text = str(timeline_state.out_frame if timeline_state.out_frame is not None else -1)
 
@@ -2529,7 +2731,7 @@ def _prproj_parse_sequence(
         return fe
 
     # ─── Helper: build DC-format filters ────────────────────────────
-    def _render_filters(ci: ET.Element, specs: list[FilterSpec]) -> None:
+    def _render_filters(ci: ET.Element, specs: list[FilterSpec], motion_data: dict[str, Any] | None = None) -> None:
         """Render a list of FilterSpec objects into <filter> ET elements."""
         for spec in specs:
             filt = ET.SubElement(ci, "filter")
@@ -2544,17 +2746,32 @@ def _prproj_parse_sequence(
                 param = ET.SubElement(eff, "parameter")
                 ET.SubElement(param, "name").text = p.name
                 ET.SubElement(param, "parameterid").text = p.parameterid
-                if p.is_composite:
-                    cv = ET.SubElement(param, "value")
-                    ET.SubElement(cv, "horiz").text = "0"
-                    ET.SubElement(cv, "vert").text = "0"
-                else:
-                    ET.SubElement(param, "value").text = p.value
+                points = (motion_data or {}).get("keyframes", {}).get(p.parameterid, [])
+                if not points:
+                    if p.is_composite:
+                        cv = ET.SubElement(param, "value")
+                        composite = (motion_data or {}).get(p.parameterid, [0.0, 0.0])
+                        ET.SubElement(cv, "horiz").text = str(composite[0])
+                        ET.SubElement(cv, "vert").text = str(composite[1])
+                    else:
+                        ET.SubElement(param, "value").text = p.value
                 if p.valuemin:
                     ET.SubElement(param, "valuemin").text = p.valuemin
                     ET.SubElement(param, "valuemax").text = p.valuemax
+                for point in points:
+                    keyframe = ET.SubElement(param, "keyframe")
+                    ET.SubElement(keyframe, "when").text = str(point["when"])
+                    if p.is_composite:
+                        value = ET.SubElement(keyframe, "value")
+                        point_value = point["value"]
+                        ET.SubElement(value, "horiz").text = str(point_value[0] if isinstance(point_value, list) else point_value)
+                        ET.SubElement(value, "vert").text = str(point_value[1] if isinstance(point_value, list) else point_value)
+                    else:
+                        ET.SubElement(keyframe, "value").text = str(point["value"])
+                    interpolation = ET.SubElement(keyframe, "interpolation")
+                    ET.SubElement(interpolation, "name").text = "linear"
 
-    def _build_video_filters(dur: int, scale: float, rotation: float, speed: int) -> list[FilterSpec]:
+    def _build_video_filters(dur: int, scale: float, rotation: float, speed: float, opacity: float) -> list[FilterSpec]:
         """Build video filter specs from clip data. Pure data, no ET."""
         dur_s = str(dur)
         return [
@@ -2571,7 +2788,7 @@ def _prproj_parse_sequence(
                        params=[FilterParam(p, p, "0", "0", "100") for p in ("left", "right", "top", "bottom")]),
             FilterSpec(effect_id="opacity", name="Opacity", effect_type="motion",
                        media_type="video", effect_category="motion", start="0", end=dur_s,
-                       params=[FilterParam("opacity", "opacity", "100", "0", "100")]),
+                       params=[FilterParam("opacity", "opacity", str(opacity), "0", "100")]),
             FilterSpec(effect_id="timeremap", name="Time Remap", effect_type="motion",
                        media_type="video", effect_category="motion", start="-1", end="-1",
                        params=[
@@ -2582,7 +2799,7 @@ def _prproj_parse_sequence(
                        ]),
         ]
 
-    def _build_audio_filters(dur: int, speed: int) -> list[FilterSpec]:
+    def _build_audio_filters(dur: int, speed: float) -> list[FilterSpec]:
         """Build audio filter specs. Pure data, no ET."""
         dur_s = str(dur)
         specs = []
@@ -2638,6 +2855,7 @@ def _prproj_parse_sequence(
         *,
         track_index: int = 0,
         is_shared_file: bool = False,
+        motion_data: dict[str, Any] | None = None,
     ) -> ET.Element:
         """Build a DC-format <clipitem> from data. No side effects."""
         ci = ET.Element("clipitem")
@@ -2660,7 +2878,23 @@ def _prproj_parse_sequence(
             ci.append(_render_file(fd))
         if mediatype == "video":
             ET.SubElement(ci, "compositemode").text = "normal"
-            _render_filters(ci, _build_video_filters(clip_dur, cl.scale, cl.rotation, cl.playback_speed))
+            opacity = float((motion_data or {}).get("opacity", 100.0))
+            _render_filters(ci, _build_video_filters(clip_dur, cl.scale, cl.rotation, cl.playback_speed, opacity), motion_data)
+            source_keyframes = (motion_data or {}).get("source_keyframes", {})
+            if source_keyframes:
+                timeline_state.unknown.append((f"clip-motion:{ci_id}", json.dumps({
+                    "name": cl.name, "start": start_frame, "end": start_frame + clip_dur,
+                    "parameter_keyframes": source_keyframes,
+                    "interpolation_note": "FCP7 keyframes are emitted as linear; original Premiere records are retained here.",
+                }, ensure_ascii=False, sort_keys=True)))
+            for index, record in enumerate((motion_data or {}).get("source_unsupported", []), 1):
+                timeline_state.unknown.append((f"unconverted-source:{ci_id}:{index}", json.dumps({
+                    "clip_id": ci_id,
+                    "clip_name": cl.name,
+                    "start": start_frame,
+                    "end": start_frame + clip_dur,
+                    **record,
+                }, ensure_ascii=False, sort_keys=True)))
         else:
             st_el = ET.SubElement(ci, "sourcetrack")
             ET.SubElement(st_el, "mediatype").text = "audio"
@@ -2711,7 +2945,7 @@ def _prproj_parse_sequence(
                     cti = ti_el.find("ClipTrackItem")
                     if cti is None:
                         continue
-                    cl = _extract_clip(cti, idx, prproj_root, w, h, fps)
+                    cl, motion_data = _extract_clip(cti, idx, prproj_root, w, h, fps)
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
                     # Duration follows sequence-rate timeline coordinates; in/out remain source-rate.
@@ -2730,7 +2964,7 @@ def _prproj_parse_sequence(
                     if ti_el.get("ObjectID"):
                         _clipitem_by_track_item[ti_el.get("ObjectID", "")] = LinkMember(
                             clipitem_id=ci_id, mediatype="video", track_index=vt_idx, clip_index=vc_idx)
-                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video", track_index=fcp_track_index)
+                    ci = _render_clipitem(cl, fd, clip_dur, start, ci_id, "video", track_index=fcp_track_index, motion_data=motion_data)
                     fcp_track.append(ci)
 
                 ET.SubElement(fcp_track, "enabled").text = "TRUE" if track_data.enabled else "FALSE"
@@ -2771,7 +3005,7 @@ def _prproj_parse_sequence(
                     a_cti = a_ti_el.find("ClipTrackItem")
                     if a_cti is None:
                         continue
-                    cl = _extract_clip(a_cti, idx, prproj_root, w, h, fps, is_audio=True)
+                    cl, _ = _extract_clip(a_cti, idx, prproj_root, w, h, fps, is_audio=True)
                     start = cl.start
                     total_frames = max(total_frames, cl.end)
                     clip_dur = max(cl.end - start, 0)
@@ -3563,23 +3797,68 @@ def _prproj_get_bin_structure(prproj_root: ET.Element) -> list[str]:
     return bins
 
 
-def _prproj_get_bin_members(prproj_root: ET.Element) -> list[tuple[str, list[str]]]:
-    """Return top-level Premiere bins with their directly owned item names."""
+def _prproj_get_bin_members(prproj_root: ET.Element) -> list[ProjectBin]:
+    """Return bins with direct media/sequence identities and parent links."""
     idx = _PrprojIndex.build(prproj_root)
-    result: list[tuple[str, list[str]]] = []
-    for bin_el in prproj_root.findall("BinProjectItem"):
-        name = bin_el.findtext("ProjectItem/Name") or bin_el.findtext("Name") or ""
-        if not name:
+    bin_elements = prproj_root.findall("BinProjectItem")
+
+    def _resolve_item(item: ET.Element) -> ET.Element | None:
+        uref = item.get("ObjectURef")
+        if uref:
+            return idx.resolve_uref(uref)
+        ref = item.get("ObjectRef")
+        return idx.resolve_ref(ref) if ref else None
+
+    parent_by_uid: dict[str, str] = {}
+    for parent in bin_elements:
+        parent_uid = parent.get("ObjectUID", "")
+        if not parent_uid:
             continue
-        members = []
+        for item in parent.findall("ProjectItemContainer/Items/Item"):
+            child = _resolve_item(item)
+            child_uid = child.get("ObjectUID", "") if child is not None else ""
+            if child is not None and child.tag == "BinProjectItem" and child_uid:
+                parent_by_uid[child_uid] = parent_uid
+
+    result: list[ProjectBin] = []
+    for bin_el in bin_elements:
+        uid = bin_el.get("ObjectUID", "")
+        name = bin_el.findtext("ProjectItem/Name") or bin_el.findtext("Name") or ""
+        if not uid or not name:
+            continue
+        project_bin = ProjectBin(uid=uid, name=name, parent_uid=parent_by_uid.get(uid))
         for item in bin_el.findall("ProjectItemContainer/Items/Item"):
-            target = idx.resolve_uref(item.get("ObjectURef", ""))
-            if target is None:
+            target = _resolve_item(item)
+            if target is None or target.tag != "ClipProjectItem":
                 continue
-            member_name = target.findtext("ProjectItem/Name") or target.findtext("Name") or ""
-            if member_name:
-                members.append(member_name)
-        result.append((name, members))
+            master_ref = target.find("MasterClip")
+            master = idx.resolve_uref(master_ref.get("ObjectURef", "")) if master_ref is not None else None
+            if master is None and master_ref is not None and master_ref.get("ObjectRef"):
+                master = idx.resolve_ref(master_ref.get("ObjectRef", ""))
+            if master is None:
+                continue
+            for clip_ref in master.findall("Clips/Clip"):
+                clip = idx.resolve_ref(clip_ref.get("ObjectRef", ""))
+                if clip is None:
+                    continue
+                inner = clip.find("Clip")
+                source_ref = inner.find("Source") if inner is not None else None
+                source = idx.resolve_ref(source_ref.get("ObjectRef", "")) if source_ref is not None else None
+                if source is None:
+                    continue
+                sequence_ref = source.find("SequenceSource/Sequence")
+                if sequence_ref is not None:
+                    sequence = idx.resolve_uref(sequence_ref.get("ObjectURef", ""))
+                    if sequence is None and sequence_ref.get("ObjectRef"):
+                        sequence = idx.resolve_ref(sequence_ref.get("ObjectRef", ""))
+                    sequence_uid = sequence.get("ObjectUID", "") if sequence is not None else ""
+                    if sequence_uid and sequence_uid not in project_bin.sequence_uids:
+                        project_bin.sequence_uids.append(sequence_uid)
+                    continue
+                media_path, _, _ = _prproj_find_media_for_clip(clip, idx)
+                if media_path and media_path not in project_bin.media_paths:
+                    project_bin.media_paths.append(media_path)
+        result.append(project_bin)
     return result
 
 

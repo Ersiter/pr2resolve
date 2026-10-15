@@ -39,7 +39,7 @@ from pr2_engine import (
 )
 
 # ── Native DRP writer ─────────────────────────────────────────────
-from pr2_native import export_native_drp
+from pr2_native import export_native_drp, _timeline_state_manifest
 
 # ── Recycle utility (also lives in pr2_engine, re-export for convenience) ──
 
@@ -336,6 +336,9 @@ def _run_pipeline(
     if native_drp is not None:
         native_drp = _next_available_path(native_drp)
     native_outputs: list[Path] = []
+    batch_roots: list[ET.Element] = []
+    batch_xml_paths: list[Path] = []
+    batch_drt_count = 0
     # output_path / report_path deferred — computed from sequence name after parsing
 
     # Load
@@ -378,31 +381,41 @@ def _run_pipeline(
             selected = selected_seqs[0]  # primary sequence for display/single-mode
             seq_name = selected["name"]
 
+            if diagnose_only and len(selected_seqs) > 1:
+                for selected_sequence in selected_seqs:
+                    fcp = _prproj_parse_sequence(prproj_root, selected_sequence["uid"], input_path)
+                    print(f"  Sequence: {selected_sequence['name']}")
+                    _print_issues(_scan(fcp))
+                print("  Diagnose-only mode. No conversion outputs written.")
+                return 0
+
             # ─ Batch mode (all or manual with >1 selection) ────────
             if len(selected_seqs) > 1:
                 print(f"  Batch mode ({export_mode}): exporting {len(selected_seqs)} sequences")
-                xml_paths: list[Path] = []
+                xml_paths = batch_xml_paths
                 seq_names: list[str] = []
-                need_batch_xml = drt or report or not (native_drp or drp_path or drp_gui)
+                need_batch_xml = drt or not no_xml
                 for s in selected_seqs:
                     fcp = _prproj_parse_sequence(prproj_root, s["uid"], input_path)
-                    tmp_xml = output_dir / _make_output_name(s["name"], add_suffix=not no_suffix)
+                    tmp_xml = _next_available_path(output_dir / _make_output_name(s["name"], add_suffix=not no_suffix))
                     # Scan + fix + write (single write after fix pass)
                     issues = _scan(fcp)
                     _apply_fixes(fcp, issues)
+                    batch_roots.append(fcp)
                     if need_batch_xml:
                         _write_fixed_xml(fcp, tmp_xml)
                         xml_paths.append(tmp_xml)
                     seq_names.append(s["name"])
                     print(f"    {s['name'][:30]}: {s['clip_count']} clips, {len(issues)} issues")
+                    unconverted = sum(key.startswith("unconverted-source:") for key, _ in _timeline_state_manifest(fcp).get("unknown", []))
+                    if unconverted:
+                        print(f"      Warning: {unconverted} source feature records are not fully converted; use --report for details.")
 
                     # Per-sequence report
                     if report:
-                        rpt_path = output_dir / f"{Path(_make_output_name(s['name'], add_suffix=not no_suffix)).stem}_fix_report.md"
+                        rpt_path = _next_available_path(output_dir / f"{tmp_xml.stem}_fix_report.md")
                         _generate_report(issues, _validate(fcp), len([i for i in issues if i.fixed]),
-                                         input_path, tmp_xml, rpt_path, fcp)
-
-                ran_drt = False
+                                         input_path, native_drp if no_xml and native_drp else tmp_xml, rpt_path, fcp)
 
                 # DRT (uses selected sequences per Mode setting)
                 if drt:
@@ -410,15 +423,15 @@ def _run_pipeline(
                     if resolve:
                         batch_grades = [_prproj_extract_all_lumetri(prproj_root, s["uid"]) for s in selected_seqs]
                         results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names, batch_grades)
-                        ok = sum(1 for r in results if r[0])
-                        print(f"  Batch DRT: {ok}/{len(results)} exported")
-                        ran_drt = True
+                        batch_drt_count = sum(1 for r in results if r[0])
+                        print(f"  Batch DRT: {batch_drt_count}/{len(results)} exported")
                     else:
                         print("  DRT skipped: DaVinci not available")
 
                 # Cleanup temp XMLs (DRT consumed them)
-                for tmp in xml_paths:
-                    tmp.unlink(missing_ok=True)
+                if no_xml:
+                    for tmp in xml_paths:
+                        tmp.unlink(missing_ok=True)
                 # Fall through to DRP + cleanup below
             # ─ End batch mode ──────────────────────────────────
 
@@ -435,7 +448,7 @@ def _run_pipeline(
                     print(f"  Lumetri controls: {_lumetri_conversion_summary(lumetri_data)}")
             else:
                 # Batch mode already converted — use first selected for display
-                root = _prproj_parse_sequence(prproj_root, selected["uid"], input_path)
+                root = batch_roots[0]
                 lumetri_data: list[LumetriGrade] = []
         else:
             root = load_xml(input_path)
@@ -448,12 +461,18 @@ def _run_pipeline(
     seq = root.find("sequence")
     seq_name = seq.findtext("name", "(unnamed)") if seq is not None else "(no sequence)"
     print(f"  Sequence: {seq_name}")
+    if not batch_roots:
+        unconverted = sum(key.startswith("unconverted-source:") for key, _ in _timeline_state_manifest(root).get("unknown", []))
+        if unconverted:
+            print(f"  Warning: {unconverted} source feature records are not fully converted; use --report for details.")
+    if root.find(".//keyframe") is not None:
+        print("  Motion/keyframe interpolation requires visual verification; Premiere curves use a linear approximation.")
     print()
 
     # Build output filename from sequence name
     output_name = _make_output_name(seq_name, add_suffix=not no_suffix)
-    output_path = output_dir / output_name
-    report_path = output_dir / f"{Path(output_name).stem}_fix_report.md"
+    output_path = batch_xml_paths[0] if batch_xml_paths else _next_available_path(output_dir / output_name)
+    report_path = _next_available_path(output_dir / f"{output_path.stem}_fix_report.md")
 
     # Diagnose
     print("  Scanning for issues...")
@@ -486,22 +505,21 @@ def _run_pipeline(
         for vi in validation_issues:
             print(f"    [{vi.rule_id}] {vi.message}")
     else:
-        print("  All 23 validation checks passed.")
+        print("  Structural XML checks passed. Resolve import/rendering is not verified.")
     print()
 
+    if report and not batch_roots:
+        _generate_report(scan_issues, validation_issues, fix_count, input_path,
+                         native_drp if no_xml and native_drp else output_path, report_path, root)
+        print(f"  Report: {report_path}")
+
     if native_drp:
-        print(f"  Native DRP (pure data / no Resolve required): {native_drp}")
+        print(f"  Native DRP (experimental Resolve 21 / offline): {native_drp}")
         try:
             native_project_name = Path(_make_output_name(stem, add_suffix=not no_suffix)).stem
             if prproj_root is not None:
-                native_sequences = []
-                native_grade_sets = []
-                for selected_sequence in selected_seqs:
-                    fcp = _prproj_parse_sequence(prproj_root, selected_sequence["uid"], input_path)
-                    issues_s = _scan(fcp)
-                    _apply_fixes(fcp, issues_s)
-                    native_sequences.append(fcp)
-                    native_grade_sets.append(_prproj_extract_all_lumetri(prproj_root, selected_sequence["uid"]))
+                native_sequences = batch_roots or [root]
+                native_grade_sets = [_prproj_extract_all_lumetri(prproj_root, s["uid"]) for s in selected_seqs]
                 native_grades = native_grade_sets
                 if native_grades:
                     print(f"  Native DRP: {sum(len(grades) for grades in native_grade_sets)} Lumetri grades detected; native grade not applied")
@@ -526,17 +544,12 @@ def _run_pipeline(
             return 1
 
     # Write intermediate XML — always needed for DRP/DRT (DaVinci imports from file)
-    xml_written = False
+    xml_written = bool(batch_xml_paths and not no_xml)
     needs_intermediate = drt or drp_path or drp_gui
-    if (not no_xml and not (drp_path or drp_gui)) or drt:
+    if not batch_roots and (not no_xml or drt):
         print(f"  Writing: {output_path}")
         _write_fixed_xml(root, output_path)
         xml_written = output_path.exists()
-
-    # Report
-    if report and not no_xml:
-        _generate_report(scan_issues, validation_issues, fix_count, input_path, output_path, report_path, root)
-        print(f"  Report: {report_path}")
 
     # DRP — project export always includes every non-empty sequence.
     # Generate XML for all non-empty sequences if not already in batch mode
@@ -588,7 +601,7 @@ def _run_pipeline(
 
     # DRT output — second (can reuse GUI instance opened by DRP)
     drt_path: Path = output_dir / "drt_default.drt"  # Pylance guard: re-assigned below if drt=True
-    if drt:
+    if drt and not batch_roots:
         print()
         drt_path = _next_available_path(output_dir / f"{Path(output_name).stem}.drt")
         print("  DRT output requested. Checking DaVinci Resolve...")
@@ -658,8 +671,12 @@ def _run_pipeline(
             print(f"  Done. Native DRP: {native_outputs[0]}")
         else:
             print(f"  Done. Native DRP: {len(native_outputs)} files")
+    elif batch_xml_paths and xml_written:
+        print(f"  Done. XML: {len(batch_xml_paths)} files")
     elif xml_written:
         print(f"  Done. {fix_count} fixes applied to {output_path.name}")
+    elif drt and batch_roots:
+        print(f"  Done. DRT: {batch_drt_count}/{len(batch_roots)} timelines exported")
     elif drt:
         print(f"  Done. Output: {drt_path.name}")
     else:
@@ -671,7 +688,7 @@ def _run_pipeline(
         print(f"  (intermediate XML moved to recycle bin)")
 
     # Clean up: only kill headless (GUI stays open for DRP)
-    if not ran_drp:
+    if not ran_drp and (drt or drp_path or drp_gui):
         _shutdown_resolve()
 
     return 0

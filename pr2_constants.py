@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "1.5.3"
+VERSION = "1.6.0"
 DEFAULT_FPS = 30.0
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
@@ -95,7 +95,7 @@ class ClipData:
     end: int = 0                          # timeline end (ticks→frames)
     in_pt: int = 0                        # source in-point (Clip→InPoint)
     out_pt: int = 0                       # source out-point (Clip→OutPoint)
-    playback_speed: int = 100             # 100 = normal speed
+    playback_speed: float = 100.0         # 100 = normal speed
     source_tc: Optional["_SourceTCInfo"] = None
     source_w: int = 0                     # Media→VideoStream→FrameRect width
     source_h: int = 0                     # Media→VideoStream→FrameRect height
@@ -122,6 +122,17 @@ class FileData:
     source_w: int = 0          # video width from source media
     source_h: int = 0          # video height from source media
     for_audio_only: bool = False
+
+
+@dataclass
+class ProjectBin:
+    """One Premiere bin and the directly owned media or sequence identities."""
+
+    uid: str
+    name: str
+    parent_uid: str | None = None
+    media_paths: list[str] = field(default_factory=list)
+    sequence_uids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -299,7 +310,7 @@ def _build_file_index(root: ET.Element) -> dict[str, ET.Element]:
     index: dict[str, ET.Element] = {}
     for file_elem in root.iter("file"):
         fid = file_elem.get("id")
-        if fid:
+        if fid and (fid not in index or file_elem.find("pathurl") is not None):
             index[fid] = file_elem
     return index
 
@@ -327,7 +338,7 @@ def _get_sequence_resolution(root: ET.Element) -> tuple[int, int]:
 
 def load_xml(path: Path) -> ET.Element:
     """Parse an FCP7 XML file."""
-    tree = ET.parse(str(path))
+    tree = ET.parse(str(path), parser=ET.XMLParser(target=ET.TreeBuilder(insert_comments=True)))
     root = tree.getroot()
     if root.tag != "xmeml":
         raise ValueError(f"Expected <xmeml> root, got <{root.tag}>")

@@ -2,6 +2,25 @@
 
 All notable changes to pr2resolve.
 
+## [v1.6.0] — 2026-10-15
+
+### Added
+- Source-driven Resolve 21 timeline rate, geometry, duration and project handle registration.
+- Parameter-generated static native Motion and forward constant-speed video maps, replacing captured sample profiles and identity maps on retimed clips.
+- Portable conversion regressions in CI and a documented native-format evidence/verification boundary.
+
+### Fixed
+- Sequence inventory includes every video and audio track, including audio-only timelines.
+- Fractional Premiere playback speeds retain their precision instead of rounding to whole percentages.
+- Premiere Motion uses stable ParameterIDs across UI languages. XML keeps animated points as a linear approximation, with original curves retained in timeline-state comments across save/load.
+- Nested media bins use source paths, sequence UIDs and parent links instead of ambiguous display names.
+- Native file references resolve regardless of definition order; cloned codec records receive distinct identities, and source metadata caches retain frame rate, geometry and source start frame.
+- Reports are generated independently of XML output and remain available when native export is rejected. Batch XML outputs are retained when requested; diagnose-only batch mode writes no conversion files.
+
+### Validation limits
+- Native DRP remains experimental: this release was tested without launching or controlling Resolve. Offline tests do not prove import, rendering, Fairlight audio routing or timeline-switch stability.
+- Native transform sizing assumes fit scaling. Animated Motion, unsupported effects, reverse/variable speed and audio retiming are not silently flattened into static native output.
+
 ## [v1.5.3] — 2026-09-17
 
 ### Fixed

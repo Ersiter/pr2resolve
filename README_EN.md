@@ -1,7 +1,8 @@
 <div align="center">
 
-> **Current Status: Stable**  
-> *v1.5.3 — native media-bin and multi-timeline stability fix*
+> **Current Status: Native DRP experimental**
+>
+> *v1.6.0 — source-driven timeline settings, Motion and time maps*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -85,9 +86,10 @@ python tui.py
 - **Release package users**: Python is not required.
 - **Source users**: Python 3.10+ is required. On Windows, check `Add Python to PATH` during installation.
 - **Pure-data `.prproj` conversion**: media paths, frame rates, timecode, duration, and resolution are read from the `.prproj` object graph, so source media may be offline or unavailable on the current machine.
-- **Native DRP without media scanning**: `.prproj` or XML can produce a native DRP directly, without starting Resolve or scanning media. Batch mode writes one DRP per sequence using the Resolve 21 template.
-- **Basic Motion preserved**: native DRP supports verified static Basic Motion rotation/scale profiles; animated or unverified non-default positions fail explicitly.
-- **Compatibility gate**: transitions, reverse or variable retimes, nested sequences, generators, and unsupported non-default video effects fail before export; constant forward speeds retain their source range mapping.
+- **Native DRP without media scanning**: automatic selection, `--sequence`, or `--all-sequences` writes the selected timelines into one native DRP without starting Resolve or scanning media. The template targets Resolve 21.
+- **Source-driven settings**: timeline rate, resolution, extent and registration follow source data. Media bins retain parent links and assign items by media path or sequence UID rather than display name.
+- **Motion and time maps**: stable ParameterIDs identify localized Motion controls. XML keeps keyframes with linear interpolation and retains the original Premiere curves in a comment. Native static transforms and forward constant-speed video are encoded from parameters instead of two captured profiles.
+- **Validation boundary**: this version passes offline structure and source-project regressions; Resolve import and audiovisual checks remain outstanding. Native zoom compensation assumes the template uses fit sizing; other input-scaling modes have not been verified. Native animated Motion, reverse/variable speed, audio retiming, non-default anchors, transitions, nested sequences and generators fail explicitly.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
 Verify source-mode setup:
@@ -138,6 +140,9 @@ python pr2resolve.py "project.prproj" --native-drp
 
 # Generate a fix report
 python pr2resolve.py "input.xml" --report
+
+# Native project and report without XML output
+python pr2resolve.py "project.prproj" --native-drp --all-sequences --no-xml --report
 
 # Diagnose only, don't fix
 python pr2resolve.py "input.xml" --diagnose-only
@@ -204,7 +209,7 @@ Three output formats:
 | `--drt` | flag | Generate DRT (requires DaVinci Studio) |
 | `--drp` | flag/path | Background DRP export (all non-empty sequences) |
 | `--drp-gui` | flag/path | Interactive DRP export (all non-empty sequences) |
-| `--native-drp` | flag/path | Pure-data native DRP (one project with every non-empty timeline; no Resolve required) |
+| `--native-drp` | flag/path | Pure-data native DRP (one project containing selected timelines; use --all-sequences for all non-empty timelines) |
 | `--all-sequences` | flag | Export all non-empty sequences from .prproj |
 | `--sequence` | str | Sequence name in .prproj |
 | `--no-suffix` | flag | Omit `_pr2resolve` suffix from output filename |
@@ -264,7 +269,10 @@ All rules apply automatically. They're not optional — skip them and the import
 4. **Import settings** — Uncheck "Use sizing information" to avoid double scaling.
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
 6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP detects them without claiming an equivalent conversion.
-7. **Color-space vocabularies differ** — Native DRP is live-verified for Rec.709, ACEScct, and Rec.2100 HLG project/timeline settings. API DRP also assigns known input spaces by media path.
+7. **Color-space vocabularies differ** — Native DRP maps Rec.709, ACEScct and Rec.2100 HLG configurations through its templates; HDR projects and input color spaces still need live verification. API DRP also assigns known input spaces by media path.
+8. **Native projects still need import verification** — offline registration, media-reference and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Visible application of markers, mute/lock and source start timecode remains unverified. `--report` works without XML output and generated reports remain available after an export is rejected.
+
+See [conversion implementation notes](NATIVE_FORMAT.md) for field evidence, industry references and the remaining acceptance checks.
 
 ---
 
