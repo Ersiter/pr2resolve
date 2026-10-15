@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CLI API failures and partial exports return nonzero and retain retryable XML, including with `--no-xml`. Successful DRT exports respect requested XML retention; successful DRP exports clean only their extra temporary XML copies when XML output is enabled. Export success and Resolve lifecycle handoff are tracked separately.
+
 - Caption/data-only sequences are included in non-empty selection and diagnosis. Audio/video clip counts remain separate from data item counts; unsupported data-track export still retains its source report.
 
 - API project/timeline color requests follow the source sequence UID, so duplicate display names no longer overwrite one another. The first selected sequence supplies the project defaults; media overrides come from selected sequences only. An undefined-variable color fallback has been removed. Actual color setting acceptance and native/API color parity remain unverified.

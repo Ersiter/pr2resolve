@@ -3297,7 +3297,6 @@ def _drt_batch_export(
                 print(f"    Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
             print(f"    DRT: {drt_path.name}")
             results.append((True, drt_path))
-            _recycle(xml_path)
         else:
             print(f"    Export FAILED")
             results.append((False, None))

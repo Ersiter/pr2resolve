@@ -341,6 +341,9 @@ def _run_pipeline(
     batch_roots: list[ET.Element] = []
     batch_xml_paths: list[Path] = []
     batch_drt_count = 0
+    api_export_failed = False
+    resolve_lifecycle_handed_off = False
+    drp_xml_paths: list[Path] = []
     # output_path / report_path deferred — computed from sequence name after parsing
 
     # Load
@@ -427,13 +430,11 @@ def _run_pipeline(
                         results = _drt_batch_export(resolve, xml_paths, output_dir, seq_names, batch_grades)
                         batch_drt_count = sum(1 for r in results if r[0])
                         print(f"  Batch DRT: {batch_drt_count}/{len(results)} exported")
+                        api_export_failed = batch_drt_count != len(selected_seqs)
                     else:
                         print("  DRT skipped: DaVinci not available")
+                        api_export_failed = True
 
-                # Cleanup temp XMLs (DRT consumed them)
-                if no_xml:
-                    for tmp in xml_paths:
-                        tmp.unlink(missing_ok=True)
                 # Fall through to DRP + cleanup below
             # ─ End batch mode ──────────────────────────────────
 
@@ -555,7 +556,7 @@ def _run_pipeline(
 
     # DRP — project export always includes every non-empty sequence.
     # Generate XML for all non-empty sequences if not already in batch mode
-    ran_drp = False
+    # A DRP call owns Resolve cleanup/interactive handoff; its success is tracked separately.
     if (drp_path or drp_gui) and prproj_root is None:
         print("  Warning: DRP requires .prproj input (XML input skipped)")
     if (drp_path or drp_gui) and prproj_root is not None:
@@ -563,7 +564,6 @@ def _run_pipeline(
         assert idx is not None  # Pylance guard: prproj_root ≠ None → idx resolved
         all_seqs = _prproj_list_sequences(prproj_root, idx)
         non_empty_all = [s for s in all_seqs if s["content_count"] > 0]
-        drp_xml_paths: list[Path] = []
         drp_seq_names: list[str] = []
         drp_lumetri_grades = []
         print()
@@ -583,27 +583,30 @@ def _run_pipeline(
             print(f"  DRP export (background): {drp_path}")
             resolve_drp = _ensure_resolve_running(timeout=60, nogui=True)
             if resolve_drp:
-                _drp_export(resolve_drp, drp_xml_paths, drp_path, stem, drp_seq_names, gui=False, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades)
-                ran_drp = True
+                resolve_lifecycle_handed_off = True
+                if not _drp_export(resolve_drp, drp_xml_paths, drp_path, stem, drp_seq_names, gui=False, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades):
+                    api_export_failed = True
             else:
                 print("  DRP skipped: DaVinci not available")
+                api_export_failed = True
 
         if drp_gui:
             print(f"  DRP export (interactive): {drp_gui}")
             resolve_gui = _ensure_resolve_running(timeout=60, nogui=False)
             if resolve_gui:
-                _drp_export(resolve_gui, drp_xml_paths, drp_gui, stem, drp_seq_names, gui=True, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades)
-                ran_drp = True
+                resolve_lifecycle_handed_off = True
+                if not _drp_export(resolve_gui, drp_xml_paths, drp_gui, stem, drp_seq_names, gui=True, prproj_root=prproj_root, lumetri_grades=drp_lumetri_grades):
+                    api_export_failed = True
             else:
                 print("  DRP skipped: DaVinci not available")
-
-        # Cleanup DRP intermediate XMLs (not the user's main output)
-        for tmp in drp_xml_paths:
-            tmp.unlink(missing_ok=True)
+                api_export_failed = True
+    elif drp_path or drp_gui:
+        api_export_failed = True
 
     # DRT output — second (can reuse GUI instance opened by DRP)
     drt_path: Path = output_dir / "drt_default.drt"  # Pylance guard: re-assigned below if drt=True
     if drt and not batch_roots:
+        single_drt_succeeded = False
         print()
         drt_path = _next_available_path(output_dir / f"{Path(output_name).stem}.drt")
         print("  DRT output requested. Checking DaVinci Resolve...")
@@ -615,16 +618,13 @@ def _run_pipeline(
             seq_name_drt = seq.findtext("name", "Imported") if seq is not None else "Imported"
             if not _drt_sandbox_export(resolve_obj, output_path, drt_path, seq_name_drt, lumetri_data):
                 return False
-            _recycle(output_path)
             print(f"  DRT: {drt_path}")
-            print(f"     (intermediate XML moved to recycle bin)")
             return True
 
         resolve = _check_resolve_running()
         if resolve is not None:
             print("  DaVinci Resolve detected.")
-            if _try_drt(resolve):
-                xml_written = False
+            single_drt_succeeded = _try_drt(resolve)
         elif not xml_written:
             print("  [X] DaVinci Resolve not detected, and XML output failed.")
             print("     DRT generation is not possible.")
@@ -646,8 +646,7 @@ def _run_pipeline(
                 print()
                 resolve = _ensure_resolve_running(timeout=60)
                 if resolve is not None:
-                    if _try_drt(resolve):
-                        xml_written = False
+                    single_drt_succeeded = _try_drt(resolve)
                 else:
                     print("  DaVinci did not become available. XML kept.")
             elif choice == "r":
@@ -655,8 +654,7 @@ def _run_pipeline(
                     print(f"  Checking DaVinci... (attempt {attempt}/3)")
                     resolve = _check_resolve_running()
                     if resolve is not None:
-                        if _try_drt(resolve):
-                            xml_written = False
+                        single_drt_succeeded = _try_drt(resolve)
                         break
                     if attempt < 3:
                         print("  Still not detected. Press Enter to retry, or type 'l' to leave.")
@@ -666,9 +664,16 @@ def _run_pipeline(
                     print("  Continuing without DRT. XML kept.")
             else:
                 print("  Continuing without DRT. XML kept.")
+        if single_drt_succeeded:
+            xml_written = not no_xml
+        api_export_failed = api_export_failed or not single_drt_succeeded
+    elif drt and batch_roots and batch_drt_count != len(batch_roots):
+        api_export_failed = True
 
     print()
-    if native_outputs:
+    if api_export_failed:
+        print("  API export incomplete; XML files are retained for retry.")
+    elif native_outputs:
         if len(native_outputs) == 1:
             print(f"  Done. Native DRP: {native_outputs[0]}")
         else:
@@ -684,16 +689,22 @@ def _run_pipeline(
     else:
         print(f"  Done. {fix_count} fixes (no file written).")
 
-    # Clean up intermediate XML when user disabled XML output (DRP/DRT already consumed it)
-    if no_xml and needs_intermediate and output_path.exists():
-        _recycle(output_path)
-        print(f"  (intermediate XML moved to recycle bin)")
+    # Keep every retryable XML unless all requested API exports succeeded and XML was disabled.
+    if no_xml and needs_intermediate and not api_export_failed:
+        cleanup_paths = list(dict.fromkeys([*batch_xml_paths, *drp_xml_paths, output_path]))
+        for intermediate_xml in cleanup_paths:
+            if intermediate_xml.exists():
+                _recycle(intermediate_xml)
+    elif not api_export_failed:
+        for intermediate_xml in drp_xml_paths:
+            if intermediate_xml.exists():
+                _recycle(intermediate_xml)
 
     # Clean up: only kill headless (GUI stays open for DRP)
-    if not ran_drp and (drt or drp_path or drp_gui):
+    if not resolve_lifecycle_handed_off and (drt or drp_path or drp_gui):
         _shutdown_resolve()
 
-    return 0
+    return 1 if api_export_failed else 0
 
 
 def _parse_args() -> argparse.Namespace:
