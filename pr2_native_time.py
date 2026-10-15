@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 _KEYED_DICT_DOUBLE = 0x06
 _KEYED_DICT_STRING = 0x0A
 _KEYED_DICT_BYTES = 0x0C
+STILL_SOURCE_IN = "86400"
 
 
 def _positive_finite(value: float, label: str) -> float:
@@ -444,6 +445,19 @@ def _identity_timemap(end_seconds: float, *, audio: bool) -> str:
     return (b"\x02" + payload).hex()
 
 
+def build_still_timemap() -> str:
+    """Encode the Resolve 21 template's 60000-second hold at source zero."""
+    extent = 60000.0
+    return _encode_keyed_dict([
+        ("YMin", _KEYED_DICT_DOUBLE, -1.0),
+        ("YMax", _KEYED_DICT_DOUBLE, -1.0),
+        ("XMax", _KEYED_DICT_DOUBLE, extent),
+        ("UniqueId", _KEYED_DICT_STRING, str(uuid.uuid4())),
+        ("KeyframesBA", _KEYED_DICT_BYTES, b"\x80\x0a\x00\x0a\x09\x09" + struct.pack("<d", extent)),
+        ("DbType", _KEYED_DICT_STRING, "Sm2TimeMap"),
+    ]).hex()
+
+
 def build_media_timemap(
     source_frames: int,
     source_fps: float,
@@ -534,6 +548,8 @@ def retimed_source_in(
 
 
 __all__ = [
+    "STILL_SOURCE_IN",
+    "build_still_timemap",
     "build_media_timemap",
     "extract_fcp7_retime_alignment",
     "record_intervals_at_source",

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -39,6 +40,7 @@ from pr2_lumetri import extract_lumetri_clips
 from pr2_native_grade import build_lumetri_drx, build_lumetri_node_plan
 from pr2_captions import extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
+from pr2_retime_output import apply_retimes_to_archive
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1335,6 +1337,7 @@ def _generate_report(
                 "",
                 f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
                 f"- Retimed clips: {retimed}. Native video supports forward constant speed and explicit monotone graphdict points as a linear-segment approximation. Audio retiming, holds, reverse, Bezier handles and transition offsets remain unsupported.",
+                "- API DRT/DRP packages receive the same supported retime maps after export. A missing or ambiguous destination fails export validation; the live API timeline is unchanged. Import/render parity is unverified.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
                 "- Native sequence markers and track name/mute/lock have offline coverage; Resolve UI application is unverified. Marker color mapping, native in/out and work area, independent track colors, and clip flags are unsupported or unverified.",
                 "- Lumetri: native and API use one shared DRX graph, with a serial node per source effect. Exposure, Contrast and Saturation are approximate; other controls, shader stages and animation remain source records. Resolve loading/rendering and visible source start-timecode application are unverified.",
@@ -3277,6 +3280,14 @@ def _drt_batch_export(
                     drt_path = candidate
                     break
         if timeline.Export(str(drt_path), resolve.EXPORT_DRT):
+            try:
+                retimed = apply_retimes_to_archive(drt_path, xml_path)
+            except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+                print(f"    Export validation FAILED: {exc}; uncorrected package retained at {drt_path}")
+                results.append((False, None))
+                continue
+            if retimed:
+                print(f"    Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
             print(f"    DRT: {drt_path.name}")
             results.append((True, drt_path))
             _recycle(xml_path)
@@ -3492,7 +3503,15 @@ def _drp_export(
                 print(f"  DRP export error: {e}")
 
             if drp_result:
-                print(f"  DRP exported: {output_path}")
+                try:
+                    retimed = apply_retimes_to_archive(output_path, xml_paths)
+                    if retimed:
+                        print(f"  Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
+                except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
+                    drp_result = False
+                    print(f"  DRP validation FAILED: {exc}; uncorrected package retained at {output_path}")
+                if drp_result:
+                    print(f"  DRP exported: {output_path}")
             else:
                 print(f"  DRP export via API failed (project may still be in database).")
                 print(f"  Project \"{final_name}\" created in DaVinci database.")
@@ -4206,6 +4225,9 @@ def _drt_sandbox_export(
                 pm.LoadProject(original_name)
             return False
 
+        retimed = apply_retimes_to_archive(output_path, xml_path)
+        if retimed:
+            print(f"  Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
         print(f"  DRT exported: {output_path}")
 
         # Save temp project before closing to avoid DaVinci save prompt,

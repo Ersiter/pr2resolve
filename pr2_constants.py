@@ -17,6 +17,7 @@ from typing import Optional
 
 VERSION = "1.6.0"
 DEFAULT_FPS = 30.0
+IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
 MICROSECOND = 1_000_000
 NTSC_RATES: list[float] = [23.976, 29.97, 59.94, 47.952]
 PAL_RATES: list[float] = [25.0, 50.0]

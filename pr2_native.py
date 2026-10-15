@@ -19,10 +19,10 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
-from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
+from pr2_constants import DEFAULT_FPS, IMAGE_SUFFIXES, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
 from pr2_native_project import update_sequence_settings, update_timeline_handles
 from pr2_native_grade import attach_native_grade
-from pr2_native_time import build_media_timemap, extract_fcp7_retime_alignment, retimed_source_in
+from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
     marker_blob_elements,
@@ -35,7 +35,6 @@ from pr2_native_state import (
 
 
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 def _profile_name(value: object) -> str:
     return str(value or "").casefold().replace("rec. ", "rec.")
@@ -536,7 +535,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 speed = 100.0 if alignment else clip_speed(clip)
                 source_in = (alignment["encoded_in"] if alignment else
                              retimed_source_in(_int_text(clip, "in"), clip_fps, _rate(source), speed))
-                _set_child(node, "In", "86400" if suffix in IMAGE_SUFFIXES else source_in)
+                _set_child(node, "In", STILL_SOURCE_IN if suffix in IMAGE_SUFFIXES else source_in)
                 if alignment:
                     residual = alignment["source_trim_end_residual_frames"]
                     print(f"  Warning: {clip.findtext('name')}: piecewise-linear retime; "
@@ -548,8 +547,9 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     if kind == "video":
                         _set_child(node, "CurrentSelectorIdx", "0")
                         _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
-                    # Still sources retain Resolve's virtual one-day source.
-                    if suffix not in IMAGE_SUFFIXES:
+                    if suffix in IMAGE_SUFFIXES:
+                        _set_child(node, "MediaTimemapBA", build_still_timemap())
+                    else:
                         _set_child(node, "MediaTimemapBA", build_media_timemap(
                             source_frames[file_id], input_fps, speed, audio=kind == "audio",
                             keyframes=alignment["points"] if alignment else None,

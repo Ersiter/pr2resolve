@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- API DRT/DRP exports correct supported retimes with the native encoder after export, matching the MediaPool timeline reference and track/start/duration. All timelines validate before the package is replaced; ambiguous matches and unsupported shapes fail without recycling source XML. Unrelated member bytes and ZIP metadata are preserved. Single-frame stills share the native virtual hold map. The live API timeline and rendered parity remain unverified.
+
 - Native DRP and API export share an ordered DRX graph, with one serial node per source Lumetri effect. Static Exposure/Contrast/Saturation use explicit approximate mappings; other shaders, parameters and keyframes remain source records.
 - Grade identity preserves empty video tracks and timeline-start offsets. Required graph application failures prevent successful API export reporting. Native clip version tables receive the exact same DRX Body; Resolve loading and color rendering remain unverified.
 

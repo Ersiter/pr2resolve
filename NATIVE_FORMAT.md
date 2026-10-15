@@ -12,6 +12,7 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 | 变速片段仍写成 1× identity map | 正向恒速视频写入 `Sm2TimeMap`，源入点换算到 retimed record domain | 独立第三方解码器确认 50%/200% 的斜率；播放与渲染仍需验收 |
 | 混合帧率的 In/Out 使用了错误时钟 | `.prproj` 从原 ticks 直接换算到 XML clipitem.rate；native 也按 clipitem.rate 解读 trim | 原 ticks、量化/裁切误差保留在源状态；素材自身帧率仍决定媒体范围 |
 | 变速图的入点与源位置混用 | 以 `speedkfin.when` 为 record In、`speedkfin.value` 为 source In；保留全图和时间线起止 | 实际 XML 中 260 与 169 的非等值样本回归，按 Apple 出点公式核对最后显示帧；原生分段线性近似不等于已证明渲染一致 |
+| API XML 导入可能忽略变速 | 导出后统一修正包内映射，所有时间线校验完成后一次替换 | native/API 包解码一致、整包失败不变；图片共用模板定义的 source-zero hold。实际 API 导出包导入及渲染未验证 |
 | 第一视频轨为空就漏选序列 | 累计所有视频、音频轨内容 | 合成后轨与纯音频序列回归；字幕轨另行记录未转换状态 |
 | 中文 Motion 参数名被漏读，动画被压成标量 | 按 ParameterID 解析，XML 写关键帧并保留原始记录 | 与 Premiere 直出 XML 静态参数对照；Bezier 仅作线性近似 |
 | 同名素材、同名序列被移动到错误媒体夹 | 素材路径、源序列 UID、bin 父 UID 决定归属 | 合成重名及嵌套 bin 回归；仅导出所选序列使用的媒体 |
@@ -46,7 +47,7 @@ DRX 节点字段依据[第三方 DRX codec](https://github.com/samuelgursky/davi
 ## 尚未建立的等价关系
 
 - **图像缩放基准**：native zoom 补偿假设模板采用 fit 输入缩放。[Blackmagic 官方手册](https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_12_Reference_Manual.pdf)说明还有 center crop、fill、stretch 等模式；尚未从 Resolve 21 私有 blob 确认模板的具体枚举或逐序列覆盖。位置、旋转和缩放必须再用可见帧验证。
-- **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 视频曲线采用分段线性映射，反向、定格、Bezier/anchoroffset、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 仍导入原始 graphdict，曲线插值的两路渲染等价性尚未建立。
+- **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 视频曲线采用分段线性映射，反向、定格、Bezier/anchoroffset、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 导出包使用同一编码器修正 `In` 和 `MediaTimemapBA`，包内其他字段与成员保持原样；无法唯一匹配时拒绝报告成功。API 内存时间线不随之改变，两路实际导入及渲染等价性尚未建立。
 - **工程状态**：marker 颜色、轨道/片段 marker、In/Out、旗标、Fairlight strip 与音轨路由尚未完整写入。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
 - **Relink 服务端**：公开前端与输出包只能提供行为和格式约束，没有恢复其服务端源码。本次不把浏览器中的选项、厂商陈述或压缩包大小当作保真度证明。
 
