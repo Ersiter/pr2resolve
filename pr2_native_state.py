@@ -191,4 +191,3 @@ def unwritten_state_warnings(source: ET.Element, state: dict[str, Any]) -> list[
            for item in markers if isinstance(item, dict)):
         warnings.append("Premiere sequence marker colors are not mapped; Resolve markers use Blue")
     return list(dict.fromkeys(warnings))
-
