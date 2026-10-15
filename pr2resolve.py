@@ -142,6 +142,8 @@ def _interactive_select(sequences: list[dict[str, Any]]) -> list[dict[str, Any]]
             cur = " >" if i == cursor else "  "
             name = s["name"][:40]
             info = f"{s['width']}x{s['height']}  {s['clip_count']} clips"
+            if s["data_item_count"]:
+                info += f", {s['data_item_count']} data items"
             print(f"{cur} {mark} {i+1:2d}. {name:<42s} {info}")
         print()
         sel_count = len(selected)
@@ -355,7 +357,7 @@ def _run_pipeline(
                 print("  Error: No sequences found in .prproj")
                 return 1
 
-            non_empty = [s for s in sequences if s["clip_count"] > 0]
+            non_empty = [s for s in sequences if s["content_count"] > 0]
             if sequence_name:
                 matching = [s for s in sequences if s["name"] == sequence_name]
                 if matching:
@@ -406,7 +408,7 @@ def _run_pipeline(
                         _write_fixed_xml(fcp, tmp_xml)
                         xml_paths.append(tmp_xml)
                     seq_names.append(s["name"])
-                    print(f"    {s['name'][:30]}: {s['clip_count']} clips, {len(issues)} issues")
+                    print(f"    {s['name'][:30]}: {s['clip_count']} clips, {s['data_item_count']} data items, {len(issues)} issues")
                     unconverted = sum(key.startswith("unconverted-source:") for key, _ in _timeline_state_manifest(fcp).get("unknown", []))
                     if unconverted:
                         print(f"      Warning: {unconverted} source feature records are not fully converted; use --report for details.")
@@ -560,7 +562,7 @@ def _run_pipeline(
         # Re-collect all non-empty sequences for DRP (independent of Mode selection)
         assert idx is not None  # Pylance guard: prproj_root ≠ None → idx resolved
         all_seqs = _prproj_list_sequences(prproj_root, idx)
-        non_empty_all = [s for s in all_seqs if s["clip_count"] > 0]
+        non_empty_all = [s for s in all_seqs if s["content_count"] > 0]
         drp_xml_paths: list[Path] = []
         drp_seq_names: list[str] = []
         drp_lumetri_grades = []

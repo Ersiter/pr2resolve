@@ -1915,7 +1915,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
         idx: The prproj index
 
     Returns:
-        List of dicts with keys: uid, name, width, height, clip_count
+        List of dicts with source identity, geometry and media/data item counts.
     """
     sequences = []
     for seq_el in root.findall("Sequence"):
@@ -1934,6 +1934,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
 
         # Count every clip item across video and audio tracks.
         clip_count = 0
+        data_item_count = 0
         tg_section = seq_el.find("TrackGroups")
         if tg_section is not None:
             for tg_pair in tg_section.findall("TrackGroup"):
@@ -1941,7 +1942,7 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
                 if second is not None:
                     ref = second.get("ObjectRef")
                     tg_el = idx.resolve_ref(ref) if ref else None
-                    if tg_el is not None and tg_el.tag in ("VideoTrackGroup", "AudioTrackGroup"):
+                    if tg_el is not None and tg_el.tag in ("VideoTrackGroup", "AudioTrackGroup", "DataTrackGroup", "CaptionTrackGroup"):
                         tracks = tg_el.find(".//Tracks")
                         if tracks is not None:
                             for track_ref in tracks.findall("Track"):
@@ -1950,7 +1951,11 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
                                 if track_el is not None:
                                     items = track_el.find(".//TrackItems")
                                     if items is not None:
-                                        clip_count += len(items.findall("TrackItem"))
+                                        count = len(items.findall("TrackItem"))
+                                        if tg_el.tag in ("VideoTrackGroup", "AudioTrackGroup"):
+                                            clip_count += count
+                                        else:
+                                            data_item_count += count
 
         sequences.append({
             "uid": uid,
@@ -1958,6 +1963,8 @@ def _prproj_list_sequences(root: ET.Element, idx: _PrprojIndex) -> list[dict[str
             "width": w,
             "height": h,
             "clip_count": clip_count,
+            "data_item_count": data_item_count,
+            "content_count": clip_count + data_item_count,
         })
     return sequences
 

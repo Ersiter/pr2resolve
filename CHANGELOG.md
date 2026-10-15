@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Caption/data-only sequences are included in non-empty selection and diagnosis. Audio/video clip counts remain separate from data item counts; unsupported data-track export still retains its source report.
+
 - API project/timeline color requests follow the source sequence UID, so duplicate display names no longer overwrite one another. The first selected sequence supplies the project defaults; media overrides come from selected sequences only. An undefined-variable color fallback has been removed. Actual color setting acceptance and native/API color parity remain unverified.
 
 - API DRT/DRP exports correct supported retimes with the native encoder after export, matching the MediaPool timeline reference and track/start/duration. All timelines validate before the package is replaced; ambiguous matches and unsupported shapes fail without recycling source XML. Unrelated member bytes and ZIP metadata are preserved. Single-frame stills share the native virtual hold map. The live API timeline and rendered parity remain unverified.
