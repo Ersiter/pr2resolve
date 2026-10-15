@@ -1332,7 +1332,8 @@ def _generate_report(
                 f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
                 f"- Retimed clips: {retimed}. Native forward constant-speed video uses a Resolve 21 time map; native audio retiming, reverse and variable speed are unsupported.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
-                "- Native Lumetri, marker, track mute/lock and source start-timecode application are not verified. The XML state records are not proof of native application.",
+                "- Native sequence marker position, name, note and duration are offline-validated; Resolve UI application is unverified. Marker color mapping, native in/out and work area, track mute/lock, and flags are unsupported or unverified.",
+                "- Native Lumetri and visible source start-timecode application remain unverified. Retained source state does not prove UI application.",
                 "",
             ]
             source_records: list[dict[str, Any]] = []
@@ -1560,6 +1561,8 @@ def _prproj_parse_marker_owner(
             data = json.loads(payload)
             details = data.get("DVAMarker", {})
         except (json.JSONDecodeError, AttributeError):
+            details = {}
+        if not isinstance(details, dict):
             details = {}
         start_data = details.get("mStartTime", {})
         duration_data = details.get("mDuration", {})
@@ -3415,6 +3418,9 @@ def _drt_batch_export(
         except Exception:
             pass  # best-effort, silently ignore API limitations
 
+        for warning in _apply_fcp_timeline_state_to_resolve(timeline, xml_path):
+            print(f"    Warning: {warning}")
+
         drt_path = output_dir / f"{seq_name}_resolve.drt"
         # Dedup: append -1, -2, … if file already exists
         if drt_path.exists():
@@ -3599,7 +3605,8 @@ def _drp_export(
             print(f"  TIMELINE: {repr(timeline)}")
             if timeline is not None:
                 print(f"  OK: {timeline.GetName()}")
-                _apply_fcp_timeline_state_to_resolve(timeline, xml_path)
+                for warning in _apply_fcp_timeline_state_to_resolve(timeline, xml_path):
+                    print(f"  Warning: {warning}")
                 if lumetri_grades and seq_index < len(lumetri_grades):
                     _apply_lumetri_cdl(timeline, lumetri_grades[seq_index])
                 try:
@@ -3664,78 +3671,137 @@ def _drp_export(
     return drp_result
 
 
-def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> None:
+def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[str]:
     """Apply timeline marks and markers through Resolve API when XML import omits them."""
     try:
         parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
         root = ET.parse(xml_path, parser=parser).getroot()
     except (ET.ParseError, OSError):
-        return
+        return ["Could not read timeline XML state"]
     sequence = root.find("sequence")
     if sequence is None:
-        return
+        return ["Timeline XML has no sequence state"]
     opaque: dict[str, Any] = {}
     for node in root:
         if node.tag is ET.Comment and (node.text or "").strip().startswith("pr2resolve-timeline-state:"):
             encoded = (node.text or "").strip().split(":", 1)[1]
             try:
-                opaque = json.loads(base64.b64decode(encoded).decode("utf-8"))
+                decoded = json.loads(base64.b64decode(encoded).decode("utf-8"))
+                opaque = decoded if isinstance(decoded, dict) else {}
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
                 opaque = {}
             break
-    in_text, out_text = sequence.findtext("in", "-1"), sequence.findtext("out", "-1")
-    if in_text != "-1" and out_text != "-1" and hasattr(timeline, "SetMarkInOut"):
-        try:
-            timeline.SetMarkInOut(int(in_text), int(out_text), "all")
-        except (TypeError, ValueError, RuntimeError):
-            pass
-    markers = sequence.findall("marker")
-    if markers and hasattr(timeline, "AddMarker"):
-        try:
-            existing = timeline.GetMarkers() if hasattr(timeline, "GetMarkers") else {}
-        except Exception:
-            existing = {}
-        existing_keys: set[tuple[int, str]] = set()
-        if isinstance(existing, dict):
-            for position, data in existing.items():
-                if not isinstance(data, dict):
-                    continue
+    in_element, out_element = sequence.find("in"), sequence.find("out")
+    in_text = in_element.text if in_element is not None and in_element.text is not None else "-1"
+    out_text = out_element.text if out_element is not None and out_element.text is not None else "-1"
+    warnings: list[str] = []
+    if in_element is not None or out_element is not None:
+        if in_element is None or out_element is None:
+            warnings.append("Sequence in/out state is incomplete; Resolve API cannot safely apply a partial pair")
+        elif in_text == "-1" and out_text == "-1":
+            if not hasattr(timeline, "ClearMarkInOut"):
+                warnings.append("Resolve cannot clear explicitly unset sequence in/out marks")
+            else:
                 try:
-                    existing_keys.add((int(float(position)), str(data.get("name", ""))))
-                except (TypeError, ValueError):
-                    continue
-        source_markers = [item for item in opaque.get("markers", []) if item.get("scope") == "sequence"]
-        for marker_index, marker in enumerate(markers):
+                    if not timeline.ClearMarkInOut("all"):
+                        warnings.append("Resolve rejected clearing sequence in/out marks")
+                except (AttributeError, TypeError, RuntimeError) as exc:
+                    warnings.append(f"Could not clear sequence in/out marks: {exc}")
+        elif in_text != "-1" and out_text != "-1":
+            if not hasattr(timeline, "SetMarkInOut"):
+                warnings.append("Resolve cannot apply explicit sequence in/out marks")
+            else:
+                try:
+                    if not timeline.SetMarkInOut(int(in_text), int(out_text), "all"):
+                        warnings.append("Resolve rejected sequence in/out marks")
+                except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+                    warnings.append(f"Could not apply sequence in/out marks: {exc}")
+        else:
+            warnings.append("Resolve API cannot safely apply a one-sided sequence in/out mark; source state remains in XML")
+    markers = sequence.findall("marker")
+    if markers:
+        if not hasattr(timeline, "AddMarker"):
+            warnings.append("Resolve cannot add sequence markers")
+        elif not hasattr(timeline, "GetMarkers"):
+            warnings.append("Cannot apply sequence markers because Resolve cannot report existing markers")
+        else:
             try:
-                frame = int(marker.findtext("in", "0"))
-                name = marker.findtext("name", "")
-                note = marker.findtext("comment", "")
-                if (frame, name) in existing_keys:
-                    continue
-                raw_out = marker.findtext("out", "-1")
-                duration = max(int(raw_out) - frame, 1) if raw_out != "-1" else 1
-                marker_data = source_markers[marker_index] if marker_index < len(source_markers) else {}
-                color_index = marker_data.get("color_index")
-                color = {0: "Green", 1: "Red", 2: "Sand", 3: "Yellow", 4: "Cream",
-                         5: "Blue", 6: "Lavender", 7: "Cyan"}.get(color_index, "Blue")
-                timeline.AddMarker(frame, color, name, note, duration)
-            except (TypeError, ValueError, RuntimeError):
-                continue
+                existing = timeline.GetMarkers()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                warnings.append(f"Cannot read existing sequence markers: {exc}")
+                existing = None
+            if not isinstance(existing, dict):
+                if existing is not None:
+                    warnings.append("Cannot apply sequence markers because Resolve returned an invalid marker list")
+                else:
+                    warnings.append("Cannot apply sequence markers because Resolve returned no marker list")
+            else:
+                existing_markers: dict[int, dict[str, Any]] = {}
+                occupied_frames: set[int] = set()
+                for position, data in existing.items():
+                    try:
+                        frame = int(float(position))
+                    except (TypeError, ValueError):
+                        continue
+                    occupied_frames.add(frame)
+                    if isinstance(data, dict):
+                        existing_markers[frame] = data
+                opaque_markers = opaque.get("markers", [])
+                source_markers = [item for item in opaque_markers
+                                  if isinstance(item, dict) and item.get("scope") == "sequence"] if isinstance(opaque_markers, list) else []
+                for marker_index, marker in enumerate(markers):
+                    try:
+                        frame = int(marker.findtext("in", "0"))
+                        name = marker.findtext("name", "")
+                        note = marker.findtext("comment", "")
+                        raw_out = marker.findtext("out", "-1")
+                        duration = max(int(raw_out) - frame, 1) if raw_out != "-1" else 1
+                        if frame in occupied_frames:
+                            imported = existing_markers.get(frame, {})
+                            if (imported.get("name"), imported.get("note"), imported.get("duration")) != (name, note, duration):
+                                warnings.append(f"Skipped sequence marker at frame {frame}: Resolve already has a different marker there")
+                            continue
+                        marker_data = source_markers[marker_index] if marker_index < len(source_markers) else {}
+                        color_index = marker_data.get("color_index")
+                        if color_index is not None:
+                            warnings.append(
+                                f"Premiere marker color index {color_index} is preserved in source state; "
+                                "using Blue because its Resolve color mapping is unverified"
+                            )
+                        color = "Blue"
+                        if not timeline.AddMarker(frame, color, name, note, duration):
+                            warnings.append(f"Resolve rejected sequence marker at frame {frame}: {name}")
+                        else:
+                            existing_markers[frame] = {"name": name, "note": note, "duration": duration}
+                        occupied_frames.add(frame)
+                    except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+                        warnings.append(f"Could not apply sequence marker: {exc}")
     label_records: list[dict[str, Any]] = []
-    for key, value in opaque.get("unknown", []):
+    unknown_records = opaque.get("unknown", [])
+    if not isinstance(unknown_records, list):
+        unknown_records = []
+    for entry in unknown_records:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+            continue
+        key, value = entry
+        if not isinstance(key, str):
+            continue
         if key.startswith("track-state:"):
             try:
                 _, track_type, track_index_text = key.split(":", 2)
                 track_index = int(track_index_text)
                 track_data = json.loads(value)
                 if track_data.get("name") and hasattr(timeline, "SetTrackName"):
-                    timeline.SetTrackName(track_type, track_index, track_data["name"])
+                    if not timeline.SetTrackName(track_type, track_index, track_data["name"]):
+                        warnings.append(f"Resolve rejected {track_type} track {track_index} name")
                 if hasattr(timeline, "SetTrackEnable"):
-                    timeline.SetTrackEnable(track_type, track_index, not track_data.get("muted", False))
+                    if not timeline.SetTrackEnable(track_type, track_index, not track_data.get("muted", False)):
+                        warnings.append(f"Resolve rejected {track_type} track {track_index} enable state")
                 if hasattr(timeline, "SetTrackLock"):
-                    timeline.SetTrackLock(track_type, track_index, track_data.get("locked", False))
-            except (ValueError, TypeError, json.JSONDecodeError, RuntimeError):
-                pass
+                    if not timeline.SetTrackLock(track_type, track_index, track_data.get("locked", False)):
+                        warnings.append(f"Resolve rejected {track_type} track {track_index} lock state")
+            except (AttributeError, ValueError, TypeError, json.JSONDecodeError, RuntimeError) as exc:
+                warnings.append(f"Could not apply track state {key}: {exc}")
             continue
         if not key.startswith("clip-label:"):
             continue
@@ -3756,9 +3822,19 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> None:
             track_key = (track_type, track_index)
             if track_key not in item_indexes:
                 item_index: dict[tuple[str, int, int], list[Any]] = {}
+                try:
+                    if not hasattr(timeline, "GetStartFrame"):
+                        raise AttributeError("GetStartFrame is unavailable")
+                    timeline_start = int(timeline.GetStartFrame())
+                except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+                    warnings.append(f"Cannot match clip labels without the timeline start frame: {exc}")
+                    return warnings
+                if not hasattr(timeline, "GetItemListInTrack"):
+                    warnings.append("Cannot match clip labels because Resolve cannot list timeline track items")
+                    return warnings
                 for item in timeline.GetItemListInTrack(track_type, track_index) or []:
                     try:
-                        item_key = (str(item.GetName()), int(item.GetStart()), int(item.GetDuration()))
+                        item_key = (str(item.GetName()), int(item.GetStart()) - timeline_start, int(item.GetDuration()))
                     except (AttributeError, TypeError, ValueError):
                         continue
                     item_index.setdefault(item_key, []).append(item)
@@ -3772,10 +3848,12 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> None:
                 continue
             for item in item_indexes[track_key].get((expected_name, expected_start, expected_duration), []):
                 if hasattr(item, "SetClipColor"):
-                    item.SetClipColor(color)
+                    if not item.SetClipColor(color):
+                        warnings.append(f"Resolve rejected clip color for {expected_name} at frame {expected_start}")
                     break
         except (AttributeError, TypeError, ValueError, RuntimeError):
             continue
+    return warnings
 
 
 # --- Feature: Bin Structure Extraction ---
@@ -4253,6 +4331,9 @@ def _drt_sandbox_export(
             timeline.SetSetting("timelineStartTimecode", "00:00:00:00")
         except Exception:
             pass
+
+        for warning in _apply_fcp_timeline_state_to_resolve(timeline, xml_path):
+            print(f"  Warning: {warning}")
 
         if lumetri_grades:
             _apply_lumetri_cdl(timeline, lumetri_grades)

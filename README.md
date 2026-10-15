@@ -195,7 +195,18 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **时间线状态与调色如何迁移？**
 
-    `.prproj` 读取器按时间线片段身份提取状态与全部 Lumetri ParameterID。native DRP 写入已验证的片段标签颜色、空轨拓扑、轨道名称和直接媒体夹层级；未逆向验证的标记、In/Out、轨道静音/锁定状态不猜写。API DRP 仅作兼容兜底，可见同步这些 UI 状态。Lumetri 会被检测，但 native grade 未验证，不写入或嵌入 cube LUT。
+    `.prproj` 读取器按时间线片段身份提取状态与全部 Lumetri ParameterID。native DRP 写入片段标签颜色、空轨拓扑、轨道名称、直接媒体夹层级和时间线 marker。Lumetri 会被检测，但 native grade 未验证，不写入或嵌入 cube LUT。
+
+| 状态 | native DRP | API DRT / DRP |
+|---|---|---|
+| 片段标签颜色 | 16 档预设映射；自定义 RGB 未映射 | 同一预设映射，按轨道和片段位置匹配 |
+| 独立轨道颜色、旗标 | 未实现 | 未实现；标签颜色不等于旗标 |
+| 时间线 marker | 写入位置、名称、注释、时长；颜色暂用 Blue | 补建缺失 marker；冲突、拒绝写入会告警 |
+| 序列 In/Out | 未写入，显式状态会告警 | 成对设置、明确未设置时清除；单边状态告警 |
+| 轨道名称、静音、锁定 | 写名称；静音/锁定未应用并告警 | 调用官方 API，失败会告警 |
+| 工作区、轨道/源片段 marker | 工作区与已提取轨道 marker 保留源记录，未应用 | 未应用 |
+
+marker 的源颜色索引保留在 XML 状态注释；有索引时会提示颜色未映射。上述写入经过离线测试，仍需在闲置的 Resolve 环境中验证可见结果；详见 [格式依据与验收边界](NATIVE_FORMAT.md)。
 
 ---
 
@@ -270,7 +281,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 5. **免费版达芬奇** — 本项目的 DRT/DRP 路径按 DaVinci Resolve Studio 验证；免费版不作为支持目标。XML 不受影响。
 6. **Lumetri 空间与时间运算** — 3D LUT 无法表达降噪、锐化、模糊、暗角和关键帧。native DRP 会检测但不伪装为等价转换。
 7. **色彩空间词汇差异** — native DRP 按模板映射 Rec.709、ACEScct 与 Rec.2100 HLG 配置；不同 HDR 项目与输入色彩空间仍需实机核对。API DRP 还会按素材路径设置已知输入色彩空间。
-8. **原生工程仍需导入验收** — 序列注册、媒体引用和时映射的离线检查不能证明画面、音频、Fairlight 多音轨及切换稳定性。标记、静音/锁定、源起始时码的可见应用仍未验证。`--report` 不依赖 XML 输出，导出拒绝后也可查看已生成的报告。
+8. **原生工程仍需导入验收** — 序列注册、媒体引用、marker 和时映射的离线检查不能证明画面、音频、Fairlight 多音轨及切换稳定性。marker 和源起始时码的可见应用仍未验证；原生 In/Out、轨道静音/锁定和旗标尚未应用。`--report` 不依赖 XML 输出，导出拒绝后也可查看已生成的报告。
 
 原生字段依据、行业实现比较和后续验收方法见 [转换实现说明](NATIVE_FORMAT.md)。
 

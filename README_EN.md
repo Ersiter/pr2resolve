@@ -195,7 +195,18 @@ Three output formats:
 
 - **How are timeline state and grades migrated?**
 
-    Native DRP writes verified clip-label colors, empty-track topology, track names, and directly owned media bins. Markers, sequence In/Out, and track mute/lock are not written without a verified native representation. API DRP is an explicit compatibility fallback for those UI states. Lumetri grades are detected but native grade writing is unverified, so no cube LUT is embedded.
+    Native DRP writes clip-label colors, empty-track topology, track names, directly owned media bins, and timeline markers. Lumetri grades are detected but native grade writing is unverified, so no cube LUT is embedded.
+
+| State | Native DRP | API DRT / DRP |
+|---|---|---|
+| Clip-label colors | Maps 16 presets; custom RGB is unmapped | Same preset mapping, matched by track and clip position |
+| Independent track colors, flags | Not implemented | Not implemented; label colors are distinct from flags |
+| Timeline markers | Writes position, name, note and duration; uses Blue for now | Adds missing markers; warns on conflicts or rejected writes |
+| Sequence In/Out | Not written; explicit state produces warnings | Sets pairs, clears explicitly unset marks; warns on one-sided state |
+| Track name, mute, lock | Writes names; warns that mute/lock are not applied | Calls official API methods and reports failures |
+| Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
+
+Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. These writes have offline test coverage; visible results still need verification in an idle Resolve environment. See [format evidence and verification limits](NATIVE_FORMAT.md).
 
 ---
 
@@ -270,7 +281,7 @@ All rules apply automatically. They're not optional — skip them and the import
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
 6. **Lumetri spatial and temporal operations** — A 3D LUT cannot represent denoise, sharpen, blur, vignette, or keyframes. Native DRP detects them without claiming an equivalent conversion.
 7. **Color-space vocabularies differ** — Native DRP maps Rec.709, ACEScct and Rec.2100 HLG configurations through its templates; HDR projects and input color spaces still need live verification. API DRP also assigns known input spaces by media path.
-8. **Native projects still need import verification** — offline registration, media-reference and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Visible application of markers, mute/lock and source start timecode remains unverified. `--report` works without XML output and generated reports remain available after an export is rejected.
+8. **Native projects still need import verification** — offline registration, media-reference, marker and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Visible marker and source start-timecode application remains unverified; native In/Out, track mute/lock and flags are not applied. `--report` works without XML output and generated reports remain available after an export is rejected.
 
 See [conversion implementation notes](NATIVE_FORMAT.md) for field evidence, industry references and the remaining acceptance checks.
 

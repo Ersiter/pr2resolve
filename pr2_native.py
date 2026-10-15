@@ -22,6 +22,15 @@ from xml.etree import ElementTree as ET
 from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index
 from pr2_native_project import update_sequence_settings, update_timeline_handles
 from pr2_native_time import build_media_timemap, retimed_source_in
+from pr2_native_state import (
+    append_lockable_blob,
+    marker_blob_elements,
+    remap_marker_blob,
+    sequence_id_from_pool,
+    sequence_lockable_blob,
+    sequence_markers,
+    unwritten_state_warnings,
+)
 
 
 TEMPLATE = Path(__file__).with_name("resources") / "resolve21_native_template.drp"
@@ -469,7 +478,10 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     if video_template is None or still_template is None or audio_template is None or audio_only_template is None:
         raise ValueError("codec template lacks required timeline nodes")
     tracks = {kind: ET.fromstring(ET.tostring(native.find(f"{vec}/Element/Sm2TiTrack"))) for vec, kind in (("VideoTrackVec", "video"), ("AudioTrackVec", "audio"))}
-    clip_labels = _timeline_clip_labels(_timeline_state_manifest(root))
+    state_manifest = _timeline_state_manifest(root)
+    clip_labels = _timeline_clip_labels(state_manifest)
+    for warning in unwritten_state_warnings(source, state_manifest):
+        print(f"  Warning: {warning}")
     for vector_name, kind, generic in (("VideoTrackVec", "video", video_template), ("AudioTrackVec", "audio", audio_template)):
         vector = native.find(vector_name)
         if vector is None or tracks[kind] is None:
@@ -623,6 +635,11 @@ def export_native_drp(
     pool = update_sequence_settings(pool, source)
     members[pool_name] = pool.encode("utf-8")
     members["project.xml"] = update_timeline_handles(members["project.xml"], pool)
+    markers = sequence_markers(source)
+    if markers:
+        project_xml = members["project.xml"].decode("utf-8", "replace")
+        blob = sequence_lockable_blob(sequence_id_from_pool(pool), markers)
+        members["project.xml"] = append_lockable_blob(project_xml, blob).encode("utf-8")
     _configure_color(members, color_profiles)
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
@@ -671,6 +688,7 @@ def _export_native_project(
         for package in packages[1:]:
             with zipfile.ZipFile(package) as archive:
                 extra_pool = archive.read(pool_name).decode("utf-8", "replace")
+                extra_project = archive.read("project.xml").decode("utf-8", "replace")
                 extra_seq_name = next(name for name in archive.namelist() if name.startswith("SeqContainer/"))
                 extra_seq = archive.read(extra_seq_name).decode("utf-8", "replace")
             timeline_match = re.search(r"(?s)<Element>\s*(<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>)\s*</Element>", extra_pool)
@@ -686,7 +704,17 @@ def _export_native_project(
             old_sequence = re.search(r"<Sequence>([^<]+)</Sequence>", extra_seq)
             if old_sequence is None:
                 raise ValueError("native sequence container has no sequence reference")
+            old_sequence_id = old_sequence.group(1)
             extra_seq = extra_seq.replace(old_sequence.group(1), new_sequence)
+            extra_marker_blobs = marker_blob_elements(extra_project)
+            if extra_marker_blobs:
+                project_xml = members["project.xml"].decode("utf-8", "replace")
+                for marker_blob in extra_marker_blobs:
+                    project_xml = append_lockable_blob(
+                        project_xml,
+                        remap_marker_blob(marker_blob, old_sequence_id, new_sequence),
+                    )
+                members["project.xml"] = project_xml.encode("utf-8")
             timeline_block = timeline_match.group(1)
             timeline_block = re.sub(r'(<Sm2MpTimelineClip DbId=")[^"]+', rf'\g<1>{new_timeline_clip}', timeline_block, count=1)
             timeline_block = re.sub(r'(<UniqueMediaPoolItemId>)[^<]+', rf'\g<1>{new_media_unique}', timeline_block, count=1)

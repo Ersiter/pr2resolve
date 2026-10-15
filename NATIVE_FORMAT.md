@@ -14,6 +14,15 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 | 中文 Motion 参数名被漏读，动画被压成标量 | 按 ParameterID 解析，XML 写关键帧并保留原始记录 | 与 Premiere 直出 XML 静态参数对照；Bezier 仅作线性近似 |
 | 同名素材、同名序列被移动到错误媒体夹 | 素材路径、源序列 UID、bin 父 UID 决定归属 | 合成重名及嵌套 bin 回归；仅导出所选序列使用的媒体 |
 | `--no-xml` 同时屏蔽报告 | 报告独立于 XML，原生导出拒绝时保留报告 | CLI 回归，测试禁止调用 Resolve 生命周期接口 |
+| native 包遗漏时间线 marker | 生成 `Sm2SequenceLockableBlob`，以序列 DbId 关联；多序列合并时重写 owner | Resolve 21 实际导出使用 `0x80` 原始 protobuf；第三方解码器交叉检查位置、名称、注释和时长；尚未实机验收 |
+
+## 颜色、标记与编辑状态
+
+片段标签颜色已有 16 档 Premiere 预设到 Resolve 的映射；独立轨道颜色与旗标尚未实现，不能把片段标签当作旗标。自定义标签 RGB 也未建立映射。
+
+时间线 marker 写入位置、名称、注释和时长。源 marker 颜色索引仍保留在 XML 注释中，目前输出 Blue；有颜色索引时会明确告警。Adobe 的 [Marker API](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker/) 将颜色、正文、时长分开处理，不能套用片段标签的颜色表。第三方格式资料中的 Resolve 19 marker 压缩封装与本地 Resolve 21 导出的封装不同；本项目采用后者，交叉解码时只转换封装以核对 protobuf 内容，不把此检查当作 Resolve 导入验证。
+
+序列 In/Out、工作区和轨道静音/锁定尚未写入 native DRP；存在明确源状态时会告警。API 路径能设置成对 In/Out、清除明确未设置的 marks，单边状态会提示未应用；它会报告 marker 冲突及 API 拒绝，片段标签匹配也计入时间线起始帧偏移。轨道 marker 仅保留源记录，源片段 marker 尚未完整提取；两者都没有目标写入实现。上述 API 行为仅完成模拟测试，出点端点语义和可见状态仍需实机对照。
 
 ## 行业实现中值得采用的做法
 
@@ -28,7 +37,7 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 - **图像缩放基准**：native zoom 补偿假设模板采用 fit 输入缩放。[Blackmagic 官方手册](https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_12_Reference_Manual.pdf)说明还有 center crop、fill、stretch 等模式；尚未从 Resolve 21 私有 blob 确认模板的具体枚举或逐序列覆盖。位置、旋转和缩放必须再用可见帧验证。
 - **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把动画静默变成静态值。反向、速度曲线、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。
-- **工程状态**：锁定 blob、marker、轨道 mute/lock、In/Out、Fairlight strip 与音轨路由尚未完整写入。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
+- **工程状态**：marker 颜色、轨道/片段 marker、轨道 mute/lock、In/Out、旗标、Fairlight strip 与音轨路由尚未完整写入。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
 - **Relink 服务端**：公开前端与输出包只能提供行为和格式约束，没有恢复其服务端源码。本次不把浏览器中的选项、厂商陈述或压缩包大小当作保真度证明。
 
 ## 如何继续验收
@@ -43,4 +52,4 @@ python tests/run_local_tests.py --mode full
 
 下一步应在独立、闲置的 Resolve 21 环境中，以合成彩条、坐标网格、帧号和已知频率音频逐项验证。每次只改变一个参数：导入后读取帧率、分辨率、源入点、速度、轨道和媒体夹，再检查导出的画面及音频。多序列切换和关闭重开也应纳入验收。不能仅以 ZIP 完整、文件较小、结构读回或没有报错作为通过标准。
 
-优先补齐的实现顺序是：确认输入缩放枚举及像素坐标变换；为线性/Bezier 动画建立可见帧对照；独立实现音频路由与 retime；最后逐项处理 marker、字幕、转场与嵌套。每类能力都需要自己的样本与回归，避免再用一个工程的二进制状态替代算法。
+优先补齐的实现顺序是：确认输入缩放枚举及像素坐标变换；为线性/Bezier 动画建立可见帧对照；独立实现音频路由与 retime；再处理 marker 颜色与轨道/片段范围、字幕、转场与嵌套。每类能力都需要自己的样本与回归，避免再用一个工程的二进制状态替代算法。
