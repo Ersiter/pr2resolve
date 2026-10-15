@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Native and API exports share track name, enable/mute, and lock semantics. Native names use `UserDefinedName`; lock/disable bits follow a paired Resolve 21 DRP/XML export.
+- Track-state regressions check all four lock/enable combinations in the generated native archive and API calls. Visible Resolve behavior still requires import validation.
+
 All notable changes to pr2resolve.
 
 ## [v1.6.0] — 2026-10-15
@@ -23,7 +28,7 @@ All notable changes to pr2resolve.
 ### Validation limits
 - Native DRP remains experimental: this release was tested without launching or controlling Resolve. Offline tests do not prove import, rendering, Fairlight audio routing or timeline-switch stability.
 - Native transform sizing assumes fit scaling. Animated Motion, unsupported effects, reverse/variable speed and audio retiming are not silently flattened into static native output.
-- Marker color mapping remains unverified; markers use Blue and retain source color records in XML. Native In/Out, work area and track mute/lock produce warnings when supplied; independent track colors and flags remain unsupported.
+- Marker color mapping remains unverified; markers use Blue and retain source color records in XML. Native In/Out and work area produce warnings when supplied; independent track colors and flags remain unsupported.
 
 ## [v1.5.3] — 2026-09-17
 

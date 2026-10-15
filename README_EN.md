@@ -203,7 +203,7 @@ Three output formats:
 | Independent track colors, flags | Not implemented | Not implemented; label colors are distinct from flags |
 | Timeline markers | Writes position, name, note and duration; uses Blue for now | Adds missing markers; warns on conflicts or rejected writes |
 | Sequence In/Out | Not written; explicit state produces warnings | Sets pairs, clears explicitly unset marks; warns on one-sided state |
-| Track name, mute, lock | Writes names; warns that mute/lock are not applied | Calls official API methods and reports failures |
+| Track name, mute, lock | Writes custom names and lock/disable bits; offline-validated | Uses the same source state with official API methods and reports failures |
 | Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
 
 Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. These writes have offline test coverage; visible results still need verification in an idle Resolve environment. See [format evidence and verification limits](NATIVE_FORMAT.md).

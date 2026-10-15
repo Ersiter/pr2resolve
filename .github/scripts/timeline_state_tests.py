@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
@@ -17,6 +18,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pr2_engine
+import pr2_native
 
 
 class _TimelineItem:
@@ -87,6 +89,42 @@ def _write_xml(sequence: ET.Element, opaque: dict[str, Any] | None = None) -> Pa
 
 
 class TimelineStateTests(unittest.TestCase):
+    def test_track_name_enable_and_lock_match_native_and_api(self) -> None:
+        root = ET.fromstring('''<xmeml><sequence><name>Tracks</name><duration>25</duration>
+            <rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate><media><video/>
+            <audio/></media></sequence></xmeml>''')
+        source = root.find("sequence")
+        expected = [("Open", True, False, 0), ("Locked", True, True, 1),
+                    ("Muted", False, False, 2), ("Both", False, True, 3)]
+        for kind in ("video", "audio"):
+            for name, enabled, locked, _ in expected:
+                track = ET.SubElement(source.find(f"media/{kind}"), "track")
+                ET.SubElement(track, "name").text = name
+                ET.SubElement(track, "enabled").text = str(enabled).upper()
+                ET.SubElement(track, "locked").text = str(locked).upper()
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            xml = folder / "source.xml"
+            ET.ElementTree(root).write(xml, encoding="utf-8")
+            timeline = Mock()
+            self.assertEqual(pr2_engine._apply_fcp_timeline_state_to_resolve(timeline, xml), [])
+            native_path = pr2_native.export_native_drp(root, folder / "native.drp", "Tracks")
+            with zipfile.ZipFile(native_path) as archive:
+                container_path = next(name for name in archive.namelist() if name.startswith("SeqContainer/"))
+                native = ET.fromstring(archive.read(container_path))
+        for kind, vector in (("video", "VideoTrackVec"), ("audio", "AudioTrackVec")):
+            tracks = native.findall(f"{vector}/Element/Sm2TiTrack")
+            self.assertEqual(len(tracks), 4)
+            for index, (name, enabled, locked, flags) in enumerate(expected, 1):
+                with self.subTest(kind=kind, index=index):
+                    track = tracks[index - 1]
+                    self.assertEqual(track.findtext("UserDefinedName"), name)
+                    self.assertIsNone(track.find("Name"))
+                    self.assertEqual(int(track.findtext("Flags")), flags)
+                    timeline.SetTrackName.assert_any_call(kind, index, name)
+                    timeline.SetTrackEnable.assert_any_call(kind, index, enabled)
+                    timeline.SetTrackLock.assert_any_call(kind, index, locked)
+
     def test_single_and_batch_drt_apply_state_before_export(self) -> None:
         for batch in (False, True):
             with self.subTest(batch=batch), tempfile.TemporaryDirectory() as temp:

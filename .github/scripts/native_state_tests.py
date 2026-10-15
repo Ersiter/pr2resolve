@@ -156,7 +156,8 @@ class NativeStateTests(unittest.TestCase):
             "unknown": [("track-state:video:1", '{"muted": true, "locked": true}')],
             "markers": [{"scope": "track"}, {"scope": "sequence", "color_index": 1}],
         })
-        self.assertEqual(len(warnings), 7)
+        self.assertEqual(len(warnings), 5)
+        self.assertFalse(any("muted" in warning or "locked" in warning for warning in warnings))
 
 
 if __name__ == "__main__":

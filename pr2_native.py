@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
-from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index
+from pr2_constants import DEFAULT_FPS, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
 from pr2_native_project import update_sequence_settings, update_timeline_handles
 from pr2_native_time import build_media_timemap, retimed_source_in
 from pr2_native_state import (
@@ -482,6 +482,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     clip_labels = _timeline_clip_labels(state_manifest)
     for warning in unwritten_state_warnings(source, state_manifest):
         print(f"  Warning: {warning}")
+    track_states = {(track.type, track.index): track for track in _timeline_track_states(source)}
     for vector_name, kind, generic in (("VideoTrackVec", "video", video_template), ("AudioTrackVec", "audio", audio_template)):
         vector = native.find(vector_name)
         if vector is None or tracks[kind] is None:
@@ -541,9 +542,14 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     _set_native_clip_color(node, clip_labels[label_key])
                 item = ET.SubElement(items, "Element")
                 item.append(node)
-            for field in ("FusionCompHolderItems", "UserDefinedName", "LayersVec"):
+            for field in ("FusionCompHolderItems", "LayersVec"):
                 _set_child(track, field, "")
-            _set_child(track, "Name", fcp_track.findtext("name") or "")
+            state = track_states[(kind, track_index)]
+            _set_child(track, "UserDefinedName", state.name)
+            # Resolve 21 DC export: lock=1, disabled=2; both=3. Clip flag
+            # bits and label-color enums are unrelated to these track flags.
+            flags = (_int_text(track, "Flags") & ~3) | int(state.locked) | (0 if state.enabled else 2)
+            _set_child(track, "Flags", str(flags))
             wrapper.append(track)
     members[seq_name] = _xml(native)
     return members, source, refs

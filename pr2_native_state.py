@@ -180,10 +180,8 @@ def unwritten_state_warnings(source: ET.Element, state: dict[str, Any]) -> list[
             track = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        if track.get("muted"):
-            warnings.append("muted track state is not applied in native DRP")
-        if track.get("locked"):
-            warnings.append("locked track state is not applied in native DRP")
+        if track.get("solo"):
+            warnings.append("solo track state is not applied in native DRP")
     markers = state.get("markers", [])
     if any(item.get("scope") in ("track", "clip") for item in markers if isinstance(item, dict)):
         warnings.append("track or clip markers are not applied in native DRP")

@@ -305,6 +305,20 @@ _ORDER_MAP: dict[str, int] = {tag: i for i, tag in enumerate(FCP7_CLIPIITEM_ORDE
 # Shared Helpers (no internal deps)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _timeline_track_states(sequence: ET.Element) -> list[TrackData]:
+    """Read the same track semantics for native and API output."""
+    states: list[TrackData] = []
+    for kind in ("video", "audio"):
+        for index, track in enumerate(sequence.findall(f"media/{kind}/track"), 1):
+            enabled = (track.findtext("enabled") or "TRUE").strip().upper() != "FALSE"
+            states.append(TrackData(
+                type=kind, index=index, enabled=enabled, muted=not enabled,
+                locked=(track.findtext("locked") or "FALSE").strip().upper() == "TRUE",
+                name=track.findtext("name") or "",
+            ))
+    return states
+
+
 def _build_file_index(root: ET.Element) -> dict[str, ET.Element]:
     """Build mapping from file element id to the <file> element."""
     index: dict[str, ET.Element] = {}

@@ -33,7 +33,7 @@ from pr2_constants import (
     _SourceTCInfo, LumetriGrade, LumetriParameter,
     LUMETRI_POINTWISE_IDS, LUMETRI_SPATIAL_IDS,
     _build_file_index, _get_sequence_format, _get_sequence_resolution,
-    _is_ntsc, load_xml, load_prproj,
+    _is_ntsc, _timeline_track_states, load_xml, load_prproj,
 )
 
 
@@ -1332,7 +1332,7 @@ def _generate_report(
                 f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
                 f"- Retimed clips: {retimed}. Native forward constant-speed video uses a Resolve 21 time map; native audio retiming, reverse and variable speed are unsupported.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
-                "- Native sequence marker position, name, note and duration are offline-validated; Resolve UI application is unverified. Marker color mapping, native in/out and work area, track mute/lock, and flags are unsupported or unverified.",
+                "- Native sequence markers and track name/mute/lock have offline coverage; Resolve UI application is unverified. Marker color mapping, native in/out and work area, independent track colors, and clip flags are unsupported or unverified.",
                 "- Native Lumetri and visible source start-timecode application remain unverified. Retained source state does not prove UI application.",
                 "",
             ]
@@ -3776,6 +3776,15 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
                         occupied_frames.add(frame)
                     except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
                         warnings.append(f"Could not apply sequence marker: {exc}")
+    for state in _timeline_track_states(sequence):
+        for method_name, value in (("SetTrackName", state.name), ("SetTrackEnable", state.enabled), ("SetTrackLock", state.locked)):
+            if method_name == "SetTrackName" and not value:
+                continue
+            try:
+                if not getattr(timeline, method_name)(state.type, state.index, value):
+                    warnings.append(f"Resolve rejected {state.type} track {state.index} {method_name}")
+            except (AttributeError, TypeError, RuntimeError) as exc:
+                warnings.append(f"Could not apply {state.type} track {state.index} {method_name}: {exc}")
     label_records: list[dict[str, Any]] = []
     unknown_records = opaque.get("unknown", [])
     if not isinstance(unknown_records, list):
@@ -3788,20 +3797,12 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
             continue
         if key.startswith("track-state:"):
             try:
-                _, track_type, track_index_text = key.split(":", 2)
-                track_index = int(track_index_text)
-                track_data = json.loads(value)
-                if track_data.get("name") and hasattr(timeline, "SetTrackName"):
-                    if not timeline.SetTrackName(track_type, track_index, track_data["name"]):
-                        warnings.append(f"Resolve rejected {track_type} track {track_index} name")
-                if hasattr(timeline, "SetTrackEnable"):
-                    if not timeline.SetTrackEnable(track_type, track_index, not track_data.get("muted", False)):
-                        warnings.append(f"Resolve rejected {track_type} track {track_index} enable state")
-                if hasattr(timeline, "SetTrackLock"):
-                    if not timeline.SetTrackLock(track_type, track_index, track_data.get("locked", False)):
-                        warnings.append(f"Resolve rejected {track_type} track {track_index} lock state")
-            except (AttributeError, ValueError, TypeError, json.JSONDecodeError, RuntimeError) as exc:
-                warnings.append(f"Could not apply track state {key}: {exc}")
+                record = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                warnings.append(f"Could not read source track state: {key}")
+                continue
+            if isinstance(record, dict) and record.get("solo"):
+                warnings.append(f"Solo track state is not applied: {key}")
             continue
         if not key.startswith("clip-label:"):
             continue
