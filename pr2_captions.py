@@ -7,9 +7,10 @@ transfer Premiere caption styling.
 from __future__ import annotations
 
 import base64
+import json
 import struct
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from fractions import Fraction
 from uuid import uuid4
 
@@ -338,6 +339,64 @@ def extract_captions(prproj_root: ET.Element, sequence_uid: str) -> list[Caption
                     formatted_text_hashes=tuple(hashes),
                     source_refs=tuple(source_refs),
                 ))
+    return records
+
+
+def caption_records_from_xml(root: ET.Element) -> list[CaptionRecord]:
+    """Read preserved source caption records from the converter's XML comment."""
+    records: list[CaptionRecord] = []
+    record_fields = {field.name for field in fields(CaptionRecord)}
+    tuple_fields = {
+        "font_candidates", "text_blocks", "decode_errors",
+        "formatted_text_hashes", "source_refs",
+    }
+    integer_fields = {
+        "track_index", "start_ticks", "end_ticks", "duration_ticks",
+        "track_frame_rate_ticks",
+    }
+
+    for node in root.iter():
+        if node.tag is not ET.Comment or not (node.text or "").strip().startswith("pr2resolve-timeline-state:"):
+            continue
+        encoded = (node.text or "").strip().split(":", 1)[1]
+        try:
+            state = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("invalid pr2resolve timeline-state caption data") from error
+        if not isinstance(state, dict):
+            raise ValueError("invalid pr2resolve timeline-state caption data")
+        unknown = state.get("unknown", [])
+        if not isinstance(unknown, list):
+            raise ValueError("invalid pr2resolve timeline-state caption data")
+        for entry in unknown:
+            if not isinstance(entry, list) or len(entry) != 2 or not all(isinstance(value, str) for value in entry):
+                raise ValueError("invalid pr2resolve timeline-state source record")
+            key, raw_record = entry
+            if not key.startswith("caption-source:"):
+                continue
+            try:
+                value = json.loads(raw_record)
+            except json.JSONDecodeError as error:
+                raise ValueError("invalid preserved caption record") from error
+            if not isinstance(value, dict) or set(value) != record_fields:
+                raise ValueError("preserved caption record has an unexpected shape")
+            for name in integer_fields:
+                item = value[name]
+                if item is not None and (not isinstance(item, int) or isinstance(item, bool)):
+                    raise ValueError(f"preserved caption field {name} is not an integer")
+                if name == "track_index" and item is None:
+                    raise ValueError("preserved caption field track_index is missing")
+            for name in tuple_fields:
+                item = value[name]
+                if not isinstance(item, list) or any(not isinstance(part, str) for part in item):
+                    raise ValueError(f"preserved caption field {name} is not a string list")
+                value[name] = tuple(item)
+            for name in ("sequence_uid", "track_uid", "item_object_id", "formatted_text_data"):
+                if not isinstance(value[name], str):
+                    raise ValueError(f"preserved caption field {name} is not text")
+            if value["text"] is not None and not isinstance(value["text"], str):
+                raise ValueError("preserved caption field text is not text")
+            records.append(CaptionRecord(**value))
     return records
 
 

@@ -21,6 +21,7 @@ import zipfile
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Optional
 from xml.dom import minidom
@@ -38,7 +39,7 @@ from pr2_constants import (
 )
 from pr2_lumetri import extract_lumetri_clips
 from pr2_native_grade import build_lumetri_drx, build_lumetri_node_plan
-from pr2_captions import extract_captions
+from pr2_captions import CaptionRecord, caption_records_from_xml, extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
 from pr2_retime_output import apply_retimes_to_archive
 
@@ -125,6 +126,45 @@ def _is_ntsc_fps(fps: float) -> bool:
         if abs(fps - pal) < FPS_TOLERANCE:
             return False
     return any(abs(fps - rate) < FPS_TOLERANCE for rate in NTSC_RATES)
+
+
+def _fcp7_rate_fraction(rate: ET.Element | None) -> Fraction | None:
+    if rate is None:
+        return None
+    try:
+        timebase = int(rate.findtext("timebase", ""))
+    except ValueError:
+        return None
+    ntsc_text = rate.findtext("ntsc", "FALSE").upper()
+    if timebase <= 0 or ntsc_text not in {"TRUE", "FALSE"}:
+        return None
+    return Fraction(timebase * 1000, 1001) if ntsc_text == "TRUE" else Fraction(timebase, 1)
+
+
+def _caption_extent_frames(captions: list[CaptionRecord], fps: Fraction) -> int:
+    last_end = 0
+    for caption in captions:
+        if (caption.start_ticks is None or caption.end_ticks is None
+                or caption.end_ticks <= caption.start_ticks):
+            continue
+        end_frame = round(Fraction(caption.end_ticks, 254_016_000_000) * fps)
+        last_end = max(last_end, end_frame)
+    return last_end
+
+
+def _sequence_content_end(root: ET.Element) -> int:
+    last_end = 0
+    for clipitem in root.iter("clipitem"):
+        end_text = clipitem.findtext("end", "")
+        if end_text:
+            try:
+                last_end = max(last_end, int(end_text))
+            except ValueError:
+                pass
+    fps = _fcp7_rate_fraction(root.find("sequence/rate"))
+    if fps is not None:
+        last_end = max(last_end, _caption_extent_frames(caption_records_from_xml(root), fps))
+    return last_end
 
 
 # _is_ntsc imported from pr2_constants — single source of truth
@@ -334,19 +374,11 @@ def _scan_major(root: ET.Element) -> list[Issue]:
                 seq_dur = int(seq_dur_text)
             except ValueError:
                 seq_dur = 0
-            # Find last clip end across all tracks
-            last_end = 0
-            for clipitem in root.iter("clipitem"):
-                end_text = clipitem.findtext("end", "")
-                if end_text:
-                    try:
-                        last_end = max(last_end, int(end_text))
-                    except ValueError:
-                        pass
+            last_end = _sequence_content_end(root)
             if last_end > 0 and last_end != seq_dur:
                 issues.append(Issue(
                     MAJOR, "M3",
-                    f"Sequence duration ({seq_dur}) != last clip end ({last_end})",
+                    f"Sequence duration ({seq_dur}) != last content end ({last_end})",
                     "sequence",
                 ))
 
@@ -740,14 +772,7 @@ def _apply_fixes(root: ET.Element, issues: list[Issue]) -> int:
     if any(i.rule_id == "M3" for i in issues):
         seq = root.find("sequence")
         if seq is not None:
-            last_end = 0
-            for clipitem in root.iter("clipitem"):
-                end_text = clipitem.findtext("end", "")
-                if end_text:
-                    try:
-                        last_end = max(last_end, int(end_text))
-                    except ValueError:
-                        pass
+            last_end = _sequence_content_end(root)
             if last_end > 0:
                 dur_elem = seq.find("duration")
                 if dur_elem is not None:
@@ -2395,7 +2420,8 @@ def _prproj_parse_sequence(
             if "PreviewFrameSizeHeight" in p.tag:
                 h = int(p.text or "1080")
 
-    fps = DEFAULT_FPS
+    video_fps: float | None = None
+    data_fps: float | None = None
     video_tg = None
     audio_tg = None
     tg_section = seq_el.find("TrackGroups")
@@ -2423,11 +2449,24 @@ def _prproj_parse_sequence(
                         fr = tg_el.find(".//FrameRate")
                         if fr is not None and fr.text:
                             try:
-                                fps = _prproj_adobe_timebase_to_fps(int(fr.text))
+                                rate_ticks = int(fr.text)
+                                if rate_ticks > 0:
+                                    video_fps = _prproj_adobe_timebase_to_fps(rate_ticks)
                             except ValueError:
                                 pass
                     elif tg_el.tag == "AudioTrackGroup":
                         audio_tg = tg_el
+                    elif tg_el.tag in {"DataTrackGroup", "CaptionTrackGroup"} and data_fps is None:
+                        fr = tg_el.find(".//FrameRate")
+                        if fr is not None and fr.text:
+                            try:
+                                rate_ticks = int(fr.text)
+                                if rate_ticks > 0:
+                                    data_fps = _prproj_adobe_timebase_to_fps(rate_ticks)
+                            except ValueError:
+                                pass
+
+    fps = video_fps or data_fps or DEFAULT_FPS
 
     is_ntsc = _is_ntsc_fps(fps)
     timebase = int(round(fps))
@@ -2437,7 +2476,8 @@ def _prproj_parse_sequence(
             f"lumetri-source:{clip.track_item_ref}",
             json.dumps(asdict(clip), ensure_ascii=False, sort_keys=True),
         ))
-    for caption in extract_captions(prproj_root, sequence_uid):
+    caption_records = extract_captions(prproj_root, sequence_uid)
+    for caption in caption_records:
         timeline_state.unknown.append((
             f"caption-source:{caption.item_object_id}",
             json.dumps(asdict(caption), ensure_ascii=False, sort_keys=True),
@@ -2510,6 +2550,9 @@ def _prproj_parse_sequence(
     total_frames = 0
     xmeml, dur_elem, video_section, audio_section = _render_sequence_skeleton(seq_name, timebase, is_ntsc)
     fcp_sequence = xmeml.find("sequence")
+    caption_fps = _fcp7_rate_fraction(fcp_sequence.find("rate") if fcp_sequence is not None else None)
+    if caption_fps is not None:
+        total_frames = _caption_extent_frames(caption_records, caption_fps)
     if fcp_sequence is not None:
         fcp_sequence.set("id", sequence_uid)
         fcp_sequence.find("in").text = str(timeline_state.in_frame if timeline_state.in_frame is not None else -1)
