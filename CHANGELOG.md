@@ -7,6 +7,7 @@ All notable changes to pr2resolve.
 ### Fixed
 - Native audio rebuilds Fairlight channel strips, sample durations and source-channel references. Mono source-channel selection, stereo source pairs, overlapping tracks, mute and lock use measured Resolve 21 records.
 - Native clip labels now use the authoritative item-color record instead of an ineffective cached field. Native/API output retains the same 16 preset colors after import, save and reopen; unmatched labels produce warnings.
+- Release checksums use asset basenames even when Windows artifacts retain a generated build directory, so downloaded packages can be verified together with `sha256sum -c SHA256SUMS.txt`.
 - Native and API output share project frame rate and geometry, ordered Lumetri nodes, supported video time maps, sequence markers and In/Out encoding. API archive corrections validate every timeline before replacing the package and preserve unrelated member bytes and ZIP metadata.
 - Mixed-rate Premiere trims use source ticks and the XML clip clock. Graphdict alignment distinguishes record In from source In and checks the last visible frame against Apple's `speedkfout` convention; original records and residuals remain available.
 - API color requests follow sequence UIDs, preserving duplicate display names. Project defaults come from the first selected sequence; media overrides come only from selected sequences.

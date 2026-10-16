@@ -217,7 +217,7 @@ jobs:
 
           : > SHA256SUMS.txt
           for file in "${FILES[@]}"; do
-            sha256sum "$file" | sed 's#release-artifacts/[^/]*/##' >> SHA256SUMS.txt
+            (cd "$(dirname "$file")" && sha256sum "$(basename "$file")") >> SHA256SUMS.txt
           done
 
           PREVIOUS_TAG="$(python - <<'PY'
