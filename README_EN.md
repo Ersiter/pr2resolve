@@ -2,7 +2,7 @@
 
 > **Current Status: Native DRP experimental**
 >
-> *v1.6.0 — source-driven timeline settings, Motion and time maps*
+> *v1.6.1 — native audio routing, clip labels and retime alignment fixes*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -96,8 +96,8 @@ python tui.py
 - **Motion and time maps**: stable ParameterIDs identify localized Motion controls. XML keeps keyframes with linear interpolation and retains the original Premiere curves in a comment. Native static transforms, forward constant-speed and monotone graphdict video maps are generated from parameters. Curves use a piecewise-linear approximation, retain the full graph and edit boundaries, and report last-frame alignment residuals.
 - **API retime exports**: DRT/DRP packages receive trim and time-map corrections from the same encoder, matched through timeline references and track positions. Ambiguous matches or unsupported curves report failure and preserve the source file. Package corrections do not change the live API timeline.
 - **API failures**: if any requested DRT/DRP output is incomplete, the CLI returns a nonzero status and retains XML for retry. Intermediate cleanup follows `--no-xml` only after all exports succeed; requesting XML keeps it after DRT export.
-- **Validation boundary**: this version passes offline structure and source-project regressions; Resolve import and audiovisual checks remain outstanding. Native zoom compensation assumes the template uses fit sizing; other input-scaling modes have not been verified. Animated Motion, reverse/holds, Bezier retiming, audio retiming, non-default anchors, transitions, nested sequences and generators fail explicitly. Native/API curve rendering parity is unverified.
-- **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
+- **Validation boundary**: this version passes offline structure and source-project regressions. Controlled Resolve 21 cases verify import/reopen behavior for labels, markers, track state and basic audio, plus native/API rendered parity for constant/piecewise-linear video retimes and two serial grade nodes. This does not establish full Premiere/Resolve equivalence. Native zoom compensation assumes fit sizing; other input-scaling modes remain unverified. Animated Motion, reverse/holds, Bezier retiming, audio retiming, non-default anchors, transitions, nested sequences and generators fail explicitly.
+- **Build maintainers**: Windows releases use Python 3.14; macOS/Linux releases use Python 3.13. All use Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
 Maintainers can select a branch under GitHub Actions → Release → Run workflow to produce build artifacts for all three platforms. Manual builds do not publish a release or move tags; published immutable releases cannot have their assets or associated tags replaced.
 

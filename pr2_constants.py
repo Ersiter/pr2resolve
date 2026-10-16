@@ -15,7 +15,7 @@ from typing import Optional
 # Constants
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VERSION = "1.6.0"
+VERSION = "1.6.1"
 DEFAULT_FPS = 30.0
 IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".tif", ".tiff"})
 MICROSECOND = 1_000_000

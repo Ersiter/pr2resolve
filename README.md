@@ -2,7 +2,7 @@
 
 > **Current Status: Native DRP experimental**
 >
-> *v1.6.0 — 源参数驱动的时间线设置、Motion 与时间映射*
+> *v1.6.1 — 原生音频路由、片段标签与变速对齐修复*
 
 # pr2resolve — Premiere Pro to DaVinci Resolve Converter
 
@@ -96,8 +96,8 @@ python tui.py
 - **Motion 与时间映射**：按 ParameterID 识别本地化 Motion；XML 保留关键帧并线性近似插值，原始曲线保存在 XML 注释中。native 静态变换、正向恒速及单调 graphdict 变速视频由参数编码；曲线采用分段线性近似，保留全图及剪辑起止，报告末帧对齐残差。
 - **API 变速导出**：DRT/DRP 导出后使用同一编码器修正包内的入点与时间映射，按时间线引用和轨道位置匹配；无法唯一匹配或遇到不支持的曲线时报告失败并保留源文件。API 内存中的时间线不随包内修正改变。
 - **API 失败处理**：请求的 DRT/DRP 未全部完成时，CLI 返回非零并保留 XML 供重试；全部成功后才按 `--no-xml` 清理中间文件。选择保留 XML 时，DRT 导出不会回收它。
-- **验证边界**：本版通过离线结构和原始工程回归，尚未完成 Resolve 导入及视听回归。native 缩放补偿基于模板采用 fit 的假设；不同输入缩放设置下的画面尚未验证。Motion 动画、反向/定格、Bezier 变速、音频变速、非默认锚点、转场、嵌套序列和生成器会明确拒绝；曲线的 native/API 渲染一致性未验证。
-- **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
+- **验证边界**：本版通过离线结构和原始工程回归；Resolve 21 的受控样本已验证标签、标记、轨道状态及基础音频的导入和重开，以及恒速/分段线性视频和双节点调色的 native/API 渲染一致性。这不代表完整 Premiere/Resolve 等价。native 缩放补偿基于模板采用 fit 的假设，其他输入缩放设置尚未验证。Motion 动画、反向/定格、Bezier 变速、音频变速、非默认锚点、转场、嵌套序列和生成器会明确拒绝。
+- **构建维护者**：Windows Release 使用 Python 3.14，macOS/Linux 使用 Python 3.13，结合 Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
 维护者可在 GitHub Actions → Release → Run workflow 选择分支，生成三平台构建附件。手动构建不发布 Release 或移动 tag；已发布的不可变 Release 无法替换资产及对应 tag。
 

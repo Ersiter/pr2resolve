@@ -1,27 +1,27 @@
 # Changelog
 
-## Unreleased
-
-- CLI API failures and partial exports return nonzero and retain retryable XML, including with `--no-xml`. Successful DRT exports respect requested XML retention; successful DRP exports clean only their extra temporary XML copies when XML output is enabled. Export success and Resolve lifecycle handoff are tracked separately.
-
-- Caption/data-only sequences are included in non-empty selection and diagnosis. Audio/video clip counts remain separate from data item counts; unsupported data-track export still retains its source report.
-
-- API project/timeline color requests follow the source sequence UID, so duplicate display names no longer overwrite one another. The first selected sequence supplies the project defaults; media overrides come from selected sequences only. An undefined-variable color fallback has been removed. Actual color setting acceptance and native/API color parity remain unverified.
-
-- API DRT/DRP exports correct supported retimes with the native encoder after export, matching the MediaPool timeline reference and track/start/duration. All timelines validate before the package is replaced; ambiguous matches and unsupported shapes fail without recycling source XML. Unrelated member bytes and ZIP metadata are preserved. Single-frame stills share the native virtual hold map. The live API timeline and rendered parity remain unverified.
-
-- Native DRP and API export share an ordered DRX graph, with one serial node per source Lumetri effect. Static Exposure/Contrast/Saturation use explicit approximate mappings; other shaders, parameters and keyframes remain source records.
-- Grade identity preserves empty video tracks and timeline-start offsets. Required graph application failures prevent successful API export reporting. Native clip version tables receive the exact same DRX Body; Resolve loading and color rendering remain unverified.
-
-- Premiere caption extraction follows FormattedTextData FlatBuffer references and text-run order. Text, font lists, source ticks and raw payloads survive normalization; unknown structures are rejected rather than guessed. Caption target/style parity remains incomplete.
-
-- Mixed-rate Premiere trims are converted directly from source ticks to the XML clip clock; native output reads that clock instead of the media frame rate. Source tick values and trim residuals remain available.
-- Native graphdict video maps preserve source/record coordinates and edit boundaries with piecewise-linear interpolation. Alignment uses `speedkfin` and checks the last visible frame against Apple's `speedkfout` rule; holds, reverse, Bezier, audio retiming and transition offsets remain unsupported. Native/API rendered parity is unverified.
-
-- Native and API exports share track name, enable/mute, and lock semantics. Native names use `UserDefinedName`; lock/disable bits follow a paired Resolve 21 DRP/XML export.
-- Track-state regressions check all four lock/enable combinations in the generated native archive and API calls. Visible Resolve behavior still requires import validation.
-
 All notable changes to pr2resolve.
+
+## [v1.6.1] — 2026-10-16
+
+### Fixed
+- Native audio rebuilds Fairlight channel strips, sample durations and source-channel references. Mono source-channel selection, stereo source pairs, overlapping tracks, mute and lock use measured Resolve 21 records.
+- Native clip labels now use the authoritative item-color record instead of an ineffective cached field. Native/API output retains the same 16 preset colors after import, save and reopen; unmatched labels produce warnings.
+- Native and API output share project frame rate and geometry, ordered Lumetri nodes, supported video time maps, sequence markers and In/Out encoding. API archive corrections validate every timeline before replacing the package and preserve unrelated member bytes and ZIP metadata.
+- Mixed-rate Premiere trims use source ticks and the XML clip clock. Graphdict alignment distinguishes record In from source In and checks the last visible frame against Apple's `speedkfout` convention; original records and residuals remain available.
+- API color requests follow sequence UIDs, preserving duplicate display names. Project defaults come from the first selected sequence; media overrides come only from selected sequences.
+- CLI API failures return nonzero and retain retryable XML, including with `--no-xml`. Successful exports honor XML retention, with Resolve lifecycle handoff tracked separately.
+- Caption extraction follows FlatBuffer references and text-run order. Caption/data-only sequences participate in selection and diagnosis; text, font lists, source ticks and raw payloads are retained.
+
+### Added
+- Manual three-platform Actions builds produce downloadable artifacts without publishing or moving a tag. Publication reports immutable-release conflicts explicitly.
+- GitHub code and stable release packages can sync one way to a configured Gitee mirror, with resumable attachment handling and bounded network retries.
+
+### Validation and remaining limits
+- Resolve 21 import, save and reopen checks cover all 16 clip-label presets, sequence marker text/ranges, In/Out, and track disable/lock states. The Windows build artifact also passes native DRP/API DRT label, marker and track-state checks after reopening.
+- Four reopened native/API audio cases match all 384,000 interleaved PCM values. Synthetic 50%/200% and piecewise-linear video cases match source-frame references and native/API rendered pixels; two ordered grade nodes also render identically between paths. These controlled cases do not establish general Premiere/Resolve parity.
+- Static Exposure/Contrast/Saturation remain approximate. Full color-science equivalence, grade animation, complete caption styling and graphics conversion remain unfinished. Audio retiming, reverse/hold/Bezier graphdict maps, transition offsets, independent track colors and colored item flags remain unsupported; marker colors remain Blue.
+- Windows, macOS and Linux builds pass for the preceding conversion commit. macOS/Linux runtime imports and the final version-tag build require separate verification.
 
 ## [v1.6.0] — 2026-10-15
 
