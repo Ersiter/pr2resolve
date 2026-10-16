@@ -10,6 +10,8 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 
 [**README in English**](README_EN.md)
 
+代码仓库：[GitHub](https://github.com/Ersiter/pr2resolve) · [Gitee 镜像](https://gitee.com/Ersiter/pr2resolve)（首次启用须完成[同步配置与验收](.github/GITEE_SYNC.md)）。开发和构建统一在 GitHub，代码和正式发行包单向同步到 Gitee。
+
 参赛材料：[项目说明](docs/contest/submission-brief.md) · [三分钟演示脚本](docs/contest/demo-script-3min.md) · [复现清单](docs/contest/reproducibility-checklist.md)
 
 <img src="fav.png" alt="pr2resolve TUI" width="600">
@@ -41,6 +43,8 @@ Premiere Pro 转 DaVinci Resolve 的时间线转换器。输出 FCP7 XML、DRT �
 ## 快速开始
 
 普通用户优先下载 [最新 Release](https://github.com/Ersiter/pr2resolve/releases/latest) 中对应平台的压缩包。Release 包自带可执行文件，不需要安装 Python。
+
+镜像启用后，也可从 [Gitee 发行版](https://gitee.com/Ersiter/pr2resolve/releases) 下载相同安装包，并用 `SHA256SUMS.txt` 校验。
 
 ### Windows
 

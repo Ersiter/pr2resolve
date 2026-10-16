@@ -1,0 +1,79 @@
+name: Sync Gitee
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to sync; latest for initial setup; empty for code only'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+    secrets:
+      GITEE_SSH_PRIVATE_KEY:
+        required: true
+      GITEE_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync code and optional release
+    if: github.event_name != 'release' || (!github.event.release.draft && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: gitee-sync-${{ github.repository }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      GITEE_OWNER: ${{ vars.GITEE_OWNER }}
+      GITEE_REPO: ${{ vars.GITEE_REPO }}
+      GITEE_SSH_KNOWN_HOSTS: ${{ vars.GITEE_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Configure Gitee SSH authentication
+        shell: bash
+        env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${GITEE_OWNER:?Set the GITEE_OWNER repository variable}"
+          : "${GITEE_REPO:?Set the GITEE_REPO repository variable}"
+          : "${GITEE_SSH_PRIVATE_KEY:?Set the GITEE_SSH_PRIVATE_KEY repository secret}"
+          : "${GITEE_SSH_KNOWN_HOSTS:?Set verified Gitee host keys in GITEE_SSH_KNOWN_HOSTS}"
+          install -m 700 -d "$RUNNER_TEMP/gitee-ssh"
+          umask 077
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/gitee-ssh/key"
+          printf '%s\n' "$GITEE_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/gitee-ssh/known_hosts"
+          echo "GIT_SSH_COMMAND=ssh -i $RUNNER_TEMP/gitee-ssh/key -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/gitee-ssh/known_hosts" >> "$GITHUB_ENV"
+
+      - name: Sync branches, tags and release assets
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name || '' }}
+        run: python .github/scripts/sync_gitee.py
+
+      - name: Remove temporary SSH credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/gitee-ssh/key" "$RUNNER_TEMP/gitee-ssh/known_hosts"

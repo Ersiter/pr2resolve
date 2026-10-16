@@ -82,8 +82,7 @@ jobs:
           import yaml
 
           paths = [
-              Path(".github/workflows/ci.yml"),
-              Path(".github/workflows/release.yml"),
+              *Path(".github/workflows").glob("*.yml"),
               *Path(".github/ISSUE_TEMPLATE").glob("*.yml"),
           ]
           for path in paths:
@@ -274,3 +273,15 @@ jobs:
 
       - name: Publish release
         run: gh release edit "$TAG" --draft=false
+
+  sync-gitee:
+    name: Sync published release to Gitee
+    needs: [validate, release]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sync-gitee.yml
+    with:
+      release_tag: ${{ needs.validate.outputs.tag }}
+    secrets:
+      GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
