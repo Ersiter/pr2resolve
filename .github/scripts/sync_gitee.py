@@ -11,7 +11,6 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 from pathlib import Path, PurePosixPath
 
 
@@ -41,19 +40,24 @@ class Gitee:
         headers = {"Authorization": f"Bearer {self.token}"}
         body = None
         if file is not None:
-            boundary = uuid.uuid4().hex
-            headers["Content-Type"] = f"multipart/form-data; boundary={boundary}"
-            body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; '
-                    f'filename="{file.name}"\r\nContent-Type: application/octet-stream\r\n\r\n'
-                    ).encode() + file.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
+            # Stream uploads with curl; keep credentials off the command line.
+            config = "header = " + json.dumps(f"Authorization: Bearer {self.token}") + "\n"
+            result = subprocess.run(
+                ["curl", "--config", "-", "--silent", "--show-error", "--fail",
+                 "--connect-timeout", "20", "--max-time", "600", "--request", method,
+                 "--form", f"file=@{file}", self.base + path],
+                input=config, capture_output=True, text=True,
+            )
+            if result.returncode:
+                reason = result.stderr.strip().replace(self.token, "***")
+                raise SyncError(f"Gitee upload {file.name}: curl {result.returncode}: {reason}")
+            return json.loads(result.stdout)
         elif data is not None:
             headers["Content-Type"] = "application/json"
             body = json.dumps(data).encode()
         request = urllib.request.Request(self.base + path, data=body, headers=headers, method=method)
         try:
-            with urllib.request.build_opener(DownloadRedirect()).open(
-                request, timeout=600 if file is not None else 120
-            ) as response:
+            with urllib.request.build_opener(DownloadRedirect()).open(request, timeout=120) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and method == "GET" and path.startswith("/releases/tags/"):

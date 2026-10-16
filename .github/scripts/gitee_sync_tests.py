@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import http.server
+import json
 import subprocess
 import tempfile
+import threading
 import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import sync_gitee as sync
 
@@ -208,6 +211,46 @@ class ReleaseMirrorTests(unittest.TestCase):
 
 
 class ApiTests(unittest.TestCase):
+    def test_multipart_upload_sends_file_and_authentication(self) -> None:
+        received = {}
+
+        class UploadHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                received['authorization'] = self.headers.get('Authorization')
+                received['body'] = self.rfile.read(int(self.headers['Content-Length']))
+                self.send_response(201)
+                self.end_headers()
+                self.wfile.write(b'{"id": 7}')
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = http.server.HTTPServer(('127.0.0.1', 0), UploadHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                file = Path(temp) / 'package.zip'
+                file.write_bytes(b'actual package contents')
+                api = sync.Gitee('owner', 'repo', 'test-token')
+                api.base = f'http://127.0.0.1:{server.server_port}'
+                self.assertEqual(api.request('/attachments', 'POST', file=file), {'id': 7})
+                self.assertEqual(received['authorization'], 'Bearer test-token')
+                self.assertIn(file.read_bytes(), received['body'])
+        finally:
+            server.shutdown()
+            thread.join()
+            server.server_close()
+
+    def test_upload_transport_errors_do_not_expose_credentials(self) -> None:
+        api = sync.Gitee('owner', 'repo', 'secret-value')
+        with patch.object(sync.subprocess, 'run', return_value=Mock(
+            returncode=28, stderr='Operation timed out: secret-value'
+        )):
+            with self.assertRaisesRegex(sync.SyncError, 'curl 28') as error:
+                api.request('/attachments', 'POST', file=Path('package.zip'))
+            self.assertNotIn('secret-value', str(error.exception))
+
     def test_api_permission_and_upload_errors_are_not_hidden_or_leaked(self) -> None:
         api = sync.Gitee("owner", "repo", "secret-value")
         for method, code in [("GET", 401), ("GET", 403), ("POST", 413), ("POST", 500)]:
