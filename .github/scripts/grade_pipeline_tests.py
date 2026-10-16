@@ -101,6 +101,7 @@ class GradePipelineTests(unittest.TestCase):
                 manager = resolve.GetProjectManager.return_value
                 manager.GetCurrentProject.return_value = None
                 project = manager.CreateProject.return_value
+                project.SetSetting.return_value = True
                 timeline = project.GetMediaPool.return_value.ImportTimelineFromFile.return_value
                 timeline.GetStartFrame.return_value = 0
                 timeline.GetItemListInTrack.return_value = []

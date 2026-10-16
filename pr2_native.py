@@ -20,7 +20,7 @@ from urllib.parse import unquote, urlparse
 from xml.etree import ElementTree as ET
 
 from pr2_constants import DEFAULT_FPS, IMAGE_SUFFIXES, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
-from pr2_native_project import update_sequence_settings, update_timeline_handles
+from pr2_native_project import update_project_settings, update_sequence_settings, update_timeline_handles
 from pr2_native_grade import attach_native_grade
 from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
@@ -685,6 +685,7 @@ def export_native_drp(
         blob = sequence_lockable_blob(sequence_id_from_pool(pool), markers)
         members["project.xml"] = append_lockable_blob(project_xml, blob).encode("utf-8")
     _configure_color(members, color_profiles)
+    members["project.xml"] = update_project_settings(members["project.xml"], source)
     sequence_name = source.findtext("name") or project_name
     result = io.BytesIO()
     with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as target:

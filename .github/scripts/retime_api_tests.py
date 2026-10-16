@@ -28,6 +28,7 @@ class RetimeApiTests(unittest.TestCase):
             manager = resolve.GetProjectManager.return_value
             manager.GetCurrentProject.return_value = None
             manager.GetProjectListInCurrentFolder.return_value = []
+            manager.CreateProject.return_value.SetSetting.return_value = True
             timeline = manager.CreateProject.return_value.GetMediaPool.return_value.ImportTimelineFromFile.return_value
             timeline.GetStartFrame.return_value = 0
             output = folder / "out.drp"
@@ -63,6 +64,7 @@ class RetimeApiTests(unittest.TestCase):
                 manager.GetCurrentProject.return_value = None
                 manager.GetProjectListInCurrentFolder.return_value = []
                 project = manager.CreateProject.return_value
+                project.SetSetting.return_value = True
                 timeline = project.GetMediaPool.return_value.ImportTimelineFromFile.return_value
                 timeline.GetName.return_value = "Mixed Rate"
                 timeline.GetStartFrame.return_value = 0

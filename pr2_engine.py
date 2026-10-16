@@ -41,6 +41,7 @@ from pr2_lumetri import extract_lumetri_clips
 from pr2_native_grade import build_lumetri_drx, build_lumetri_node_plan
 from pr2_captions import CaptionRecord, caption_records_from_xml, extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
+from pr2_native_project import sequence_project_settings
 from pr2_retime_output import apply_retimes_to_archive
 
 
@@ -3238,6 +3239,16 @@ def _check_resolve_running() -> Any:
 
 # --- Feature: Batch DRT Export ---
 
+def _apply_project_sequence_settings(project: Any, xml_path: Path) -> bool:
+    root = load_xml(xml_path)
+    sequence = root.find("sequence")
+    settings = sequence_project_settings(sequence if sequence is not None else root)
+    failed = [key for key, value in settings.items() if project.SetSetting(key, value) is not True]
+    if failed:
+        print(f"  Project settings rejected: {', '.join(failed)}")
+    return not failed
+
+
 def _drt_batch_export(
     resolve: Any,
     xml_paths: list[Path],
@@ -3286,6 +3297,12 @@ def _drt_batch_export(
             pm.LoadProject(original_name)
         return [(False, None)] * len(xml_paths)
 
+    if xml_paths and not _apply_project_sequence_settings(project, xml_paths[0]):
+        pm.CloseProject(project)
+        pm.DeleteProject(temp_name)
+        if original_name:
+            pm.LoadProject(original_name)
+        return [(False, None)] * len(xml_paths)
     media_pool = project.GetMediaPool()
 
     for i, (xml_path, seq_name) in enumerate(zip(xml_paths, sequence_names)):
@@ -3472,6 +3489,8 @@ def _drp_export(
                 print("    - DaVinci may need to be restarted manually")
                 return False
 
+        if xml_paths and not _apply_project_sequence_settings(project, xml_paths[0]):
+            return False
         media_pool = project.GetMediaPool()
 
         # ── Set project color science from the first exported sequence ──
@@ -4213,6 +4232,12 @@ def _drt_sandbox_export(
                 pm.LoadProject(original_name)
             return False
 
+        if not _apply_project_sequence_settings(project, xml_path):
+            pm.CloseProject(project)
+            pm.DeleteProject(temp_name)
+            if original_name:
+                pm.LoadProject(original_name)
+            return False
         media_pool = project.GetMediaPool()
 
         # Smart media detection: if local media exists, import with clips

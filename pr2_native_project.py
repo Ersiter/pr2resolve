@@ -57,6 +57,105 @@ def _source_dimensions(source: ET.Element) -> tuple[int, int] | None:
     return (width, height) if width > 0 and height > 0 else None
 
 
+def sequence_project_settings(source: ET.Element) -> dict[str, str]:
+    """Read project defaults shared by native and API exports."""
+    settings = {}
+    rate = _source_rate(source)
+    if rate is not None:
+        settings["timelineFrameRate"] = format(rate, ".3f").rstrip("0").rstrip(".")
+    dimensions = _source_dimensions(source)
+    if dimensions is not None:
+        settings["timelineResolutionWidth"] = str(dimensions[0])
+        settings["timelineResolutionHeight"] = str(dimensions[1])
+    return settings
+
+
+def _read_varint(data: bytes, offset: int) -> tuple[int, int]:
+    value = 0
+    for shift in range(0, 70, 7):
+        if offset >= len(data):
+            raise ValueError("truncated native project setting")
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 127) << shift
+        if not byte & 128:
+            return value, offset
+    raise ValueError("oversized native project setting")
+
+
+def _varint(value: int) -> bytes:
+    output = bytearray()
+    while value >= 128:
+        output.append((value & 127) | 128)
+        value >>= 7
+    output.append(value)
+    return bytes(output)
+
+
+def _patch_setup_defaults(data: bytes, updates: dict[int, int]) -> bytes:
+    output = bytearray()
+    offset = 0
+    seen = set()
+    while offset < len(data):
+        start = offset
+        key, offset = _read_varint(data, offset)
+        number, wire = key >> 3, key & 7
+        value_start = offset
+        if wire == 0:
+            _, offset = _read_varint(data, offset)
+        elif wire == 2:
+            length, offset = _read_varint(data, offset)
+            offset += length
+        elif wire in (1, 5):
+            offset += 8 if wire == 1 else 4
+        else:
+            raise ValueError("unsupported native project setting wire type")
+        if not number or offset > len(data):
+            raise ValueError("invalid native project setting bounds")
+        if number in updates:
+            if wire != 0 or number in seen:
+                raise ValueError("ambiguous native project default setting")
+            output.extend(data[start:value_start] + _varint(updates[number]))
+            seen.add(number)
+        else:
+            output.extend(data[start:offset])
+    for number, value in updates.items():
+        if number not in seen:
+            output.extend(_varint(number << 3) + _varint(value))
+    return bytes(output)
+
+
+def update_project_settings(project_xml: bytes, source: ET.Element) -> bytes:
+    """Patch measured Resolve 21 SetupBA defaults without replacing color settings."""
+    settings = sequence_project_settings(source)
+    field_ids = {"timelineResolutionWidth": 2, "timelineResolutionHeight": 3, "timelineFrameRate": 15}
+    updates = {field_ids[key]: int(float(value)) * 2 for key, value in settings.items()}
+    if not updates:
+        return project_xml
+    match = re.search(rb"(?s)(<SM_Config\b.*?<FieldsBlob>)([0-9a-fA-F]+)(</FieldsBlob>)", project_xml)
+    if match is None:
+        raise ValueError("native project has no SM_Config FieldsBlob")
+    fields = bytes.fromhex(match[2].decode("ascii"))
+    key = "SetupBA".encode("utf-16be")
+    first_field = struct.pack(">I", len(key)) + key + struct.pack(">IB", 12, 0)
+    if (len(fields) < 8 + len(first_field) + 13
+            or struct.unpack_from(">I", fields)[0] != 1
+            or struct.unpack_from(">I", fields, 4)[0] < 1
+            or fields[8:8 + len(first_field)] != first_field):
+        raise ValueError("native setup resource has an unexpected FieldsBlob layout")
+    prefix = fields[:8 + len(first_field)]
+    length = struct.unpack_from(">I", fields, len(prefix))[0]
+    value_end = len(prefix) + 4 + length
+    wrapped = fields[len(prefix) + 4:value_end]
+    if (length < 9 or value_end > len(fields) or wrapped[8] != 0x80
+            or struct.unpack_from(">II", wrapped) != (1, len(wrapped) - 8)):
+        raise ValueError("native setup resource requires a version-1 raw envelope")
+    payload = _patch_setup_defaults(wrapped[9:], updates)
+    wrapped = struct.pack(">II", 1, len(payload) + 1) + b"\x80" + payload
+    fields = prefix + struct.pack(">I", len(wrapped)) + wrapped + fields[value_end:]
+    return project_xml[:match.start(2)] + fields.hex().encode("ascii") + project_xml[match.end(2):]
+
+
 def update_sequence_settings(pool_xml: str, source: ET.Element) -> str:
     """Copy known FCP sequence rate, geometry, and extent into its native timeline item."""
     matches = list(_TIMELINE_BLOCK.finditer(pool_xml))
@@ -112,4 +211,4 @@ def update_timeline_handles(project_xml: bytes, pool_xml: str) -> bytes:
     return updated.encode("utf-8")
 
 
-__all__ = ["update_sequence_settings", "update_timeline_handles"]
+__all__ = ["sequence_project_settings", "update_project_settings", "update_sequence_settings", "update_timeline_handles"]

@@ -32,6 +32,7 @@ class ColorPipelineTests(unittest.TestCase):
         manager = resolve.GetProjectManager.return_value
         manager.GetCurrentProject.return_value = None
         manager.GetProjectListInCurrentFolder.return_value = []
+        manager.CreateProject.return_value.SetSetting.return_value = True
         pool = manager.CreateProject.return_value.GetMediaPool.return_value
         pool.ImportTimelineFromFile.return_value.GetStartFrame.return_value = 0
         selected, other = Mock(), Mock()
@@ -83,7 +84,12 @@ class ColorPipelineTests(unittest.TestCase):
                 ET.ElementTree(sequence("Same", uid)).write(path, encoding="utf-8")
             with patch.object(engine, "_shutdown_resolve"):
                 self.assertTrue(engine._drp_export(resolve, paths, folder / "out.drp", "Project", ["Same", "Same"], prproj_root=source))
-        project.SetSetting.assert_called_once_with("colorScienceMode", "acescct")
+        self.assertEqual(project.SetSetting.call_args_list, [
+            call("timelineFrameRate", "25"),
+            call("timelineResolutionWidth", "1080"),
+            call("timelineResolutionHeight", "1920"),
+            call("colorScienceMode", "acescct"),
+        ])
         self.assertEqual(aces.SetSetting.call_args_list, [
             call("colorScienceMode", "acescct"),
             call("timelineStartTimecode", "00:00:00:00"),
