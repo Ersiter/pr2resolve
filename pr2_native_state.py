@@ -51,7 +51,7 @@ def _length_field(number: int, value: bytes) -> bytes:
 def encode_timeline_markers(markers: list[dict[str, Any]]) -> str:
     """Encode Resolve 21 sequence markers in its raw-protobuf envelope."""
     entries = []
-    for marker in sorted(markers, key=lambda item: int(item["frame"]), reverse=True):
+    for marker in sorted(markers, key=lambda item: int(item["frame"])):
         frame = int(marker["frame"])
         color = str(marker.get("color") or "Blue")
         if frame < 0:
@@ -68,10 +68,11 @@ def encode_timeline_markers(markers: list[dict[str, Any]]) -> str:
         custom_data = str(marker.get("custom_data") or "")
         if custom_data:
             body += _length_field(6, custom_data.encode("utf-8"))
-        wrapped = struct.pack(">II", 2, len(_length_field(1, body))) + _length_field(1, body)
-        entry = _varint(8) + _varint(frame) + _length_field(2, wrapped)
-        entries.append(_length_field(1, entry))
-    protobuf = _length_field(2, _length_field(2, b"".join(entries)))
+        marker_message = _length_field(1, body)
+        wrapped = struct.pack(">II", 2, len(marker_message)) + marker_message
+        key = _length_field(1, _varint(8) + _varint(frame * 2))
+        entries.append(_length_field(2, key + _length_field(2, wrapped)))
+    protobuf = _length_field(2, b"".join(entries))
     blob_data = struct.pack(">II", 10001, len(protobuf) + 1) + b"\x80" + protobuf
     key = "BlobData".encode("utf-16-be")
     fields_blob = (

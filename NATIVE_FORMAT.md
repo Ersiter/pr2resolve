@@ -17,13 +17,13 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 | 中文 Motion 参数名被漏读，动画被压成标量 | 按 ParameterID 解析，XML 写关键帧并保留原始记录 | 与 Premiere 直出 XML 静态参数对照；Bezier 仅作线性近似 |
 | 同名素材、同名序列被移动到错误媒体夹 | 素材路径、源序列 UID、bin 父 UID 决定归属 | 合成重名及嵌套 bin 回归；仅导出所选序列使用的媒体 |
 | `--no-xml` 同时屏蔽报告 | 报告独立于 XML，原生导出拒绝时保留报告 | CLI 回归，测试禁止调用 Resolve 生命周期接口 |
-| native 包遗漏时间线 marker | 生成 `Sm2SequenceLockableBlob`，以序列 DbId 关联；多序列合并时重写 owner | Resolve 21 实际导出使用 `0x80` 原始 protobuf；第三方解码器交叉检查位置、名称、注释和时长；尚未实机验收 |
+| native 时间线 marker 位置减半且正文为空 | 按 Resolve 实录写入逐条 map entry、嵌套 sint 帧键与 marker 正文，以序列 DbId 关联 | Resolve Studio 21.0.2.4 双时间线导入、保存和重开回读通过，覆盖帧 0/10/37、范围、中文及 emoji；固定实录字节回归 |
 
 ## 颜色、标记与编辑状态
 
 片段标签颜色已有 16 档 Premiere 预设到 Resolve 的映射；独立轨道颜色与旗标尚未实现，不能把片段标签当作旗标。自定义标签 RGB 也未建立映射。
 
-时间线 marker 写入位置、名称、注释和时长。源 marker 颜色索引仍保留在 XML 注释中，目前输出 Blue；有颜色索引时会明确告警。Adobe 的 [Marker API](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker/) 将颜色、正文、时长分开处理，不能套用片段标签的颜色表。第三方格式资料中的 Resolve 19 marker 压缩封装与本地 Resolve 21 导出的封装不同；本项目采用后者，交叉解码时只转换封装以核对 protobuf 内容，不把此检查当作 Resolve 导入验证。
+时间线 marker 写入位置、名称、注释和时长。源 marker 颜色索引仍保留在 XML 注释中，目前输出 Blue；有颜色索引时会明确告警。Adobe 的 [Marker API](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker/) 将颜色、正文、时长分开处理，不能套用片段标签的颜色表。Resolve Studio 21.0.2.4 实录确认每个 map entry 含嵌套的 sint 帧键和独立正文；旧编码把帧键直接放入正文容器，导致实机读到半数位置及空白标签，已修正。编码器使用标准库生成 `0x80` 原始封装；实录也有 `0x81` 压缩封装，验收先解压后比较完整 protobuf 字节，再导入原生包并保存重开核对 API 返回的全部 marker 字段。
 
 轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态；测试分别检查输出包与 API 调用。轨道 solo 尚未映射。
 

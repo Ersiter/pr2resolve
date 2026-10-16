@@ -204,14 +204,14 @@ Three output formats:
 |---|---|---|
 | Clip-label colors | Maps 16 presets; custom RGB is unmapped | Same preset mapping, matched by track and clip position |
 | Independent track colors, flags | Not implemented | Not implemented; label colors are distinct from flags |
-| Timeline markers | Writes position, name, note and duration; uses Blue for now | Adds missing markers; warns on conflicts or rejected writes |
+| Timeline markers | Writes position, name, note and duration; two timelines pass Resolve 21 load/reopen readback; uses Blue for now | Adds missing markers; warns on conflicts or rejected writes |
 | Sequence In/Out | Not written; explicit state produces warnings | Sets pairs, clears explicitly unset marks; warns on one-sided state |
 | Track name, mute, lock | Writes custom names and lock/disable bits; offline-validated | Uses the same source state with official API methods and reports failures |
 | Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
 | Captions | Decodes FormattedTextData text runs, font lists and source ticks; retains raw payloads; full styling/target tracks are incomplete | Same source records; an API path for arbitrary caption cues is not established |
 | Lumetri layers | One serial node per source effect using the shared DRX Body; three static controls are approximate, other controls/animation unmapped | Applies the same DRX; matching or application failures prevent successful export reporting |
 
-Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. These writes have offline test coverage; visible results still need verification in an idle Resolve environment. See [format evidence and verification limits](NATIVE_FORMAT.md).
+Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. Timeline markers pass native package import, save and reopen readback in headless Resolve Studio 21.0.2, covering frame zero, ranges and Chinese names. Other writes without an explicit runtime result still have offline verification only. See [format evidence and verification limits](NATIVE_FORMAT.md).
 
 ---
 

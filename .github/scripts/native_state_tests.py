@@ -54,7 +54,7 @@ def _fields(data: bytes) -> list[tuple[int, int, bytes | int]]:
     return result
 
 
-def _decode_marker_blob(fields_hex: str) -> list[dict[str, object]]:
+def _raw_marker_entries(fields_hex: str) -> list[tuple[int, bytes]]:
     fields = bytes.fromhex(fields_hex)
     header, count = struct.unpack_from(">II", fields)
     if header != 1 or count != 1:
@@ -69,21 +69,32 @@ def _decode_marker_blob(fields_hex: str) -> list[dict[str, object]]:
     if version != 10001 or blob_data[8] != 0x80 or framed_length != len(blob_data) - 8:
         raise AssertionError("unexpected marker blob framing")
     root = _fields(blob_data[9:])
-    entries = next(value for number, wire, value in root if number == 2 and wire == 2)
-    entries = next(value for number, wire, value in _fields(entries) if number == 2 and wire == 2)
-    decoded = []
-    for _, _, entry_data in _fields(entries):
+    entry_container = next(value for number, wire, value in root if number == 2 and wire == 2)
+    decoded_entries = []
+    for field_number, field_wire, entry_data in _fields(entry_container):
+        if (field_number, field_wire) != (2, 2):
+            raise AssertionError("unexpected marker map entry")
         entry_fields = _fields(entry_data)
-        frame_number = next(value for number, wire, value in entry_fields if number == 1 and wire == 0)
+        key_data = next(value for number, wire, value in entry_fields if number == 1 and wire == 2)
+        frame_number = next(value for number, wire, value in _fields(key_data) if number == 1 and wire == 0)
         wrapped = next(value for number, wire, value in entry_fields if number == 2 and wire == 2)
         version, length = struct.unpack_from(">II", wrapped)
         if version != 2 or length != len(wrapped) - 8:
             raise AssertionError("unexpected marker entry wrapper")
+        decoded_frame = (frame_number >> 1) ^ -(frame_number & 1)
+        decoded_entries.append((decoded_frame, wrapped))
+    return decoded_entries
+
+
+def _decode_marker_blob(fields_hex: str) -> list[dict[str, object]]:
+    decoded = []
+    for frame, wrapped in _raw_marker_entries(fields_hex):
         marker_payload = next(value for number, wire, value in _fields(wrapped[8:]) if number == 1 and wire == 2)
         marker_fields = _fields(marker_payload)
         color = next(value for number, wire, value in marker_fields if number == 1 and wire == 0)
         strings = [value.decode("utf-8") for number, wire, value in marker_fields if number == 3 and wire == 2]
-        decoded.append({"frame": frame_number, "color": color, "note": strings[0], "duration": int(strings[1]), "name": strings[2]})
+        custom_data = next((value.decode("utf-8") for number, wire, value in marker_fields if number == 6 and wire == 2), "")
+        decoded.append({"frame": frame, "color": color, "note": strings[0], "duration": int(strings[1]), "name": strings[2], "custom_data": custom_data})
     return decoded
 
 
@@ -114,6 +125,33 @@ class NativeStateTests(unittest.TestCase):
         self.assertEqual(sorted((marker["frame"], marker["name"], marker["note"]) for marker in decoded),
                          [(1, "Marker 1", "Note 1"), (2, "Marker 2", "Note 2")])
 
+    def test_encoder_matches_resolve_authored_sint_frames_and_nested_marker_bytes(self) -> None:
+        markers = [
+            {"frame": 10, "duration": 5, "name": "Blue Probe", "note": "blue note", "color": "Blue", "custom_data": "custom blue"},
+            {"frame": 20, "duration": 3, "name": "Yellow Probe", "note": "yellow note", "color": "Yellow", "custom_data": "custom yellow"},
+        ]
+        # Captured from Resolve Studio 21.0.2.4 AddMarker(10/20, ...).
+        resolve_authored = {
+            10: bytes.fromhex("000000020000002b0a2908021a09626c7565206e6f74651a01351a0a426c75652050726f6265320b637573746f6d20626c7565"),
+            20: bytes.fromhex("00000002000000310a2f08101a0b79656c6c6f77206e6f74651a01331a0c59656c6c6f772050726f6265320d637573746f6d2079656c6c6f77"),
+        }
+        encoded = encode_timeline_markers(markers)
+        authored_payload = bytes.fromhex(
+            "127c12390a0208141233000000020000002b0a2908021a09626c7565206e6f74651a0135"
+            "1a0a426c75652050726f6265320b637573746f6d20626c7565"
+            "123f0a020828123900000002000000310a2f08101a0b79656c6c6f77206e6f74651a0133"
+            "1a0c59656c6c6f772050726f6265320d637573746f6d2079656c6c6f77"
+        )
+        fields = bytes.fromhex(encoded)
+        key_length = struct.unpack_from(">I", fields, 8)[0]
+        blob_start = 12 + key_length + 9
+        self.assertEqual(fields[blob_start + 9:], authored_payload)
+        self.assertEqual(dict(_raw_marker_entries(encoded)), resolve_authored)
+        self.assertEqual(_decode_marker_blob(encoded), [
+            {"frame": 10, "color": 2, "note": "blue note", "duration": 5, "name": "Blue Probe", "custom_data": "custom blue"},
+            {"frame": 20, "color": 16, "note": "yellow note", "duration": 3, "name": "Yellow Probe", "custom_data": "custom yellow"},
+        ])
+
     def test_resolve_marker_blob_round_trips_through_independent_decoder(self) -> None:
         markers = [
             {"frame": 0, "duration": 1, "name": "Intro", "note": "First frame", "color": "Blue"},
@@ -121,8 +159,8 @@ class NativeStateTests(unittest.TestCase):
         ]
         decoded = _decode_marker_blob(encode_timeline_markers(markers))
         self.assertEqual(decoded, [
-            {"frame": 120, "color": 8, "note": "Review this", "duration": 24, "name": "Cut"},
-            {"frame": 0, "color": 2, "note": "First frame", "duration": 1, "name": "Intro"},
+            {"frame": 0, "color": 2, "note": "First frame", "duration": 1, "name": "Intro", "custom_data": ""},
+            {"frame": 120, "color": 8, "note": "Review this", "duration": 24, "name": "Cut", "custom_data": ""},
         ])
 
     def test_sequence_markers_attach_to_matching_pool_sequence(self) -> None:
@@ -136,7 +174,7 @@ class NativeStateTests(unittest.TestCase):
         project = append_lockable_blob("<LockableBlobMap><LocableBlobSet></LocableBlobSet></LockableBlobMap>", record)
         self.assertIn("<BlobOwner>seq-1</BlobOwner>", project)
         self.assertEqual(_decode_marker_blob(project.split("<FieldsBlob>", 1)[1].split("</FieldsBlob>", 1)[0]), [
-            {"frame": 42, "color": 2, "note": "Keep", "duration": 8, "name": "Scene"},
+            {"frame": 42, "color": 2, "note": "Keep", "duration": 8, "name": "Scene", "custom_data": ""},
         ])
 
     def test_sequence_marker_owner_is_remapped_when_project_merges(self) -> None:
