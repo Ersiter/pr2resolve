@@ -83,9 +83,19 @@ class NativeTimeTests(unittest.TestCase):
         record, source = _read_keyframe_point(point)
         self.assertTrue(math.isclose(source / record, 2.0))
 
-    def test_audio_retime_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "audio retiming"):
-            build_media_timemap(101, 25.0, 50.0, audio=True)
+    def test_audio_retime_preserves_requested_source_to_record_ratio(self) -> None:
+        for speed, expected_record in ((50.0, 8.0), (200.0, 2.0)):
+            with self.subTest(speed=speed):
+                outer = _read_keyed_dict(bytes.fromhex(build_media_timemap(101, 25.0, speed, audio=True)))
+                record, source = _read_keyframe_point(outer["KeyframesBA"][1][5:])
+                self.assertEqual((record, source), (expected_record, 4.0))
+                self.assertEqual(outer["XMax"], (0x06, expected_record))
+
+    def test_audio_curve_keeps_record_and_source_extents(self) -> None:
+        outer = _read_keyed_dict(bytes.fromhex(build_media_timemap(
+            151, 25.0, audio=True, keyframes=((0.0, 0.0), (1.0, 1.0), (3.0, 5.0)))))
+        self.assertEqual(outer["XMax"], (0x06, 3.0))
+        self.assertEqual(outer["LastValidYOffset"], (0x06, 6.0))
 
     def test_retimed_in_point_is_record_domain(self) -> None:
         self.assertEqual(retimed_source_in(48, 24.0, 24.0, 50.0), "96")

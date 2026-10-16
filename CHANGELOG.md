@@ -2,6 +2,11 @@
 
 All notable changes to pr2resolve.
 
+## Unreleased
+
+- Native and API export share forward constant and monotone piecewise-linear audio time maps. Media kind is part of archive matching, so audio/video clips at the same track/start/duration keep independent retimes; audio-only timelines are supported and failed matches leave the package unchanged.
+- Controlled Resolve 21 audio cases cover normal speed, 50%, 200%, a piecewise map and trimmed slow playback. After import/save/reopen, each pair matches all 384,000 interleaved PCM values with frequency checks for actual stretching. Source pitch policy is not mapped; both paths explicitly warn that Resolve pitch correction is used. Reverse, holds, Bezier and Elastic Wave remain unsupported.
+
 ## [v1.6.1] — 2026-10-16
 
 ### Fixed

@@ -3,7 +3,7 @@
 The field layout follows measured Resolve exports and the independent decoder
 at https://github.com/samuelgursky/davinci-resolve-mcp/blob/main/resolve-advanced/vendor/drp-format/README.md.
 This module is an independent stdlib implementation; it supports identity,
-constant-speed, and explicit piecewise-linear video time maps.
+constant-speed, and explicit piecewise-linear audio/video time maps.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ _KEYED_DICT_DOUBLE = 0x06
 _KEYED_DICT_STRING = 0x0A
 _KEYED_DICT_BYTES = 0x0C
 STILL_SOURCE_IN = "86400"
+AUDIO_RETIME_WARNING = "audio retiming uses Resolve pitch correction; source pitch policy is not mapped"
 
 
 def _positive_finite(value: float, label: str) -> float:
@@ -466,13 +467,13 @@ def build_media_timemap(
     audio: bool = False,
     keyframes: Sequence[tuple[float, float]] | None = None,
 ) -> str:
-    """Return the MediaTimemapBA hex for an identity or piecewise-linear video map.
+    """Return the MediaTimemapBA hex for an identity or piecewise-linear map.
 
     Keyframe points use (record seconds, absolute source seconds), beginning at
     record time zero. Clip extents use the last source-frame index,
     ``(source_frames - 1) / fps``.
-    Audio retiming is rejected because Resolve may accept its time map while
-    rendering audio at normal speed.
+    Resolve 21 audio shares the keyed time map after its media cache and
+    Fairlight channel strips are registered. Audio identity has one extent.
     """
     if isinstance(source_frames, bool) or not isinstance(source_frames, int) or source_frames < 1:
         raise ValueError("source_frames must be a positive integer")
@@ -480,8 +481,6 @@ def build_media_timemap(
     end_seconds = (source_frames - 1) / fps
 
     if keyframes is not None:
-        if audio:
-            raise ValueError("audio retiming is unsupported")
         points = _validated_retime_points(keyframes)
         source_duration = source_frames / fps
         if any(source < 0 or source > source_duration for _, source in points):
@@ -508,8 +507,6 @@ def build_media_timemap(
     speed = _positive_finite(speed_percent, "speed_percent") / 100.0
     if speed_percent == 100:
         return _identity_timemap(end_seconds, audio=audio)
-    if audio:
-        raise ValueError("audio retiming is unsupported")
     if source_frames < 2:
         raise ValueError("retimed media requires at least two source frames")
 

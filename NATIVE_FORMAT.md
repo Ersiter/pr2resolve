@@ -36,6 +36,8 @@ v1.6.1 按源工程的参数和对象关系生成 Resolve 21 数据。原生 DRP
 
 独立音频的 `BtAudioInfo.TracksBA`、`ChannelVecBA`、媒体范围和帧率按源元数据重建；采样长度直接使用采样率和时长，修正旧编码在 QVariant 空值字节处偏移写入造成的误差。`VirtualAudioTrackBA` 使用实录版本 2 的源声道编号，两个轨道分别读取双声道文件的左/右声道。Resolve 21.0.2.4 中，48 kHz、16 bit PCM 双声道源及三轨不同入点/位置的重叠混音，保存重开及禁用一轨后，两路各 4 秒、384,000 个采样值完全相等。此验收不覆盖原始 `.prproj` 布局提取、立体声轨道分组、多声道/多流、调音台自动化或音频变速。
 
+未发布源码已在正确的媒体缓存和 Fairlight 模型上验证音频 `Sm2TimeMap`。原速、50%、200%、分段线性及带入点的 50% 慢放共五组，native/API 经导入、保存、重开后的 384,000 个 PCM 值逐组一致；分时段频率确认声音按映射位置播放并保留音高。两条路径共用编码器和入点换算，API 包匹配加入媒体类型，防止音视频同轨号、同位置相互覆盖。此实现采用实测的 Resolve 音高校正行为；源工程音高策略未映射，输出明确告警。反向、定格、Bezier、Elastic Wave 和其他布局/采样率仍未验收。
+
 ## 行业实现中值得采用的做法
 
 Lumetri 现在按源组件顺序、blob 内关键帧与 shader 顺序读取；每个效果保留全部参数和原 XML。目标以每个 Lumetri 一个串行节点生成 DRX；native 的 clip version Body 与 API `GetNodeGraph().ApplyGradeFromDRX` 使用相同字节。空视频轨不再压缩调色身份索引，API 匹配计入时间线起始帧；应用失败不会继续把 DRT/DRP 报为成功。原生版本表的 `pActive`、`HasCorrection` 与双冒号类名按实际导出结构写入。
@@ -58,7 +60,7 @@ Resolve Studio 21.0.2.4 实测包含空首轨的双效果合成记录：native �
 ## 尚未建立的等价关系
 
 - **图像缩放基准**：native zoom 补偿假设模板采用 fit 输入缩放。[Blackmagic 官方手册](https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_12_Reference_Manual.pdf)说明还有 center crop、fill、stretch 等模式；尚未从 Resolve 21 私有 blob 确认模板的具体枚举或逐序列覆盖。位置、旋转和缩放必须再用可见帧验证。
-- **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 视频曲线采用分段线性映射，反向、定格、Bezier/anchoroffset、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 导出包使用同一编码器修正 `In` 和 `MediaTimemapBA`；无法唯一匹配时拒绝报告成功。API 内存时间线不随之改变。三组 25 fps 合成视频的 native/API 渲染帧号和像素一致，这不能外推为任意工程或全部功能等价。
+- **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 音视频曲线采用分段线性映射；反向、定格、Bezier/anchoroffset、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 导出包使用同一编码器修正 `In` 和 `MediaTimemapBA`；无法唯一匹配时拒绝报告成功。API 内存时间线不随之改变。三组 25 fps 合成视频的 native/API 渲染帧号和像素一致，这不能外推为任意工程或全部功能等价。
 - **工程状态**：marker 颜色、轨道/片段 marker、旗标及完整 Fairlight 路由尚未实现。基础单声道轨及双声道源选择、In/Out 已完成上述实机验证。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
 - **Relink 服务端**：公开前端与输出包只能提供行为和格式约束，没有恢复其服务端源码。本次不把浏览器中的选项、厂商陈述或压缩包大小当作保真度证明。
 

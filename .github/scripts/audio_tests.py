@@ -18,6 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from conversion_tests import sequence
 from pr2_native import _decode_wrapper_hex, _protobuf_fields, export_native_drp
 from pr2_native_audio import decode_fields, encode_fields, mono_channel_mapping, rebuild_track_model
+from pr2_retime_output import apply_timeline_state_to_archive
+from native_time_tests import _read_keyed_dict, _read_keyframe_point
 
 
 def audio_source() -> ET.Element:
@@ -53,7 +55,98 @@ def template_sequence_fields() -> bytes:
     return bytes.fromhex(next(pool.iter("Sm2Sequence")).findtext("FieldsBlob"))
 
 
+def retimed_audio_source() -> ET.Element:
+    root = audio_source()
+    for kind, speed in (("video", 200), ("audio", 50)):
+        for clip in root.findall(f"sequence/media/{kind}/track/clipitem"):
+            if kind == "audio":
+                clip.find("in").text = "25"
+            effect = ET.SubElement(ET.SubElement(clip, "filter"), "effect")
+            ET.SubElement(effect, "effectid").text = "timeremap"
+            for key, value in (("speed", str(speed)), ("variablespeed", "0"), ("reverse", "FALSE")):
+                parameter = ET.SubElement(effect, "parameter")
+                ET.SubElement(parameter, "parameterid").text = key
+                ET.SubElement(parameter, "value").text = value
+    return root
+
+
 class AudioTests(unittest.TestCase):
+    def test_audio_and_video_with_same_track_positions_receive_their_own_retimes(self) -> None:
+        root = retimed_audio_source()
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()) as log:
+            folder = Path(directory)
+            xml = folder / "source.xml"
+            ET.ElementTree(root).write(xml)
+            package = export_native_drp(root, folder / "native.drp", "Audio")
+            with zipfile.ZipFile(package) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            seq_name = next(name for name in members if name.startswith("SeqContainer/"))
+            native = ET.fromstring(members[seq_name])
+            expected = {}
+            for clip in list(native.iter("Sm2TiVideoClip")) + list(native.iter("Sm2TiAudioClip")):
+                expected[clip.get("DbId")] = clip.findtext("In")
+                clip.find("In").text = "999"
+                clip.find("MediaTimemapBA").text = "obsolete-map"
+            api = folder / "api.drp"
+            with zipfile.ZipFile(api, "w") as archive:
+                for name, data in members.items():
+                    archive.writestr(name, ET.tostring(native) if name == seq_name else data)
+            self.assertEqual(apply_timeline_state_to_archive(api, xml), 3)
+            with zipfile.ZipFile(api) as archive:
+                for name, data in members.items():
+                    if name != seq_name:
+                        self.assertEqual(archive.read(name), data)
+                written = ET.fromstring(archive.read(seq_name))
+            for kind, ratio, source_in in (("Video", 2.0, "0"), ("Audio", 0.5, "50")):
+                clips = list(written.iter("Sm2Ti" + kind + "Clip"))
+                self.assertEqual(len(clips), 1 if kind == "Video" else 2)
+                for clip in clips:
+                    self.assertEqual(clip.findtext("In"), source_in)
+                    self.assertEqual(expected[clip.get("DbId")], source_in)
+                    outer = _read_keyed_dict(bytes.fromhex(clip.findtext("MediaTimemapBA")))
+                    record, source = _read_keyframe_point(outer["KeyframesBA"][1][5:])
+                    self.assertAlmostEqual(source / record, ratio)
+            self.assertIn("source pitch policy is not mapped", log.getvalue())
+
+    def test_missing_audio_destination_does_not_partially_patch_video(self) -> None:
+        root = retimed_audio_source()
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            folder = Path(directory)
+            xml = folder / "source.xml"
+            ET.ElementTree(root).write(xml)
+            package = export_native_drp(root, folder / "source.drp", "Audio")
+            with zipfile.ZipFile(package) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            seq_name = next(name for name in members if name.startswith("SeqContainer/"))
+            container = ET.fromstring(members[seq_name])
+            container.remove(container.find("AudioTrackVec"))
+            api = folder / "missing-audio.drp"
+            with zipfile.ZipFile(api, "w") as archive:
+                for name, data in members.items():
+                    archive.writestr(name, ET.tostring(container) if name == seq_name else data)
+            before = api.read_bytes()
+            with self.assertRaisesRegex(ValueError, "AudioTrackVec"):
+                apply_timeline_state_to_archive(api, xml)
+            self.assertEqual(api.read_bytes(), before)
+            self.assertTrue(xml.is_file())
+
+    def test_audio_only_timeline_receives_retime_corrections(self) -> None:
+        root = retimed_audio_source()
+        video = root.find("sequence/media/video")
+        for track in video.findall("track"):
+            video.remove(track)
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            folder = Path(directory)
+            xml = folder / "audio-only.xml"
+            ET.ElementTree(root).write(xml)
+            package = export_native_drp(root, folder / "audio-only.drp", "Audio")
+            self.assertEqual(apply_timeline_state_to_archive(package, xml), 2)
+            with zipfile.ZipFile(package) as archive:
+                name = next(name for name in archive.namelist() if name.startswith("SeqContainer/"))
+                written = ET.fromstring(archive.read(name))
+            self.assertEqual(len(list(written.iter("Sm2TiVideoClip"))), 0)
+            self.assertEqual([clip.findtext("In") for clip in written.iter("Sm2TiAudioClip")], ["50", "50"])
+
     def test_source_channel_maps_match_resolve_authored_bytes(self) -> None:
         prefix = "000000010000000200000014004300680061006e006e0065006c0073004200410000000c000000000c0000000200000001000040"
         suffix = "000000120041007500640069006f0054007900700065000000020000000001"

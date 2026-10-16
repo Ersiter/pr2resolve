@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 from pr2_constants import IMAGE_SUFFIXES
 from pr2_native_project import update_sequence_marks
 from pr2_native_state import sequence_marks
-from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
+from pr2_native_time import AUDIO_RETIME_WARNING, STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 
 
 def _local(tag: str) -> str:
@@ -117,27 +117,17 @@ def _source_plans(root: ET.Element) -> list[dict[str, object]]:
     media = sequence.find("./media")
     if media is None:
         return []
-    audio = media.find("./audio")
-    if audio is not None:
-        for track in audio.findall("./track"):
+    candidates: list[tuple[str, int, ET.Element, float, ET.Element | None]] = []
+    for kind in ("video", "audio"):
+        for track_index, track in enumerate(media.findall(f"./{kind}/track"), 1):
             for clip in track.findall("./clipitem"):
-                for effect in _retime_effects(clip):
-                    is_retime, _, _ = _is_retime(effect)
-                    if is_retime:
-                        raise ValueError("audio retiming is unsupported")
-    video = media.find("./video")
-    if video is None:
-        return []
-    candidates: list[tuple[int, ET.Element, float, ET.Element | None]] = []
-    for track_index, track in enumerate(video.findall("./track"), 1):
-        for clip in track.findall("./clipitem"):
-            effects = _retime_effects(clip)
-            if len(effects) > 1:
-                raise ValueError("multiple Time Remap effects on one clip are unsupported")
-            if effects:
-                retimed, speed, graph = _is_retime(effects[0])
-                if retimed:
-                    candidates.append((track_index, clip, speed, graph))
+                effects = _retime_effects(clip)
+                if len(effects) > 1:
+                    raise ValueError("multiple Time Remap effects on one clip are unsupported")
+                if effects:
+                    retimed, speed, graph = _is_retime(effects[0])
+                    if retimed:
+                        candidates.append((kind, track_index, clip, speed, graph))
     if not candidates:
         return []
     timeline_fps = _fps(sequence)
@@ -146,7 +136,7 @@ def _source_plans(root: ET.Element) -> list[dict[str, object]]:
     if not sequence_name.strip():
         raise ValueError("retimed source sequence has no name for Resolve timeline matching")
     plans: list[dict[str, object]] = []
-    for track_index, clip, speed, graph in candidates:
+    for kind, track_index, clip, speed, graph in candidates:
         clip_rate = _fps(clip, timeline_fps)
         file_node = clip.find("./file")
         file_id = file_node.get("id") if file_node is not None else None
@@ -164,15 +154,17 @@ def _source_plans(root: ET.Element) -> list[dict[str, object]]:
             if not isinstance(points, tuple):
                 raise ValueError("graphdict points were not decoded")
             in_value = STILL_SOURCE_IN if still else str(alignment["encoded_in"])
-            timemap = build_still_timemap() if still else build_media_timemap(source_frames, source_fps, keyframes=points)
+            timemap = build_still_timemap() if still else build_media_timemap(source_frames, source_fps, audio=kind == "audio", keyframes=points)
         else:
             try:
                 source_in = int(clip.findtext("./in") or "")
             except ValueError as exc:
                 raise ValueError("constant-speed source In is invalid") from exc
             in_value = STILL_SOURCE_IN if still else retimed_source_in(source_in, clip_rate, timeline_fps, speed)
-            timemap = build_still_timemap() if still else build_media_timemap(source_frames, source_fps, speed)
-        plans.append({"track": track_index, "start": start, "duration": duration, "in": in_value, "timemap": timemap, "sequence_name": sequence_name})
+            timemap = build_still_timemap() if still else build_media_timemap(source_frames, source_fps, speed, audio=kind == "audio")
+        if kind == "audio":
+            print(f"  Warning: {clip.findtext('name') or 'clip'}: {AUDIO_RETIME_WARNING}")
+        plans.append({"kind": kind, "track": track_index, "start": start, "duration": duration, "in": in_value, "timemap": timemap, "sequence_name": sequence_name})
     return plans
 
 
@@ -203,7 +195,7 @@ def _field_spans(data: bytes) -> dict[str, dict[str, tuple[int, int, int, bytes]
     def start(name: str, attrs: dict[str, str]) -> None:
         parent = stack[-1] if stack else None
         frame: dict[str, object] = {"start": parser.CurrentByteIndex, "open_end": _tag_end(safe, parser.CurrentByteIndex), "clip": None}
-        if _local(name) == "Sm2TiVideoClip":
+        if _local(name) in ("Sm2TiVideoClip", "Sm2TiAudioClip"):
             dbid = attrs.get("DbId")
             if dbid:
                 if dbid in clips:
@@ -262,36 +254,38 @@ def _timeline_sequence_id(contents: list[bytes], infos: list[zipfile.ZipInfo], s
     return next(iter(sequence_ids))
 
 
-def _native_containers(data: bytes) -> tuple[list[list[dict[str, object]]], dict[str, dict[str, tuple[int, int, int, bytes]]], set[str]]:
+def _native_containers(data: bytes, kind: str) -> tuple[list[list[dict[str, object]]], dict[str, dict[str, tuple[int, int, int, bytes]]], set[str]]:
     root = ET.fromstring(_xml_safe(data))
     if _local(root.tag) != "Sm2SequenceContainer":
         raise ValueError("unknown SeqContainer XML schema")
-    track_vec = next((child for child in root if _local(child.tag) == "VideoTrackVec"), None)
+    vector = "VideoTrackVec" if kind == "video" else "AudioTrackVec"
+    clip_type = "Sm2TiVideoClip" if kind == "video" else "Sm2TiAudioClip"
+    track_vec = next((child for child in root if _local(child.tag) == vector), None)
     if track_vec is None:
-        raise ValueError("sequence container has no VideoTrackVec")
+        raise ValueError(f"sequence container has no {vector}")
     tracks: list[list[dict[str, object]]] = []
     sequence_ids: set[str] = set()
     for wrapper in list(track_vec):
         native_track = next((node for node in wrapper.iter() if _local(node.tag) == "Sm2TiTrack"), None)
         if native_track is None:
-            raise ValueError("unknown native video track schema")
+            raise ValueError(f"unknown native {kind} track schema")
         sequence_id = (native_track.findtext("./Sequence") or "").strip()
         if not sequence_id:
-            raise ValueError("native video track has no Sequence reference")
+            raise ValueError(f"native {kind} track has no Sequence reference")
         sequence_ids.add(sequence_id)
         clips: list[dict[str, object]] = []
         for node in native_track.iter():
-            if _local(node.tag) != "Sm2TiVideoClip":
+            if _local(node.tag) != clip_type:
                 continue
             dbid = node.get("DbId")
             if not dbid:
-                raise ValueError("native video clip has no DbId")
+                raise ValueError(f"native {kind} clip has no DbId")
             try:
                 start, duration = int(node.findtext("./Start") or ""), int(node.findtext("./Duration") or "")
             except ValueError as exc:
-                raise ValueError("native video clip start/duration is invalid") from exc
+                raise ValueError(f"native {kind} clip start/duration is invalid") from exc
             if duration <= 0:
-                raise ValueError("native video clip duration must be positive")
+                raise ValueError(f"native {kind} clip duration must be positive")
             clips.append({"dbid": dbid, "start": start, "duration": duration})
         tracks.append(clips)
     return tracks, _field_spans(data), sequence_ids
@@ -314,7 +308,7 @@ def apply_timeline_state_to_archive(archive_path: Path, xml_paths: Path | list[P
         mark_sources[name] = sequence
     if not plans and not mark_sources:
         return 0
-    identities = [(plan["sequence_name"], plan["track"], plan["start"], plan["duration"]) for plan in plans]
+    identities = [(plan["sequence_name"], plan["kind"], plan["track"], plan["start"], plan["duration"]) for plan in plans]
     if len(set(identities)) != len(identities):
         raise ValueError("retimed source clips have ambiguous track/start/duration identities")
     with zipfile.ZipFile(archive_path, "r") as source_zip:
@@ -330,8 +324,10 @@ def apply_timeline_state_to_archive(archive_path: Path, xml_paths: Path | list[P
         }
         candidates: list[list[tuple[int, str, dict[str, object], dict[str, dict[str, tuple[int, int, int, bytes]]]]]] = [[] for _ in plans]
         for member_index, info in seq_members:
-            tracks, spans, native_sequence_ids = _native_containers(contents[member_index])
+            containers = {kind: _native_containers(contents[member_index], kind)
+                          for kind in dict.fromkeys(str(plan["kind"]) for plan in plans)}
             for plan_index, plan in enumerate(plans):
+                tracks, spans, native_sequence_ids = containers[str(plan["kind"])]
                 if sequence_ids[str(plan["sequence_name"])] not in native_sequence_ids:
                     continue
                 track_index = int(plan["track"]) - 1

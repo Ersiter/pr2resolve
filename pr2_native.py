@@ -23,7 +23,7 @@ from pr2_constants import DEFAULT_FPS, IMAGE_SUFFIXES, PP_LABEL_TO_RESOLVE_COLOR
 from pr2_native_project import update_project_settings, update_sequence_settings, update_timeline_handles
 from pr2_native_grade import attach_native_grade
 from pr2_native_audio import decode_fields, encode_fields, mono_channel_mapping
-from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
+from pr2_native_time import AUDIO_RETIME_WARNING, STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
     clip_color_lockable_blob,
@@ -573,6 +573,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 alignment = (extract_fcp7_retime_alignment(clip, _rate(source))
                              if clip.find("filter/effect/parameter[parameterid='graphdict']/keyframe") is not None else None)
                 speed = 100.0 if alignment else clip_speed(clip)
+                if kind == "audio" and (alignment or speed != 100.0):
+                    print(f"  Warning: {clip.findtext('name') or 'clip'}: {AUDIO_RETIME_WARNING}")
                 source_in = (alignment["encoded_in"] if alignment else
                              retimed_source_in(_int_text(clip, "in"), clip_fps, _rate(source), speed))
                 _set_child(node, "In", STILL_SOURCE_IN if suffix in IMAGE_SUFFIXES else source_in)
