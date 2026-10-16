@@ -102,6 +102,37 @@ def sequence_markers(source: ET.Element) -> list[dict[str, Any]]:
     return markers
 
 
+def sequence_marks(source: ET.Element) -> tuple[int | None, int | None] | None:
+    """Convert FCP7's exclusive Out to Resolve's inclusive frame index."""
+    if source.find("in") is None and source.find("out") is None:
+        return None
+    values = []
+    for field in ("in", "out"):
+        try:
+            value = int(source.findtext(field) or "-1")
+        except ValueError as exc:
+            raise ValueError(f"sequence {field} mark must be an integer") from exc
+        if value < -1:
+            raise ValueError(f"sequence {field} mark must be -1 or non-negative")
+        values.append(None if value == -1 else value)
+    mark_in, mark_out = values
+    if mark_out is not None:
+        if mark_out <= (mark_in if mark_in is not None else 0):
+            raise ValueError("sequence Out must follow In and include at least one frame")
+        mark_out -= 1
+    return mark_in, mark_out
+
+
+def write_sequence_marks(timeline: ET.Element, marks: tuple[int | None, int | None]) -> None:
+    """Write measured Resolve 21 timeline-clip fields, including one-sided marks."""
+    for endpoint, value in zip(("In", "Out"), marks):
+        for kind in ("Audio", "Video"):
+            field = timeline.find("Mark" + endpoint + kind)
+            if field is None:
+                raise ValueError(f"native timeline clip has no Mark{endpoint}{kind} field")
+            field.text = str(value) if value is not None else ""
+
+
 def sequence_id_from_pool(pool_xml: str) -> str:
     timeline = re.search(r"(?s)<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>", pool_xml)
     if timeline is None:
@@ -165,10 +196,6 @@ def remap_marker_blob(blob_element: str, old_sequence_id: str, new_sequence_id: 
 def unwritten_state_warnings(source: ET.Element, state: dict[str, Any]) -> list[str]:
     """Describe explicit timeline state that has no verified native writer."""
     warnings = []
-    for field in ("in", "out"):
-        value = source.findtext(field)
-        if value is not None and value.strip() not in ("", "-1"):
-            warnings.append(f"sequence {field.title()} point is not applied in native DRP")
     work_area = state.get("work_area")
     if isinstance(work_area, list) and any(
         str(value).lstrip("-").isdigit() and int(value) >= 0 for value in work_area if value is not None

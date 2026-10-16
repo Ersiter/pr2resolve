@@ -17,7 +17,7 @@ import pr2_native as native
 from conversion_tests import sequence
 import retime_curve_tests as curves
 from retime_output_tests import decode_keyed_map, source_xml
-from pr2_retime_output import apply_retimes_to_archive
+from pr2_retime_output import apply_timeline_state_to_archive
 
 
 class RetimePipelineTests(unittest.TestCase):
@@ -65,7 +65,7 @@ class RetimePipelineTests(unittest.TestCase):
             with zipfile.ZipFile(api_path, "w") as archive:
                 for member, payload in members.items():
                     archive.writestr(member, payload)
-            self.assertEqual(apply_retimes_to_archive(api_path, xml), 2)
+            self.assertEqual(apply_timeline_state_to_archive(api_path, xml), 2)
             with zipfile.ZipFile(api_path) as archive:
                 after = ET.fromstring(archive.read(name))
         targets = after.findall("VideoTrackVec/Element/Sm2TiTrack/Items/Element/Sm2TiVideoClip")

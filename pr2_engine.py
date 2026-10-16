@@ -42,7 +42,8 @@ from pr2_native_grade import build_lumetri_drx, build_lumetri_node_plan
 from pr2_captions import CaptionRecord, caption_records_from_xml, extract_captions
 from pr2_native_time import extract_fcp7_retime_alignment
 from pr2_native_project import sequence_project_settings
-from pr2_retime_output import apply_retimes_to_archive
+from pr2_native_state import sequence_marks
+from pr2_retime_output import apply_timeline_state_to_archive
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3348,7 +3349,7 @@ def _drt_batch_export(
                     break
         if timeline.Export(str(drt_path), resolve.EXPORT_DRT):
             try:
-                retimed = apply_retimes_to_archive(drt_path, xml_path)
+                retimed = apply_timeline_state_to_archive(drt_path, xml_path)
             except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
                 print(f"    Export validation FAILED: {exc}; uncorrected package retained at {drt_path}")
                 results.append((False, None))
@@ -3573,7 +3574,7 @@ def _drp_export(
 
             if drp_result:
                 try:
-                    retimed = apply_retimes_to_archive(output_path, xml_paths)
+                    retimed = apply_timeline_state_to_archive(output_path, xml_paths)
                     if retimed:
                         print(f"  Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
                 except (OSError, ValueError, ET.ParseError, zipfile.BadZipFile) as exc:
@@ -3628,14 +3629,15 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
                 opaque = {}
             break
-    in_element, out_element = sequence.find("in"), sequence.find("out")
-    in_text = in_element.text if in_element is not None and in_element.text is not None else "-1"
-    out_text = out_element.text if out_element is not None and out_element.text is not None else "-1"
     warnings: list[str] = []
-    if in_element is not None or out_element is not None:
-        if in_element is None or out_element is None:
-            warnings.append("Sequence in/out state is incomplete; Resolve API cannot safely apply a partial pair")
-        elif in_text == "-1" and out_text == "-1":
+    try:
+        marks = sequence_marks(sequence)
+    except ValueError as exc:
+        marks = None
+        warnings.append(str(exc))
+    if marks is not None:
+        mark_in, mark_out = marks
+        if mark_in is None and mark_out is None:
             if not hasattr(timeline, "ClearMarkInOut"):
                 warnings.append("Resolve cannot clear explicitly unset sequence in/out marks")
             else:
@@ -3644,17 +3646,17 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
                         warnings.append("Resolve rejected clearing sequence in/out marks")
                 except (AttributeError, TypeError, RuntimeError) as exc:
                     warnings.append(f"Could not clear sequence in/out marks: {exc}")
-        elif in_text != "-1" and out_text != "-1":
+        elif mark_in is not None and mark_out is not None:
             if not hasattr(timeline, "SetMarkInOut"):
                 warnings.append("Resolve cannot apply explicit sequence in/out marks")
             else:
                 try:
-                    if not timeline.SetMarkInOut(int(in_text), int(out_text), "all"):
+                    if not timeline.SetMarkInOut(mark_in, mark_out, "all"):
                         warnings.append("Resolve rejected sequence in/out marks")
                 except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
                     warnings.append(f"Could not apply sequence in/out marks: {exc}")
         else:
-            warnings.append("Resolve API cannot safely apply a one-sided sequence in/out mark; source state remains in XML")
+            warnings.append("One-sided sequence in/out marks are applied to the exported package; live API timeline is unchanged")
     markers = sequence.findall("marker")
     if markers:
         if not hasattr(timeline, "AddMarker"):
@@ -4300,7 +4302,7 @@ def _drt_sandbox_export(
                 pm.LoadProject(original_name)
             return False
 
-        retimed = apply_retimes_to_archive(output_path, xml_path)
+        retimed = apply_timeline_state_to_archive(output_path, xml_path)
         if retimed:
             print(f"  Exported package: {retimed} shared retime maps applied; live API timeline is unchanged")
         print(f"  DRT exported: {output_path}")

@@ -203,7 +203,7 @@ class ApiCliTests(unittest.TestCase):
             timeline.Export.return_value = True
             with patch.object(engine, "_strip_file_elements_for_drt", return_value=(xml, False)), \
                  patch.object(engine, "_apply_fcp_timeline_state_to_resolve", return_value=[]), \
-                 patch.object(engine, "apply_retimes_to_archive", return_value=0), \
+                 patch.object(engine, "apply_timeline_state_to_archive", return_value=0), \
                  patch.object(engine, "_recycle") as recycle, \
                  contextlib.redirect_stdout(io.StringIO()):
                 result = engine._drt_batch_export(resolve, [xml], folder, ["Sample"])

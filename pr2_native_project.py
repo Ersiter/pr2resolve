@@ -7,6 +7,8 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 
+from pr2_native_state import sequence_marks, write_sequence_marks
+
 
 _TIMELINE_BLOCK = re.compile(r"(?is)<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>")
 _TIMELINE_HANDLES = re.compile(r"(?is)(<TimelineHandleVec\b[^>]*>)(.*?)(</TimelineHandleVec>)")
@@ -165,6 +167,9 @@ def update_sequence_settings(pool_xml: str, source: ET.Element) -> str:
     match = matches[0]
     timeline = _parse_timeline_block(match.group())
     sequence = _timeline_sequence(timeline)
+    marks = sequence_marks(source)
+    if marks is not None:
+        write_sequence_marks(timeline, marks)
 
     rate = _source_rate(source)
     if rate is not None:
@@ -183,6 +188,26 @@ def update_sequence_settings(pool_xml: str, source: ET.Element) -> str:
         _set_text(sequence, "MediaExtents", struct.pack("<dd", 0.0, duration / rate).hex())
 
     return pool_xml[:match.start()] + _serialize_timeline_block(timeline) + pool_xml[match.end():]
+
+
+def update_sequence_marks(pool_xml: str, sources: dict[str, ET.Element]) -> tuple[str, list[str]]:
+    """Patch named API-exported timeline clips without changing other pool records."""
+    matched = []
+
+    def replace(match: re.Match[str]) -> str:
+        timeline = _parse_timeline_block(match.group())
+        name = timeline.findtext("Name") or ""
+        source = sources.get(name)
+        if source is None:
+            return match.group()
+        marks = sequence_marks(source)
+        if marks is None:
+            return match.group()
+        write_sequence_marks(timeline, marks)
+        matched.append(name)
+        return _serialize_timeline_block(timeline)
+
+    return _TIMELINE_BLOCK.sub(replace, pool_xml), matched
 
 
 def update_timeline_handles(project_xml: bytes, pool_xml: str) -> bytes:
@@ -211,4 +236,4 @@ def update_timeline_handles(project_xml: bytes, pool_xml: str) -> bytes:
     return updated.encode("utf-8")
 
 
-__all__ = ["sequence_project_settings", "update_project_settings", "update_sequence_settings", "update_timeline_handles"]
+__all__ = ["sequence_project_settings", "update_project_settings", "update_sequence_settings", "update_sequence_marks", "update_timeline_handles"]

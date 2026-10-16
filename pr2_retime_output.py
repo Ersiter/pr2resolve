@@ -1,4 +1,4 @@
-"""Patch retime fields in an API-exported Resolve ZIP without rebuilding it."""
+"""Patch shared retime and mark fields in an API-exported Resolve ZIP."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from xml.parsers import expat
 from xml.etree import ElementTree as ET
 
 from pr2_constants import IMAGE_SUFFIXES
+from pr2_native_project import update_sequence_marks
+from pr2_native_state import sequence_marks
 from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 
 
@@ -295,12 +297,22 @@ def _native_containers(data: bytes) -> tuple[list[list[dict[str, object]]], dict
     return tracks, _field_spans(data), sequence_ids
 
 
-def apply_retimes_to_archive(archive_path: Path, xml_paths: Path | list[Path]) -> int:
-    """Apply all source timelines atomically to matching clips in a Resolve ZIP."""
+def apply_timeline_state_to_archive(archive_path: Path, xml_paths: Path | list[Path]) -> int:
+    """Apply source retimes and marks atomically; return the retimed clip count."""
     archive_path = Path(archive_path)
     sources = xml_paths if isinstance(xml_paths, list) else [xml_paths]
-    plans = [plan for path in sources for plan in _source_plans(ET.parse(path).getroot())]
-    if not plans:
+    roots = [ET.parse(path).getroot() for path in sources]
+    plans = [plan for root in roots for plan in _source_plans(root)]
+    mark_sources = {}
+    for root in roots:
+        sequence = root.find("sequence")
+        if sequence is None or sequence_marks(sequence) is None:
+            continue
+        name = sequence.findtext("name") or ""
+        if not name or name in mark_sources:
+            raise ValueError("sequence marks require unique source timeline names")
+        mark_sources[name] = sequence
+    if not plans and not mark_sources:
         return 0
     identities = [(plan["sequence_name"], plan["track"], plan["start"], plan["duration"]) for plan in plans]
     if len(set(identities)) != len(identities):
@@ -353,6 +365,15 @@ def apply_retimes_to_archive(archive_path: Path, xml_paths: Path | list[Path]) -
                 data = data[:start] + replacement + data[end:]
             updated_contents[member_index] = data
             ET.fromstring(_xml_safe(data))
+        matched_marks = []
+        for member_index, info in enumerate(infos):
+            if mark_sources and info.filename.startswith("MediaPool/") and info.filename.lower().endswith(".xml"):
+                pool, matched = update_sequence_marks(contents[member_index].decode("utf-8"), mark_sources)
+                if matched:
+                    updated_contents[member_index] = pool.encode("utf-8")
+                    matched_marks.extend(matched)
+        if any(matched_marks.count(name) != 1 for name in mark_sources):
+            raise ValueError("sequence marks must each match exactly one MediaPool timeline")
     temp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(prefix=archive_path.name + ".", suffix=".tmp", dir=archive_path.parent, delete=False) as temp:
@@ -372,4 +393,4 @@ def apply_retimes_to_archive(archive_path: Path, xml_paths: Path | list[Path]) -
     return len(plans)
 
 
-__all__ = ["apply_retimes_to_archive"]
+__all__ = ["apply_timeline_state_to_archive"]

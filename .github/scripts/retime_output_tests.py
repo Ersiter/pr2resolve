@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
+import io
 import re
 import struct
 import sys
@@ -8,10 +10,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from pr2_retime_output import apply_retimes_to_archive
+from pr2_retime_output import apply_timeline_state_to_archive
+from pr2_native import export_native_drp
+from conversion_tests import sequence
 
 
 def source_xml(*, bad_graph: bool = False) -> bytes:
@@ -72,6 +77,67 @@ def decode_keyed_map(encoded_hex: bytes) -> dict[str, object]:
 
 
 class RetimeOutputTests(unittest.TestCase):
+    def test_native_and_api_packages_share_pair_partial_clear_and_absent_marks(self) -> None:
+        cases = (("Pair", 5, 40, ("5", "39")), ("SingleFrame", 0, 1, ("0", "0")),
+                 ("InOnly", 5, -1, ("5", "")), ("OutOnly", -1, 40, ("", "39")),
+                 ("Cleared", -1, -1, ("", "")), ("Absent", None, None, ("", "")))
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(io.StringIO()):
+            folder = Path(directory)
+            trees, xml_paths = [], []
+            for name, mark_in, mark_out, expected in cases:
+                tree = sequence(name=name)
+                source = tree.find("sequence")
+                if mark_in is not None:
+                    ET.SubElement(source, "in").text = str(mark_in)
+                    ET.SubElement(source, "out").text = str(mark_out)
+                path = folder / (name + ".xml")
+                ET.ElementTree(tree).write(path)
+                trees.append(tree)
+                xml_paths.append(path)
+            path = export_native_drp(trees, folder / "native.drp", "Marks")
+            with zipfile.ZipFile(path) as archive:
+                members = {name: archive.read(name) for name in archive.namelist()}
+            pools = [name for name in members if name.startswith("MediaPool/") and name.endswith(".xml")]
+            for pool_name in pools:
+                pool = ET.fromstring(members[pool_name].replace(b"ListMgt::", b"ListMgt__"))
+                for timeline in pool.iter("Sm2MpTimelineClip"):
+                    case = next(case for case in cases if case[0] == timeline.findtext("Name"))
+                    for endpoint, expected in zip(("In", "Out"), case[3]):
+                        for kind in ("Audio", "Video"):
+                            field = timeline.find("Mark" + endpoint + kind)
+                            self.assertEqual(field.text or "", expected)
+                            if case[0] != "Absent":
+                                field.text = "99"
+                members[pool_name] = ET.tostring(pool).replace(b"ListMgt__", b"ListMgt::")
+            api = folder / "api.drt"
+            with zipfile.ZipFile(api, "w") as archive:
+                for name, data in members.items():
+                    archive.writestr(name, data)
+            self.assertEqual(apply_timeline_state_to_archive(api, xml_paths), 0)
+            with zipfile.ZipFile(api) as archive:
+                for name, original in members.items():
+                    if name not in pools:
+                        self.assertEqual(archive.read(name), original)
+                        continue
+                    pool = ET.fromstring(archive.read(name).replace(b"ListMgt::", b"ListMgt__"))
+                    for timeline in pool.iter("Sm2MpTimelineClip"):
+                        case = next(case for case in cases if case[0] == timeline.findtext("Name"))
+                        for endpoint, expected in zip(("In", "Out"), case[3]):
+                            for kind in ("Audio", "Video"):
+                                self.assertEqual(timeline.findtext("Mark" + endpoint + kind), expected)
+
+    def test_missing_mark_destination_leaves_all_archive_bytes_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            archive = folder / "marks.drp"
+            self.archive(archive)
+            source = folder / "source.xml"
+            source.write_text('<xmeml><sequence><name>Missing</name><in>5</in><out>40</out></sequence></xmeml>')
+            before = archive.read_bytes()
+            with self.assertRaisesRegex(ValueError, "exactly one MediaPool"):
+                apply_timeline_state_to_archive(archive, source)
+            self.assertEqual(archive.read_bytes(), before)
+
     def archive(self, path: Path, *, duplicate: bool = False, other_timeline: bool = False, selfclosing: bool = False) -> dict[str, bytes]:
         members = {"project.xml": b"opaque project bytes\x00\xff", "MediaPool/Master/MpFolder.xml": b'<Sm2MpFolder DbId="folder"><MediaVec><Element>' + timeline_clip("Mixed Rate", "sequence-a", "timeline-a") + b'</Element></MediaVec></Sm2MpFolder>', "SeqContainer/seq.xml": sequence_xml(selfclosing=selfclosing), "Other/keep.bin": b"other member\x00bytes"}
         if duplicate:
@@ -96,7 +162,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path = Path(directory) / "source.xml"
             original = self.archive(archive_path, other_timeline=True, selfclosing=True)
             xml_path.write_bytes(source_xml())
-            self.assertEqual(apply_retimes_to_archive(archive_path, xml_path), 2)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, xml_path), 2)
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertEqual(archive.comment, b"archive comment")
                 self.assertEqual(archive.namelist(), list(original))
@@ -131,7 +197,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path.write_bytes(source_xml())
             before = hashlib.sha256(archive_path.read_bytes()).digest()
             with self.assertRaisesRegex(ValueError, "MediaPool timelines"):
-                apply_retimes_to_archive(archive_path, xml_path)
+                apply_timeline_state_to_archive(archive_path, xml_path)
             self.assertEqual(hashlib.sha256(archive_path.read_bytes()).digest(), before)
 
     def test_markers_only_xml_returns_without_requiring_media_or_fps(self) -> None:
@@ -141,7 +207,7 @@ class RetimeOutputTests(unittest.TestCase):
             self.archive(archive_path)
             xml_path.write_bytes(b'<xmeml version="5"><sequence><name>Markers only</name><marker/></sequence></xmeml>')
             before = hashlib.sha256(archive_path.read_bytes()).digest()
-            self.assertEqual(apply_retimes_to_archive(archive_path, xml_path), 0)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, xml_path), 0)
             self.assertEqual(hashlib.sha256(archive_path.read_bytes()).digest(), before)
 
     def test_empty_audio_only_timeline_returns_zero(self) -> None:
@@ -150,7 +216,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path = Path(directory) / "audio.xml"
             self.archive(archive_path)
             xml_path.write_bytes(b'<xmeml version="5"><sequence><name>Audio only</name><media><audio><track/></audio></media></sequence></xmeml>')
-            self.assertEqual(apply_retimes_to_archive(archive_path, xml_path), 0)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, xml_path), 0)
 
     def test_same_coordinates_in_other_named_timeline_are_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -158,7 +224,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path = Path(directory) / "source.xml"
             original = self.archive(archive_path, other_timeline=True)
             xml_path.write_bytes(source_xml())
-            self.assertEqual(apply_retimes_to_archive(archive_path, xml_path), 2)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, xml_path), 2)
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertEqual(archive.read("SeqContainer/other.xml"), original["SeqContainer/other.xml"])
                 target = archive.read("SeqContainer/seq.xml")
@@ -175,7 +241,7 @@ class RetimeOutputTests(unittest.TestCase):
                 for name, payload in members.items():
                     archive.writestr(name, payload)
             xml_path.write_bytes(source_xml().replace(b"<name>Mixed Rate</name>", b"<name> Mixed Rate </name>"))
-            self.assertEqual(apply_retimes_to_archive(archive_path, xml_path), 2)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, xml_path), 2)
             with zipfile.ZipFile(archive_path) as archive:
                 self.assertEqual(archive.read("SeqContainer/other.xml"), members["SeqContainer/other.xml"])
 
@@ -193,7 +259,7 @@ class RetimeOutputTests(unittest.TestCase):
                 xml_path.write_bytes(source_xml())
                 before = archive_path.read_bytes()
                 with self.assertRaisesRegex(ValueError, "duplicate native clip"):
-                    apply_retimes_to_archive(archive_path, xml_path)
+                    apply_timeline_state_to_archive(archive_path, xml_path)
                 self.assertEqual(archive_path.read_bytes(), before)
 
     def test_unsupported_graph_fails_before_archive_write(self) -> None:
@@ -204,7 +270,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path.write_bytes(source_xml(bad_graph=True))
             before = hashlib.sha256(archive_path.read_bytes()).digest()
             with self.assertRaisesRegex(ValueError, "interpolation"):
-                apply_retimes_to_archive(archive_path, xml_path)
+                apply_timeline_state_to_archive(archive_path, xml_path)
             self.assertEqual(hashlib.sha256(archive_path.read_bytes()).digest(), before)
 
     def test_multiple_timelines_with_same_coordinates_are_corrected_together(self) -> None:
@@ -214,7 +280,7 @@ class RetimeOutputTests(unittest.TestCase):
             self.archive(archive_path, other_timeline=True)
             first.write_bytes(source_xml())
             second.write_bytes(source_xml().replace(b"Mixed Rate", b"Another Timeline"))
-            self.assertEqual(apply_retimes_to_archive(archive_path, [first, second]), 4)
+            self.assertEqual(apply_timeline_state_to_archive(archive_path, [first, second]), 4)
             with zipfile.ZipFile(archive_path) as archive:
                 for name in ("SeqContainer/seq.xml", "SeqContainer/other.xml"):
                     result = archive.read(name)
@@ -233,7 +299,7 @@ class RetimeOutputTests(unittest.TestCase):
                 ))
                 before = archive_path.read_bytes()
                 with self.assertRaises(ValueError):
-                    apply_retimes_to_archive(archive_path, [first, second])
+                    apply_timeline_state_to_archive(archive_path, [first, second])
                 self.assertEqual(archive_path.read_bytes(), before)
 
     def test_missing_destination_match_fails_without_archive_write(self) -> None:
@@ -244,7 +310,7 @@ class RetimeOutputTests(unittest.TestCase):
             xml_path.write_bytes(source_xml().replace(b"<start>1000</start>", b"<start>9000</start>", 1).replace(b"<end>1010</end>", b"<end>9010</end>", 1))
             before = hashlib.sha256(archive_path.read_bytes()).digest()
             with self.assertRaisesRegex(ValueError, "match counts"):
-                apply_retimes_to_archive(archive_path, xml_path)
+                apply_timeline_state_to_archive(archive_path, xml_path)
             self.assertEqual(hashlib.sha256(archive_path.read_bytes()).digest(), before)
 
 

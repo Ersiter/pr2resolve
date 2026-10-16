@@ -28,7 +28,9 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态；测试分别检查输出包与 API 调用。轨道 solo 尚未映射。
 
-序列 In/Out、工作区尚未写入 native DRP；存在明确源状态时会告警。API 路径能设置成对 In/Out、清除明确未设置的 marks，单边状态会提示未应用；它会报告 marker 冲突及 API 拒绝，片段标签匹配也计入时间线起始帧偏移。轨道 marker 仅保留源记录，源片段 marker 尚未完整提取；两者都没有目标写入实现。In/Out、旗标和片段标签等尚未注明实测的 API 状态仍只有模拟测试，出点端点语义和可见状态仍需实机对照。
+序列 In/Out 写入池内 `Sm2MpTimelineClip` 的 `MarkInAudio/Video`、`MarkOutAudio/Video`；空字段表示未设置。按 Apple 的 [FCP7 时间规则](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/FinalCutPro_XML/Topics/Topics.html)，Out 减一后写为 Resolve 的最后一帧。native 和 API 导出包共用同一写入；API 在导出后与变速修正一起校验、原子替换。成对、单帧、仅 In、仅 Out、清空及未声明状态各六类在 Resolve Studio 21.0.2.4 中导入、保存、重开回读一致；`[5, 40)` 两路各渲染 35 帧，源帧号正确且 RGB 像素一致。实测 `SetMarkInOut(5, -1)` 返回失败仍会部分修改状态，故单边状态仅写入导出包，并明确报告 API 内存中的时间线未同步。
+
+工作区、轨道 marker 仅保留源记录；源片段 marker 尚未完整提取。旗标、工作区及这两类 marker 均没有目标写入实现。API 会报告 marker 冲突及拒绝写入，片段标签匹配计入时间线起始帧偏移；片段标签等未注明实测的状态仍只有模拟测试。
 
 ## 行业实现中值得采用的做法
 
@@ -53,7 +55,7 @@ Resolve Studio 21.0.2.4 实测包含空首轨的双效果合成记录：native �
 
 - **图像缩放基准**：native zoom 补偿假设模板采用 fit 输入缩放。[Blackmagic 官方手册](https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_12_Reference_Manual.pdf)说明还有 center crop、fill、stretch 等模式；尚未从 Resolve 21 私有 blob 确认模板的具体枚举或逐序列覆盖。位置、旋转和缩放必须再用可见帧验证。
 - **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 视频曲线采用分段线性映射，反向、定格、Bezier/anchoroffset、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 导出包使用同一编码器修正 `In` 和 `MediaTimemapBA`；无法唯一匹配时拒绝报告成功。API 内存时间线不随之改变。三组 25 fps 合成视频的 native/API 渲染帧号和像素一致，这不能外推为任意工程或全部功能等价。
-- **工程状态**：marker 颜色、轨道/片段 marker、In/Out、旗标、Fairlight strip 与音轨路由尚未完整写入。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
+- **工程状态**：marker 颜色、轨道/片段 marker、旗标、Fairlight strip 与音轨路由尚未完整写入。In/Out 已完成上述实机验证。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
 - **Relink 服务端**：公开前端与输出包只能提供行为和格式约束，没有恢复其服务端源码。本次不把浏览器中的选项、厂商陈述或压缩包大小当作保真度证明。
 
 ## 如何继续验收

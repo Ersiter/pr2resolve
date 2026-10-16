@@ -20,6 +20,7 @@ from pr2_native_state import (
     sequence_id_from_pool,
     sequence_lockable_blob,
     sequence_markers,
+    sequence_marks,
     unwritten_state_warnings,
     remap_marker_blob,
 )
@@ -99,6 +100,21 @@ def _decode_marker_blob(fields_hex: str) -> list[dict[str, object]]:
 
 
 class NativeStateTests(unittest.TestCase):
+    def test_sequence_mark_boundaries_and_absent_state(self) -> None:
+        for xml, expected in (
+            ("<sequence/>", None),
+            ("<sequence><in>0</in><out>1</out></sequence>", (0, 0)),
+            ("<sequence><in>5</in><out>40</out></sequence>", (5, 39)),
+            ("<sequence><in>-1</in><out>-1</out></sequence>", (None, None)),
+            ("<sequence><in>5</in></sequence>", (5, None)),
+            ("<sequence><out>40</out></sequence>", (None, 39)),
+        ):
+            with self.subTest(xml=xml):
+                self.assertEqual(sequence_marks(ET.fromstring(xml)), expected)
+        for mark_in, mark_out in (("bad", "40"), ("-2", "40"), ("5", "5"), ("5", "4"), ("-1", "0")):
+            with self.subTest(mark_in=mark_in, mark_out=mark_out), self.assertRaises(ValueError):
+                sequence_marks(ET.fromstring(f"<sequence><in>{mark_in}</in><out>{mark_out}</out></sequence>"))
+
     def test_multi_timeline_archive_keeps_each_marker_with_its_sequence(self) -> None:
         sources = []
         for number in (1, 2):
@@ -194,7 +210,7 @@ class NativeStateTests(unittest.TestCase):
             "unknown": [("track-state:video:1", '{"muted": true, "locked": true}')],
             "markers": [{"scope": "track"}, {"scope": "sequence", "color_index": 1}],
         })
-        self.assertEqual(len(warnings), 5)
+        self.assertEqual(len(warnings), 3)
         self.assertFalse(any("muted" in warning or "locked" in warning for warning in warnings))
 
 

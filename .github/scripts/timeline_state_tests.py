@@ -141,12 +141,13 @@ class TimelineStateTests(unittest.TestCase):
                 timeline.GetMarkers.return_value = {}
 
                 def export(*args: object) -> bool:
-                    timeline.SetMarkInOut.assert_called_once_with(10, 30, "all")
+                    timeline.SetMarkInOut.assert_called_once_with(10, 29, "all")
                     timeline.AddMarker.assert_called_once_with(12, "Blue", "Review", "Keep", 2)
                     return True
 
                 timeline.Export.side_effect = export
                 with patch.object(pr2_engine, "_strip_file_elements_for_drt", return_value=(path, False)), \
+                     patch.object(pr2_engine, "apply_timeline_state_to_archive", return_value=0), \
                      patch.object(pr2_engine, "_recycle"), contextlib.redirect_stdout(io.StringIO()):
                     if batch:
                         result = pr2_engine._drt_batch_export(resolve, [path], folder, ["Review"])
@@ -168,7 +169,7 @@ class TimelineStateTests(unittest.TestCase):
         self.assertEqual(timeline.mark_calls, [])
         self.assertEqual(timeline.clear_calls, [])
         self.assertEqual(len(warnings), 1)
-        self.assertIn("one-sided", warnings[0])
+        self.assertIn("exported package", warnings[0])
 
     def test_explicitly_unset_marks_clear_but_absent_marks_do_not(self) -> None:
         unset_sequence = ET.Element("sequence")
@@ -256,7 +257,7 @@ class TimelineStateTests(unittest.TestCase):
             warnings = pr2_engine._apply_fcp_timeline_state_to_resolve(timeline, path)
         finally:
             path.unlink()
-        self.assertEqual(timeline.mark_calls, [(10, 30, "all")])
+        self.assertEqual(timeline.mark_calls, [(10, 29, "all")])
         self.assertEqual([call[0] for call in timeline.add_marker_calls], [20])
         self.assertEqual(len(warnings), 4)
         self.assertTrue(any("rejected sequence in/out" in warning for warning in warnings))
