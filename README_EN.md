@@ -10,6 +10,8 @@ Premiere Pro to DaVinci Resolve timeline converter. Outputs FCP7 XML, DRT, and D
 
 [**中文 README**](README.md)
 
+Repositories: [GitHub](https://github.com/Ersiter/pr2resolve) · [Gitee mirror](https://gitee.com/Ersiter/pr2resolve) (requires initial [setup and verification](.github/GITEE_SYNC.md)). Development and builds run on GitHub; code and stable release packages sync one way to Gitee.
+
 Contest materials: [project brief](docs/contest/submission-brief.md) · [3-minute demo](docs/contest/demo-script-3min.md) · [reproducibility checklist](docs/contest/reproducibility-checklist.md)
 
 <img src="fav.png" alt="pr2resolve TUI" width="600">
@@ -41,6 +43,8 @@ Contest materials: [project brief](docs/contest/submission-brief.md) · [3-minut
 ## Quick Start
 
 Most users should download the matching package from the [latest Release](https://github.com/Ersiter/pr2resolve/releases/latest). Release packages include the executable and do not require Python.
+
+After mirror activation, the same packages are also available from [Gitee Releases](https://gitee.com/Ersiter/pr2resolve/releases). Verify downloads using `SHA256SUMS.txt`.
 
 ### Windows
 
