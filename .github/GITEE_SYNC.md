@@ -6,7 +6,11 @@ GitHub remains the development and build source. Gitee receives branches, tags a
 
 工作流使用 GitHub Ubuntu runner 已提供的 Git、GitHub CLI 和 curl，不新增 Python 包依赖。附件并行上传，单文件最多等待 30 分钟，任务最多运行 60 分钟；失败后按同一标签重跑会复用校验一致的附件。
 
+TLS 初始握手超时最多重试两次；上传开始后的传输失败保留错误，通过按标签重跑恢复，避免重复发送附件。
+
 The workflow uses Git, GitHub CLI and curl provided by GitHub Ubuntu runners, with no additional Python packages. Assets upload in parallel with a 30-minute per-file limit and a 60-minute job limit. Retry the same tag after a failure to reuse verified matching assets.
+
+Initial TLS handshake timeouts retry up to twice. Failures after an upload starts remain errors; retry by tag to inspect existing assets before sending anything again.
 
 ## 1. 创建目标仓库 / Create the destination
 

@@ -245,10 +245,19 @@ class ApiTests(unittest.TestCase):
         api = sync.Gitee('owner', 'repo', 'secret-value')
         with patch.object(sync.subprocess, 'run', return_value=Mock(
             returncode=28, stderr='Operation timed out: secret-value'
-        )):
+        )) as request:
             with self.assertRaisesRegex(sync.SyncError, 'curl 28') as error:
                 api.request('/attachments', 'POST', file=Path('package.zip'))
             self.assertNotIn('secret-value', str(error.exception))
+            self.assertEqual(request.call_count, 1)
+
+    def test_initial_tls_timeouts_can_retry_before_upload(self) -> None:
+        api = sync.Gitee('owner', 'repo', 'token')
+        timeout = Mock(returncode=28, stderr='curl: (28) SSL connection timeout')
+        success = Mock(returncode=0, stdout='{"id": 7}')
+        with patch.object(sync.subprocess, 'run', side_effect=[timeout, timeout, success]), \
+             patch.object(sync.time, 'sleep'):
+            self.assertEqual(api.request('/attachments', 'POST', file=Path('package.zip')), {'id': 7})
 
     def test_api_permission_and_upload_errors_are_not_hidden_or_leaked(self) -> None:
         api = sync.Gitee("owner", "repo", "secret-value")

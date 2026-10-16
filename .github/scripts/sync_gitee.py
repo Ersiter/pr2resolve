@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,12 +44,19 @@ class Gitee:
         if file is not None:
             # Stream uploads with curl; keep credentials off the command line.
             config = "header = " + json.dumps(f"Authorization: Bearer {self.token}") + "\n"
-            result = subprocess.run(
-                ["curl", "--config", "-", "--silent", "--show-error", "--fail",
-                 "--connect-timeout", "60", "--max-time", "1800", "--request", method,
-                 "--form", f"file=@{file}", self.base + path],
-                input=config, capture_output=True, text=True,
-            )
+            for attempt in range(3):
+                result = subprocess.run(
+                    ["curl", "--config", "-", "--silent", "--show-error", "--fail",
+                     "--connect-timeout", "60", "--max-time", "1800", "--request", method,
+                     "--form", f"file=@{file}", self.base + path],
+                    input=config, capture_output=True, text=True,
+                )
+                # An initial TLS handshake timeout precedes the upload; resending is safe.
+                if result.returncode == 28 and "SSL connection timeout" in result.stderr and attempt < 2:
+                    print(f"Retrying TLS connection for {file.name} ({attempt + 1}/2)", flush=True)
+                    time.sleep(5)
+                    continue
+                break
             if result.returncode:
                 reason = result.stderr.strip().replace(self.token, "***")
                 raise SyncError(f"Gitee upload {file.name}: curl {result.returncode}: {reason}")
