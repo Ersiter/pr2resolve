@@ -45,7 +45,7 @@ class Gitee:
             config = "header = " + json.dumps(f"Authorization: Bearer {self.token}") + "\n"
             result = subprocess.run(
                 ["curl", "--config", "-", "--silent", "--show-error", "--fail",
-                 "--connect-timeout", "60", "--max-time", "600", "--request", method,
+                 "--connect-timeout", "60", "--max-time", "1800", "--request", method,
                  "--form", f"file=@{file}", self.base + path],
                 input=config, capture_output=True, text=True,
             )

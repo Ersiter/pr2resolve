@@ -4,6 +4,10 @@ GitHub 是开发和构建源，Gitee 接收全部分支、标签和正式发行�
 
 GitHub remains the development and build source. Gitee receives branches, tags and stable release assets. Packages are not committed to Git history. Adding the workflow alone does not activate the mirror: complete setup and live verification below.
 
+工作流使用 GitHub Ubuntu runner 已提供的 Git、GitHub CLI 和 curl，不新增 Python 包依赖。附件并行上传，单文件最多等待 30 分钟，任务最多运行 60 分钟；失败后按同一标签重跑会复用校验一致的附件。
+
+The workflow uses Git, GitHub CLI and curl provided by GitHub Ubuntu runners, with no additional Python packages. Assets upload in parallel with a 30-minute per-file limit and a 60-minute job limit. Retry the same tag after a failure to reuse verified matching assets.
+
 ## 1. 创建目标仓库 / Create the destination
 
 登录自己的 Gitee 账号，确认路径为 `Ersiter`，创建公开的空仓库 `pr2resolve`。不要初始化 README、许可证或 `.gitignore`。首次同步 `main` 后将其设为默认分支。若该路径已存在且包含独立提交，先解决归属和历史冲突，不能强制覆盖。
@@ -33,7 +37,7 @@ GitHub 配置入口 / GitHub configuration:
 | Secret | `GITEE_SSH_PRIVATE_KEY` | 专用 SSH 私钥全文 / complete dedicated private key |
 | Secret | `GITEE_TOKEN` | Gitee 项目 API 令牌 / Gitee project API token |
 
-可用 `ssh-keyscan gitee.com` 收集候选主机公钥，但必须先通过 Gitee 官方渠道核实其指纹，再保存到 `GITEE_SSH_KNOWN_HOSTS`。工作流启用严格主机校验，不在运行时自动信任扫描结果。
+可用 `ssh-keyscan gitee.com` 收集候选主机公钥，但必须先通过 [Gitee 官方指纹说明](https://help.gitee.com/account/gitees-ssh-key-fingerprints)核实其指纹，再保存到 `GITEE_SSH_KNOWN_HOSTS`。工作流启用严格主机校验，不在运行时自动信任扫描结果。
 
 Use `ssh-keyscan gitee.com` to collect candidate host keys, then independently verify their fingerprints through an official Gitee channel before saving them in `GITEE_SSH_KNOWN_HOSTS`. The workflow strictly checks the host key; it does not automatically trust runtime scans.
 
