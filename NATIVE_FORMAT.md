@@ -26,11 +26,15 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 时间线 marker 写入位置、名称、注释和时长。源 marker 颜色索引仍保留在 XML 注释中，目前输出 Blue；有颜色索引时会明确告警。Adobe 的 [Marker API](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker/) 将颜色、正文、时长分开处理，不能套用片段标签的颜色表。Resolve Studio 21.0.2.4 实录确认每个 map entry 含嵌套的 sint 帧键和独立正文；旧编码把帧键直接放入正文容器，导致实机读到半数位置及空白标签，已修正。编码器使用标准库生成 `0x80` 原始封装；实录也有 `0x81` 压缩封装，验收先解压后比较完整 protobuf 字节，再导入原生包并保存重开核对 API 返回的全部 marker 字段。
 
-轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态；测试分别检查输出包与 API 调用。轨道 solo 尚未映射。
+轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态。音轨还必须同步 Fairlight 的两条 `0x2` 静音记录与 `0xDB` 锁定记录；仅改 Flags 会出现 API 回读已禁用但渲染仍发声的问题。属性由独立启用/锁定切换实录定位，保存重开后的三轨混音与禁用一轨渲染采样一致。视频轨的静音/锁定仍待实机核对，轨道 solo 尚未映射。
 
 序列 In/Out 写入池内 `Sm2MpTimelineClip` 的 `MarkInAudio/Video`、`MarkOutAudio/Video`；空字段表示未设置。按 Apple 的 [FCP7 时间规则](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/FinalCutPro_XML/Topics/Topics.html)，Out 减一后写为 Resolve 的最后一帧。native 和 API 导出包共用同一写入；API 在导出后与变速修正一起校验、原子替换。成对、单帧、仅 In、仅 Out、清空及未声明状态各六类在 Resolve Studio 21.0.2.4 中导入、保存、重开回读一致；`[5, 40)` 两路各渲染 35 帧，源帧号正确且 RGB 像素一致。实测 `SetMarkInOut(5, -1)` 返回失败仍会部分修改状态，故单边状态仅写入导出包，并明确报告 API 内存中的时间线未同步。
 
 工作区、轨道 marker 仅保留源记录；源片段 marker 尚未完整提取。旗标、工作区及这两类 marker 均没有目标写入实现。API 会报告 marker 冲突及拒绝写入，片段标签匹配计入时间线起始帧偏移；片段标签等未注明实测的状态仍只有模拟测试。
+
+基础音频已从模板复制改为生成：解析 `FLStudioModelBA` 的动态 `LastClient` 段，按目标声道展开 494 条属性记录，写入名称、声像、轨道/总线关联，保留其他段。实录六种单声道、立体声及混合布局确认属性按总声道数展开；普通 FCP 音频轨按单声道源通道写入。单改 `Sm2TiTrack.SubType` 不会修复音量，必须同时生成 Fairlight 模型。
+
+独立音频的 `BtAudioInfo.TracksBA`、`ChannelVecBA`、媒体范围和帧率按源元数据重建；采样长度直接使用采样率和时长，修正旧编码在 QVariant 空值字节处偏移写入造成的误差。`VirtualAudioTrackBA` 使用实录版本 2 的源声道编号，两个轨道分别读取双声道文件的左/右声道。Resolve 21.0.2.4 中，48 kHz、16 bit PCM 双声道源及三轨不同入点/位置的重叠混音，保存重开及禁用一轨后，两路各 4 秒、384,000 个采样值完全相等。此验收不覆盖原始 `.prproj` 布局提取、立体声轨道分组、多声道/多流、调音台自动化或音频变速。
 
 ## 行业实现中值得采用的做法
 
@@ -55,7 +59,7 @@ Resolve Studio 21.0.2.4 实测包含空首轨的双效果合成记录：native �
 
 - **图像缩放基准**：native zoom 补偿假设模板采用 fit 输入缩放。[Blackmagic 官方手册](https://documents.blackmagicdesign.com/UserManuals/DaVinci_Resolve_12_Reference_Manual.pdf)说明还有 center crop、fill、stretch 等模式；尚未从 Resolve 21 私有 blob 确认模板的具体枚举或逐序列覆盖。位置、旋转和缩放必须再用可见帧验证。
 - **动画与复杂效果**：XML 的线性插值不等于 Premiere Bezier；native 不会把 Motion 动画静默变成静态值。单调 graphdict 视频曲线采用分段线性映射，反向、定格、Bezier/anchoroffset、音频变速、非默认锚点、转场、嵌套与生成器仍需要专门实现与样本。API 导出包使用同一编码器修正 `In` 和 `MediaTimemapBA`；无法唯一匹配时拒绝报告成功。API 内存时间线不随之改变。三组 25 fps 合成视频的 native/API 渲染帧号和像素一致，这不能外推为任意工程或全部功能等价。
-- **工程状态**：marker 颜色、轨道/片段 marker、旗标、Fairlight strip 与音轨路由尚未完整写入。In/Out 已完成上述实机验证。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
+- **工程状态**：marker 颜色、轨道/片段 marker、旗标及完整 Fairlight 路由尚未实现。基础单声道轨及双声道源选择、In/Out 已完成上述实机验证。轨道名称、mute/lock 已写入，solo 未映射。保留源记录只表示能够追查，不表示已应用。源起始时码写入媒体缓存，仍需确认 Resolve 的可见表现。
 - **Relink 服务端**：公开前端与输出包只能提供行为和格式约束，没有恢复其服务端源码。本次不把浏览器中的选项、厂商陈述或压缩包大小当作保真度证明。
 
 ## 如何继续验收

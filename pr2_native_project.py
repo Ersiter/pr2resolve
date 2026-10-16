@@ -8,6 +8,8 @@ import struct
 import xml.etree.ElementTree as ET
 
 from pr2_native_state import sequence_marks, write_sequence_marks
+from pr2_native_audio import rebuild_track_model
+from pr2_constants import _timeline_track_states
 
 
 _TIMELINE_BLOCK = re.compile(r"(?is)<Sm2MpTimelineClip\b.*?</Sm2MpTimelineClip>")
@@ -170,6 +172,15 @@ def update_sequence_settings(pool_xml: str, source: ET.Element) -> str:
     marks = sequence_marks(source)
     if marks is not None:
         write_sequence_marks(timeline, marks)
+    audio_tracks = source.findall("media/audio/track")
+    if audio_tracks:
+        fields = sequence.find("FieldsBlob")
+        if fields is None or not fields.text:
+            raise ValueError("native sequence has no Fairlight FieldsBlob")
+        fields.text = rebuild_track_model(bytes.fromhex(fields.text), [
+            ("mono", track.name, track.enabled, track.locked)
+            for track in _timeline_track_states(source) if track.type == "audio"
+        ]).hex()
 
     rate = _source_rate(source)
     if rate is not None:

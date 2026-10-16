@@ -32,6 +32,7 @@ jobs:
           python -m py_compile pr2_native_project.py pr2_native_time.py pr2_native_state.py
           python -m py_compile pr2_lumetri.py pr2_native_grade.py pr2_captions.py
           python -m py_compile pr2_retime_output.py
+          python -m py_compile pr2_native_audio.py
           python -m py_compile pr2_engine.py
           python -m py_compile pr2_constants.py
           python -m py_compile tui.py

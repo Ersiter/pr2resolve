@@ -22,6 +22,7 @@ from xml.etree import ElementTree as ET
 from pr2_constants import DEFAULT_FPS, IMAGE_SUFFIXES, PP_LABEL_TO_RESOLVE_COLOR, ProjectBin, _build_file_index, _timeline_track_states
 from pr2_native_project import update_project_settings, update_sequence_settings, update_timeline_handles
 from pr2_native_grade import attach_native_grade
+from pr2_native_audio import decode_fields, encode_fields, mono_channel_mapping
 from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
@@ -235,7 +236,66 @@ def _timeline_clip_labels(state: dict[str, Any]) -> dict[tuple[str, int, str, in
     return labels
 
 
-def _rewrite_av_clone(node: ET.Element, full_path: str, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0, source_start: int = 0) -> ET.Element:
+def _rewrite_audio_metadata(node: ET.Element, duration: int, fps: float, channels: int, sample_rate: int) -> None:
+    for info in node.findall(".//BtAudioInfo"):
+        tracks = info.find("TracksBA")
+        if tracks is None or not tracks.text:
+            continue
+        physical = decode_fields(bytes.fromhex(tracks.text))
+        for key, (kind, raw) in list(physical.items()):
+            track = decode_fields(raw)
+            rate = sample_rate or int.from_bytes(track["SampleRate"][1], "big")
+            track["SampleRate"] = 3, struct.pack(">I", rate)
+            if channels:
+                track["NumChannels"] = 3, struct.pack(">I", channels)
+            track["Duration"] = 4, struct.pack(">q", round(duration / fps * rate))
+            physical[key] = kind, encode_fields(track)
+        tracks.text = encode_fields(physical).hex()
+    if node.tag != "Sm2MpAudioClip":
+        return
+    if channels not in (1, 2):
+        raise ValueError("standalone audio channel layout has no verified native cache encoder")
+    blob = node.find("FieldsBlob")
+    fields = _protobuf_fields(_decode_wrapper_hex(blob.text or ""))
+    updated = []
+    for number, wire, value in fields:
+        if number == 1 and wire == 2:
+            nested = []
+            for child, child_wire, child_value in _protobuf_fields(value):
+                if child == 5 and child_wire == 2:
+                    streams = decode_fields(child_value)
+                    if len(streams) != 1:
+                        raise ValueError("multiple standalone audio streams are not mapped")
+                    for key, (kind, raw) in list(streams.items()):
+                        metadata = decode_fields(raw)
+                        old_channels = decode_fields(metadata["ChannelVecBA"][1])
+                        first = decode_fields(old_channels["0"][1])
+                        channel_vec = {}
+                        for index in range(channels):
+                            channel = {"MediaRef": first["MediaRef"]}
+                            if index:
+                                channel["ChannelIdx"] = 2, struct.pack(">I", index)
+                            channel_vec[str(index)] = 12, encode_fields(channel)
+                        metadata["ChannelVecBA"] = 12, encode_fields(channel_vec)
+                        if channels == 2:
+                            metadata["Type"] = 3, struct.pack(">I", 0)
+                        else:
+                            metadata.pop("Type", None)
+                        metadata["MediaExtents"] = 12, struct.pack("<dd", 0.0, duration / fps)
+                        streams[key] = kind, encode_fields(metadata)
+                    child_value = encode_fields(streams)
+                nested.append((child, child_wire, child_value))
+            value = _protobuf_encode(nested)
+        elif number == 2 and wire == 2:
+            value = _protobuf_encode([
+                (child, child_wire, struct.pack("<d", fps) if child == 1 and child_wire == 1 else child_value)
+                for child, child_wire, child_value in _protobuf_fields(value)
+            ])
+        updated.append((number, wire, value))
+    blob.text = _encode_wrapper_hex(_protobuf_encode(updated))
+
+
+def _rewrite_av_clone(node: ET.Element, full_path: str, duration: int = 0, fps: float = 0.0, width: int = 0, height: int = 0, source_start: int = 0, audio_channels: int = 0, sample_rate: int = 0) -> ET.Element:
     path = Path(full_path)
     video_uuid = _uid()
     for info in node.findall(".//BtVideoInfo") + node.findall(".//BtAudioInfo"):
@@ -294,18 +354,8 @@ def _rewrite_av_clone(node: ET.Element, full_path: str, duration: int = 0, fps: 
                     raw[offset + 8:offset + 16] = height.to_bytes(8, "big")
                     geometry.text = raw.hex()
     if duration > 0 and fps > 0:
-        units = math.ceil((duration / fps) * 187.5 / 8) * 8
-        marker = "Duration".encode("utf-16be")
-        for tracks in node.findall(".//TracksBA"):
-            if not tracks.text:
-                continue
-            raw = bytearray(bytes.fromhex(tracks.text))
-            start = raw.find(marker)
-            if start >= 0:
-                value_start = start + len(marker) + 4
-                encoded_units = units.to_bytes(8, "big")
-                raw[value_start:value_start + 8] = encoded_units
-            tracks.text = bytes(raw).hex()
+        channels = (audio_channels or 1) if node.tag == "Sm2MpAudioClip" else 0
+        _rewrite_audio_metadata(node, duration, fps, channels, sample_rate)
     return node
 
 
@@ -528,6 +578,12 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                 _set_child(node, "Name", clip.findtext("name") or "clip")
                 _set_child(node, "Start", clip.findtext("start") or "0")
                 _set_child(node, "Duration", _clip_duration(clip))
+                if kind == "audio":
+                    source_channel = int(clip.findtext("sourcetrack/trackindex", "1"))
+                    source_channels = _int_text(file_node, "media/audio/channelcount") if file_node is not None else 0
+                    if source_channels and source_channel > source_channels:
+                        raise ValueError("audio source channel exceeds the declared source layout")
+                    _set_child(node, "VirtualAudioTrackBA", mono_channel_mapping(source_channel))
                 input_fps = _rate(file_node) if file_node is not None and file_node.find("rate") is not None else _rate(source)
                 clip_fps = _rate(clip) if clip.find("rate") is not None else _rate(source)
                 alignment = (extract_fcp7_retime_alignment(clip, _rate(source))
@@ -546,7 +602,7 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     _set_child(node, "MediaFilePath", _native_path(file_node.findtext("pathurl") or ""))
                     if kind == "video":
                         _set_child(node, "CurrentSelectorIdx", "0")
-                        _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
+                    _set_child(node, "MediaFrameRate", struct.pack("<d", input_fps).hex() + "00" * 8)
                     if suffix in IMAGE_SUFFIXES:
                         _set_child(node, "MediaTimemapBA", build_still_timemap())
                     else:
@@ -581,6 +637,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
             for field in ("FusionCompHolderItems", "LayersVec"):
                 _set_child(track, field, "")
             state = track_states[(kind, track_index)]
+            if kind == "audio":
+                _set_child(track, "SubType", "1")
             _set_child(track, "UserDefinedName", state.name)
             # Resolve 21 DC export: lock=1, disabled=2; both=3. Clip flag
             # bits and label-color enums are unrelated to these track flags.
@@ -642,7 +700,9 @@ def export_native_drp(
         width = _int_text(sample, "width") if sample is not None else 0
         height = _int_text(sample, "height") if sample is not None else 0
         source_start = _int_text(file_node, "timecode/frame")
-        media_key = (_path_key(path), fps, duration, width, height, source_start)
+        audio_channels = _int_text(file_node, "media/audio/channelcount")
+        sample_rate = _int_text(file_node, "media/audio/samplecharacteristics/samplerate")
+        media_key = (_path_key(path), fps, duration, width, height, source_start, audio_channels, sample_rate)
         if media_key in canonical:
             media_aliases[refs[key]] = canonical[media_key]
             continue
@@ -661,7 +721,7 @@ def export_native_drp(
             unique.text = _uid()
         _set_child(node, "Name", name)
         _rewrite_av_clone(node, path, duration=duration, fps=fps, width=width, height=height,
-                          source_start=source_start)
+                          source_start=source_start, audio_channels=audio_channels, sample_rate=sample_rate)
         generated.append("   <Element>\n" + ET.tostring(node, encoding="unicode") + "\n   </Element>")
     for name, data in list(members.items()):
         if not name.startswith("SeqContainer/"):
