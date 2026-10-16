@@ -11,6 +11,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 
@@ -44,7 +45,7 @@ class Gitee:
             config = "header = " + json.dumps(f"Authorization: Bearer {self.token}") + "\n"
             result = subprocess.run(
                 ["curl", "--config", "-", "--silent", "--show-error", "--fail",
-                 "--connect-timeout", "20", "--max-time", "600", "--request", method,
+                 "--connect-timeout", "60", "--max-time", "600", "--request", method,
                  "--form", f"file=@{file}", self.base + path],
                 input=config, capture_output=True, text=True,
             )
@@ -184,10 +185,15 @@ def sync_release(api: Gitee, source: dict, folder: Path, target_commit: str) -> 
     else:
         release = api.request("/releases", "POST", {**metadata, "target_commitish": target_commit})
     base = f'/releases/{release["id"]}/attach_files'
-    for name in sorted(expected, key=lambda name: (folder / name).stat().st_size):
-        if name not in existing:
-            print(f"Uploading {name} ({(folder / name).stat().st_size} bytes)", flush=True)
-            api.request(base, "POST", file=folder / name)
+    def upload(name: str) -> None:
+        print(f"Uploading {name} ({(folder / name).stat().st_size} bytes)", flush=True)
+        api.request(base, "POST", file=folder / name)
+
+    missing = sorted(set(expected) - set(existing), key=lambda name: (folder / name).stat().st_size)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [pool.submit(upload, name) for name in missing]
+        for future in futures:
+            future.result()
     attachments = api.attachments(release["id"])
     if sorted(a["name"] for a in attachments) != sorted(expected):
         raise SyncError("Gitee attachment list verification failed")
