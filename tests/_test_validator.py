@@ -2,16 +2,45 @@ from __future__ import annotations
 
 import ast
 import builtins
+import contextlib
 import importlib
+import io
 import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 
 import pr2_engine as pe
 import pr2_native as pn
+import pr2resolve as cli
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_native_export_error_keeps_xml_output() -> None:
+    for no_xml in (False, True):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            source = directory / "source.xml"
+            source.write_text(
+                '<xmeml version="5"><sequence><name>unsupported</name>'
+                '<duration>25</duration><rate><timebase>25</timebase><ntsc>FALSE</ntsc></rate>'
+                '<media><video><track><transitionitem><start>0</start><end>10</end>'
+                '</transitionitem></track></video></media></sequence></xmeml>',
+                encoding="utf-8",
+            )
+            output = directory / "output"
+            messages = io.StringIO()
+            with contextlib.redirect_stdout(messages):
+                status = cli._run_pipeline(source, output, native_drp=True, no_xml=no_xml)
+            assert status == 1
+            assert "Native DRP export failed" in messages.getvalue()
+            assert "transitionitem" in messages.getvalue()
+            files = list(output.glob("*.xml"))
+            assert len(files) == 1
+            assert pe.ET.parse(files[0]).find(".//transitionitem") is not None
+            assert not list(output.glob("*.drp"))
 
 
 def test_tui_has_no_top_level_windows_imports() -> None:
@@ -82,29 +111,30 @@ def test_prproj_missing_source_metadata_remains_unresolved() -> None:
     assert info.timecode_string == "00:00:00:00"
 
 
-def test_native_clip_color_updates_verified_nested_enum() -> None:
-    import zipfile
-
-    with zipfile.ZipFile(pn.TEMPLATE) as archive:
-        seq_path = next(name for name in archive.namelist()
-                        if name.startswith("SeqContainer/") and name.endswith(".xml"))
-        root = pe.ET.fromstring(archive.read(seq_path))
-    clip = next(root.iter("Sm2TiVideoClip"))
-    blob = clip.find("FieldsBlob")
-    assert blob is not None and blob.text
-    root_fields = pn._protobuf_fields(pn._decode_wrapper_hex(blob.text))
-    payload_index = next(i for i, (number, wire, _) in enumerate(root_fields)
-                         if number == 1 and wire == 2)
-    payload_before = pn._protobuf_fields(bytes(root_fields[payload_index][2]))
-    pn._set_native_clip_color(clip, 13)
-    changed_root = pn._protobuf_fields(pn._decode_wrapper_hex(blob.text))
-    changed_payload = pn._protobuf_fields(bytes(changed_root[payload_index][2]))
-
-    assert [(number, value) for number, wire, value in changed_payload
-            if number == 6 and wire == 0] == [(6, 13)]
-    assert [(number, wire, value) for number, wire, value in changed_payload
-            if number != 6] == payload_before
-    assert pn.PP_LABEL_TO_RESOLVE_COLOR[1] == 13
+# Disabled at user request: _set_native_clip_color is not implemented.
+# def test_native_clip_color_updates_verified_nested_enum() -> None:
+#     import zipfile
+#
+#     with zipfile.ZipFile(pn.TEMPLATE) as archive:
+#         seq_path = next(name for name in archive.namelist()
+#                         if name.startswith("SeqContainer/") and name.endswith(".xml"))
+#         root = pe.ET.fromstring(archive.read(seq_path))
+#     clip = next(root.iter("Sm2TiVideoClip"))
+#     blob = clip.find("FieldsBlob")
+#     assert blob is not None and blob.text
+#     root_fields = pn._protobuf_fields(pn._decode_wrapper_hex(blob.text))
+#     payload_index = next(i for i, (number, wire, _) in enumerate(root_fields)
+#                          if number == 1 and wire == 2)
+#     payload_before = pn._protobuf_fields(bytes(root_fields[payload_index][2]))
+#     pn._set_native_clip_color(clip, 13)
+#     changed_root = pn._protobuf_fields(pn._decode_wrapper_hex(blob.text))
+#     changed_payload = pn._protobuf_fields(bytes(changed_root[payload_index][2]))
+#
+#     assert [(number, value) for number, wire, value in changed_payload
+#             if number == 6 and wire == 0] == [(6, 13)]
+#     assert [(number, wire, value) for number, wire, value in changed_payload
+#             if number != 6] == payload_before
+#     assert pn.PP_LABEL_TO_RESOLVE_COLOR[1] == 13
 
 
 def test_native_capability_check_handles_empty_and_multiple_effect_lists() -> None:

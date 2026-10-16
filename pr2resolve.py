@@ -342,6 +342,7 @@ def _run_pipeline(
     batch_xml_paths: list[Path] = []
     batch_drt_count = 0
     api_export_failed = False
+    native_export_failed = False
     resolve_lifecycle_handed_off = False
     drp_xml_paths: list[Path] = []
     # output_path / report_path deferred — computed from sequence name after parsing
@@ -544,7 +545,16 @@ def _run_pipeline(
                 print(f"  Native DRP written: {native_drp}")
         except Exception as exc:
             print(f"  Error: Native DRP export failed: {exc}")
-            return 1
+            native_export_failed = True
+            no_xml = False
+            print("  Continuing with XML output for retry.")
+            if batch_roots and not batch_xml_paths:
+                for fcp in batch_roots:
+                    fallback_name = _make_output_name(fcp.findtext("sequence/name", stem), add_suffix=not no_suffix)
+                    fallback_path = _next_available_path(output_dir / fallback_name)
+                    _write_fixed_xml(fcp, fallback_path)
+                    batch_xml_paths.append(fallback_path)
+                    print(f"  Writing: {fallback_path}")
 
     # Write intermediate XML — always needed for DRP/DRT (DaVinci imports from file)
     xml_written = bool(batch_xml_paths and not no_xml)
@@ -673,6 +683,8 @@ def _run_pipeline(
     print()
     if api_export_failed:
         print("  API export incomplete; XML files are retained for retry.")
+    elif native_export_failed:
+        print("  Native DRP export incomplete; available outputs are retained for retry.")
     elif native_outputs:
         if len(native_outputs) == 1:
             print(f"  Done. Native DRP: {native_outputs[0]}")
@@ -704,7 +716,7 @@ def _run_pipeline(
     if not resolve_lifecycle_handed_off and (drt or drp_path or drp_gui):
         _shutdown_resolve()
 
-    return 1 if api_export_failed else 0
+    return 1 if api_export_failed or native_export_failed else 0
 
 
 def _parse_args() -> argparse.Namespace:
