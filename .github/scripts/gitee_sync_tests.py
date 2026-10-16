@@ -227,6 +227,15 @@ class ApiTests(unittest.TestCase):
             with self.assertRaisesRegex(sync.SyncError, "404"):
                 api.request("")
 
+    def test_network_failure_reports_reason_without_exposing_token(self) -> None:
+        api = sync.Gitee("owner", "repo", "secret-value")
+        with patch("urllib.request.build_opener") as opener:
+            opener.return_value.open.side_effect = urllib.error.URLError(
+                TimeoutError("upload timed out: secret-value"))
+            with self.assertRaisesRegex(sync.SyncError, "TimeoutError: upload timed out") as error:
+                api.request("/releases/42/attach_files", "POST", data={})
+            self.assertNotIn("secret-value", str(error.exception))
+
     def test_attachment_listing_reads_all_pages(self) -> None:
         api = sync.Gitee("owner", "repo", "token")
         with patch.object(api, "request", side_effect=[[{"id": n} for n in range(100)], [{"id": 100}]]) as request:

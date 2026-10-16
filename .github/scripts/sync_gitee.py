@@ -51,14 +51,17 @@ class Gitee:
             body = json.dumps(data).encode()
         request = urllib.request.Request(self.base + path, data=body, headers=headers, method=method)
         try:
-            with urllib.request.build_opener(DownloadRedirect()).open(request, timeout=120) as response:
+            with urllib.request.build_opener(DownloadRedirect()).open(
+                request, timeout=600 if file is not None else 120
+            ) as response:
                 return json.load(response)
         except urllib.error.HTTPError as exc:
             if exc.code == 404 and method == "GET" and path.startswith("/releases/tags/"):
                 return None
             raise SyncError(f"Gitee {method} {path}: HTTP {exc.code}") from None
-        except urllib.error.URLError:
-            raise SyncError(f"Gitee {method} {path}: network request failed") from None
+        except urllib.error.URLError as exc:
+            reason = f"{type(exc.reason).__name__}: {exc.reason}".replace(self.token, "***")
+            raise SyncError(f"Gitee {method} {path}: network request failed ({reason})") from None
 
     def attachments(self, release_id: int) -> list[dict]:
         result = []
@@ -90,7 +93,7 @@ def sync_code(source: str, target: str, folder: Path) -> None:
         "ls-remote", "--refs", target, cwd=folder).splitlines())
     if any(remote.get(ref) != sha for ref, sha in refs.items()):
         raise SyncError("Gitee branch/tag SHA verification failed")
-    print(f"Verified {len(refs)} branch/tag references on Gitee")
+    print(f"Verified {len(refs)} branch/tag references on Gitee", flush=True)
 
 
 def download(url: str, destination: Path) -> None:
@@ -177,8 +180,9 @@ def sync_release(api: Gitee, source: dict, folder: Path, target_commit: str) -> 
     else:
         release = api.request("/releases", "POST", {**metadata, "target_commitish": target_commit})
     base = f'/releases/{release["id"]}/attach_files'
-    for name in expected:
+    for name in sorted(expected, key=lambda name: (folder / name).stat().st_size):
         if name not in existing:
+            print(f"Uploading {name} ({(folder / name).stat().st_size} bytes)", flush=True)
             api.request(base, "POST", file=folder / name)
     attachments = api.attachments(release["id"])
     if sorted(a["name"] for a in attachments) != sorted(expected):
