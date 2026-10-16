@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import struct
 import sys
 import re
@@ -16,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from pr2_native import export_native_drp
 from pr2_native_state import (
     append_lockable_blob,
+    clip_color_lockable_blob,
     encode_timeline_markers,
     sequence_id_from_pool,
     sequence_lockable_blob,
@@ -100,6 +103,46 @@ def _decode_marker_blob(fields_hex: str) -> list[dict[str, object]]:
 
 
 class NativeStateTests(unittest.TestCase):
+    def test_clip_color_matches_resolve_authored_lockable_records(self) -> None:
+        # Isolated SetClipColor(Green/Violet) captures from Resolve 21.0.2.4.
+        prefix = "0000000100000001000000100042006c006f006200440061007400610000000c000000000b00002711000000038028"
+        for color, suffix in ((1, "02"), (15, "1e")):
+            with self.subTest(color=color):
+                record = ET.fromstring(clip_color_lockable_blob("clip-owner", color))
+                self.assertEqual(record.findtext("Sm2TiItemLockableBlob/FieldsBlob"), prefix + suffix)
+                self.assertEqual(record.findtext("Sm2TiItemLockableBlob/BlobOwner"), "clip-owner")
+
+    def test_clip_color_owners_survive_multiple_timeline_merge(self) -> None:
+        sources = []
+        for number, preset in ((1, 13), (2, 0)):
+            kind, filename = ("video", "shot.mov") if number == 1 else ("audio", "shot.wav")
+            source = ET.fromstring(f'''<xmeml><sequence id="seq-{number}"><name>Palette {number}</name>
+                <duration>25</duration><rate><timebase>25</timebase></rate>
+                <media><{kind}><track><clipitem><name>{filename}</name><start>0</start><end>25</end>
+                <in>0</in><out>25</out><file id="shot"><name>{filename}</name><pathurl>{filename}</pathurl>
+                <duration>25</duration></file></clipitem></track></{kind}></media></sequence></xmeml>''')
+            state = {"unknown": [("clip-label:shot", json.dumps({
+                "name": filename, "start": 0, "end": 25, "media_type": kind,
+                "track_index": 1, "preset": f"BE.Prefs.LabelColors.{preset}",
+            }))]}
+            source.append(ET.Comment("pr2resolve-timeline-state:" + base64.b64encode(json.dumps(state).encode()).decode()))
+            sources.append(source)
+        with tempfile.TemporaryDirectory() as temp:
+            path = export_native_drp(sources, Path(temp) / "colors.drp", "Colors")
+            with zipfile.ZipFile(path) as archive:
+                project = ET.fromstring(archive.read("project.xml").replace(b"ListMgt::", b"ListMgt__"))
+                clips = []
+                for name in archive.namelist():
+                    if name.startswith("SeqContainer/"):
+                        sequence = ET.fromstring(archive.read(name))
+                        clips.extend(sequence.iter("Sm2TiVideoClip"))
+                        clips.extend(sequence.iter("Sm2TiAudioClip"))
+        owners = {clip.get("DbId") for clip in clips}
+        records = [item for item in project.iter("Sm2TiItemLockableBlob") if item.findtext("BlobOwner") in owners]
+        self.assertEqual(len(records), 2)
+        self.assertEqual({item.findtext("BlobOwner") for item in records}, owners)
+        self.assertEqual({item.findtext("FieldsBlob")[-4:] for item in records}, {"2802", "281e"})
+
     def test_sequence_mark_boundaries_and_absent_state(self) -> None:
         for xml, expected in (
             ("<sequence/>", None),

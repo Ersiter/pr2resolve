@@ -26,6 +26,8 @@ from pr2_native_audio import decode_fields, encode_fields, mono_channel_mapping
 from pr2_native_time import STILL_SOURCE_IN, build_media_timemap, build_still_timemap, extract_fcp7_retime_alignment, retimed_source_in
 from pr2_native_state import (
     append_lockable_blob,
+    clip_color_lockable_blob,
+    item_blob_elements,
     marker_blob_elements,
     remap_marker_blob,
     sequence_id_from_pool,
@@ -194,26 +196,6 @@ def _decode_wrapper_hex(value: str) -> bytes:
 
 def _encode_wrapper_hex(data: bytes) -> str:
     return (b"\0\0\0\2" + (len(data) + 1).to_bytes(4, "big") + b"\x80" + data).hex()
-
-
-def _set_native_clip_color(node: ET.Element, resolve_color: int) -> None:
-    """Patch only the verified nested clip-color enum in the template blob."""
-    blob = node.find("FieldsBlob")
-    if blob is None or not blob.text:
-        raise ValueError("native clip has no FieldsBlob")
-    root_fields = _protobuf_fields(_decode_wrapper_hex(blob.text))
-    payload_index = next((i for i, (number, wire, _) in enumerate(root_fields)
-                          if number == 1 and wire == 2), None)
-    if payload_index is None:
-        raise ValueError("native clip FieldsBlob has no payload")
-    payload_fields = _protobuf_fields(bytes(root_fields[payload_index][2]))
-    color_fields = [(number, wire, resolve_color) if number == 6 and wire == 0
-                    else (number, wire, value)
-                    for number, wire, value in payload_fields]
-    if not any(number == 6 and wire == 0 for number, wire, _ in payload_fields):
-        color_fields.append((6, 0, resolve_color))
-    root_fields[payload_index] = (1, 2, _protobuf_encode(color_fields))
-    blob.text = _encode_wrapper_hex(_protobuf_encode(root_fields))
 
 
 def _timeline_clip_labels(state: dict[str, Any]) -> dict[tuple[str, int, str, int, int], int]:
@@ -542,6 +524,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
     tracks = {kind: ET.fromstring(ET.tostring(native.find(f"{vec}/Element/Sm2TiTrack"))) for vec, kind in (("VideoTrackVec", "video"), ("AudioTrackVec", "audio"))}
     state_manifest = _timeline_state_manifest(root)
     clip_labels = _timeline_clip_labels(state_manifest)
+    clip_color_blobs: list[str] = []
+    applied_labels: set[tuple[str, int, str, int, int]] = set()
     grade_index = {(grade.track_index, grade.start_frame, grade.end_frame): grade for grade in grades or []}
     if len(grade_index) != len(grades or []):
         raise ValueError("native Lumetri clip identity is ambiguous")
@@ -631,7 +615,8 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
                     _int_text(clip, "start"), int(_clip_duration(clip)),
                 )
                 if label_key in clip_labels:
-                    _set_native_clip_color(node, clip_labels[label_key])
+                    clip_color_blobs.append(clip_color_lockable_blob(node.attrib["DbId"], clip_labels[label_key]))
+                    applied_labels.add(label_key)
                 item = ET.SubElement(items, "Element")
                 item.append(node)
             for field in ("FusionCompHolderItems", "LayersVec"):
@@ -647,7 +632,11 @@ def _build_timeline(sequence: ET.Element | ET.ElementTree, grades: list[Any] | N
             wrapper.append(track)
     if set(grade_index) != applied_grades:
         raise ValueError("native Lumetri clip identity could not be matched")
+    for kind, index, name, start, duration in clip_labels.keys() - applied_labels:
+        print(f"  Warning: Could not match clip label for {name} on {kind} track {index} at frame {start} ({duration} frames)")
     members[seq_name] = _xml(native)
+    for blob in clip_color_blobs:
+        members["project.xml"] = append_lockable_blob(members["project.xml"].decode("utf-8"), blob).encode("utf-8")
     return members, source, refs
 
 
@@ -811,6 +800,9 @@ def _export_native_project(
                 raise ValueError("native sequence container has no sequence reference")
             old_sequence_id = old_sequence.group(1)
             extra_seq = extra_seq.replace(old_sequence.group(1), new_sequence)
+            clip_owners = set(re.findall(r'<Sm2Ti(?:Video|Audio)Clip\b[^>]*\bDbId="([^"]+)"', extra_seq))
+            for item_blob in item_blob_elements(extra_project, clip_owners):
+                members["project.xml"] = append_lockable_blob(members["project.xml"].decode("utf-8"), item_blob).encode("utf-8")
             extra_marker_blobs = marker_blob_elements(extra_project)
             if extra_marker_blobs:
                 project_xml = members["project.xml"].decode("utf-8", "replace")

@@ -315,6 +315,31 @@ class TimelineStateTests(unittest.TestCase):
         self.assertEqual(item.color_calls, [])
         self.assertTrue(any("without the timeline start frame" in warning for warning in warnings))
 
+    def test_clip_label_requires_one_destination_and_known_preset(self) -> None:
+        for count, preset, message in ((0, "1", "0 items"), (2, "1", "2 items"), (1, "99", "Unmapped")):
+            with self.subTest(count=count, preset=preset):
+                timeline = _Timeline()
+                timeline.items[("video", 1)] = [_TimelineItem("shot.mov", 125, 40) for _ in range(count)]
+                opaque = {"unknown": [("clip-label:clip-1", json.dumps({
+                    "name": "shot.mov", "start": 125, "end": 165, "media_type": "video",
+                    "track_index": 1, "preset": preset,
+                }))]}
+                path = _write_xml(ET.Element("sequence"), opaque)
+                try:
+                    warnings = pr2_engine._apply_fcp_timeline_state_to_resolve(timeline, path)
+                finally:
+                    path.unlink()
+                self.assertTrue(any(message in warning for warning in warnings), warnings)
+                self.assertTrue(all(not item.color_calls for item in timeline.items[("video", 1)]))
+
+    def test_unapplied_track_marker_is_reported_by_api(self) -> None:
+        path = _write_xml(ET.Element("sequence"), {"markers": [{"scope": "track", "raw": "source marker"}]})
+        try:
+            warnings = pr2_engine._apply_fcp_timeline_state_to_resolve(_Timeline(), path)
+        finally:
+            path.unlink()
+        self.assertTrue(any("Track or clip markers" in warning for warning in warnings), warnings)
+
     def test_prproj_in_and_out_keep_unset_as_none(self) -> None:
         root = ET.fromstring("""<PremiereData>
           <Sequence ObjectUID="sequence-1"><Node><Properties>

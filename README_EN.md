@@ -202,23 +202,23 @@ Three output formats:
 
 | State | Native DRP | API DRT / DRP |
 |---|---|---|
-| Clip-label colors | Maps 16 presets; custom RGB is unmapped | Same preset mapping, matched by track and clip position |
+| Clip-label colors | Writes independent item state; 16 presets pass save/reopen readback across two timelines; custom RGB is unmapped | Same preset mapping and 16-color readback; warns on missing or ambiguous matches |
 | Independent track colors, flags | Not implemented | Not implemented; label colors are distinct from flags |
 | Timeline markers | Writes position, name, note and duration; two timelines pass Resolve 21 load/reopen readback; uses Blue for now | Adds missing markers; warns on conflicts or rejected writes |
 | Sequence In/Out | Writes paired, one-sided and cleared states; converts Out to the last frame | Exported packages use the same writer; one-sided marks leave the live API timeline unchanged |
-| Track name, mute, lock | Writes names and lock/disable bits; audio mute/lock verified at runtime | Uses the same source state with official API methods and reports failures |
+| Track name, mute, lock | Audio/video disable and lock states pass reopen readback; audio mute also has render verification | Uses the same source state with official API methods and reports failures |
 | Work area, track/source-clip markers | Retains source work-area and extracted track-marker records; not applied | Not applied |
+| Basic audio | Rebuilds Fairlight strips for FCP mono tracks; standalone mono/stereo media caches and source-channel selection | XML import; rendered samples match for a stereo source and three overlapping tracks with different trims/positions |
 | Captions | Decodes FormattedTextData text runs, font lists and source ticks; retains raw payloads; full styling/target tracks are incomplete | Same source records; an API path for arbitrary caption cues is not established |
 | Lumetri layers | One serial node per source effect using the shared DRX Body; three static controls are approximate, other controls/animation unmapped | Applies the same DRX; matching or application failures prevent successful export reporting |
 
 Source marker color indices remain in the XML state comment; a supplied index produces an unmapped-color warning. Timeline markers pass native package import, save and reopen readback in headless Resolve Studio 21.0.2, covering frame zero, ranges and Chinese names. Six In/Out states per path pass import, save and reopen readback; the `[5, 40)` selection renders 35 frames with matching source-frame numbers and pixels. Other writes without an explicit runtime result still have offline verification only. See [format evidence and verification limits](NATIVE_FORMAT.md).
-| Basic audio | Rebuilds Fairlight strips for FCP mono tracks; standalone mono/stereo media caches and source-channel selection | XML import; rendered samples match for a stereo source and three overlapping tracks with different trims/positions |
+
+Controlled audio checks cover 48 kHz, 16-bit PCM, separate selection of a stereo source's left/right channels, and three overlapping tracks with different source trims and timeline positions. After saving/reopening and disabling one track, all 384,000 sample values match between paths for each four-second case. Original `.prproj` channel-layout extraction, stereo track grouping, multichannel/multistream audio, mixer automation and audio retiming remain incomplete.
 
 ---
 
 ## CLI Reference
-
-Controlled audio checks cover 48 kHz, 16-bit PCM, separate selection of a stereo source's left/right channels, and three overlapping tracks with different source trims and timeline positions. After saving/reopening and disabling one track, all 384,000 sample values match between paths for each four-second case. Original `.prproj` channel-layout extraction, stereo track grouping, multichannel/multistream audio, mixer automation and audio retiming remain incomplete.
 
 | Option | Type | Description |
 |--------|------|-------------|
@@ -289,7 +289,7 @@ All rules apply automatically. They're not optional — skip them and the import
 5. **Free DaVinci** — This project's DRT/DRP path is verified against DaVinci Resolve Studio; the free edition is not a supported target. XML is fine.
 6. **Lumetri spatial and temporal operations** — The DRX graph approximates exposure, contrast and saturation. Denoise, sharpen, blur, vignette, curves and keyframes remain unmapped. Multiple Lumetri effects retain their order; cross-application color equivalence is not established.
 7. **Color-space vocabularies differ** — Native DRP maps Rec.709, ACEScct and Rec.2100 HLG configurations through its templates; HDR projects and input color spaces still need live verification. API DRP requests each timeline's settings by source sequence UID and known input spaces by media path; actual acceptance and native/API color parity remain unverified.
-8. **Native projects still need import verification** — offline registration, media-reference, marker, grade and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Markers, In/Out and basic audio tracks have the runtime results above; source start timecode and video-track mute/lock still need live verification. Flags are not implemented. `--report` works without XML output and generated reports remain available after an export is rejected.
+8. **Native projects still need import verification** — offline registration, media-reference, marker, grade and time-map checks do not establish rendered output, audio playback, Fairlight routing or timeline-switch stability. Markers, In/Out, labels and basic audio tracks have the runtime results above; source start timecode and rendered output with disabled video tracks still need verification. Flags are not implemented. `--report` works without XML output and generated reports remain available after an export is rejected.
 
 See [conversion implementation notes](NATIVE_FORMAT.md) for field evidence, industry references and the remaining acceptance checks.
 

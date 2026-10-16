@@ -1364,10 +1364,10 @@ def _generate_report(
                 "",
                 f"- Animated clips: {animated}. Premiere curves are linearized in FCP7 XML; raw records remain in the timeline-state comment. Native animated Motion is unsupported.",
                 f"- Retimed clips: {retimed}. Native video supports forward constant speed and explicit monotone graphdict points as a linear-segment approximation. Audio retiming, holds, reverse, Bezier handles and transition offsets remain unsupported.",
-                "- API DRT/DRP packages receive the same supported retime maps after export. A missing or ambiguous destination fails export validation; the live API timeline is unchanged. Import/render parity is unverified.",
+                "- API DRT/DRP packages receive the same supported retime maps after export. A missing or ambiguous destination fails export validation; the live API timeline is unchanged. Controlled 25 fps constant-speed and piecewise video samples match source frames and native/API pixels; other inputs still require render verification.",
                 f"- Transitions: {len(seq.findall('.//transitionitem'))}; nested sequences: {len(seq.findall('.//clipitem/sequence'))}; generators: {len(seq.findall('.//generatoritem'))}. Native export rejects these structures.",
-                "- Native sequence markers and track name/mute/lock have offline coverage; Resolve UI application is unverified. Marker color mapping, native in/out and work area, independent track colors, and clip flags are unsupported or unverified.",
-                "- Lumetri: native and API use one shared DRX graph, with a serial node per source effect. Exposure, Contrast and Saturation are approximate; other controls, shader stages and animation remain source records. Resolve loading/rendering and visible source start-timecode application are unverified.",
+                "- Sequence markers, In/Out and 16 clip-label presets pass controlled Resolve 21 import/save/reopen checks in native and API output. Track mute/lock readback matches; audio mute also passes rendered PCM checks. Marker color mapping, work area, independent track colors and clip flags remain unsupported. Source-clip markers are not fully extracted; track markers are retained but not applied.",
+                "- Lumetri: native and API use one shared DRX graph, with a serial node per source effect. Exposure, Contrast and Saturation are approximate; other controls, shader stages and animation remain source records. Two-node loading and 50 native/API rendered frames match in a controlled sample; Premiere color-response equivalence and visible source start-timecode application remain unverified.",
                 "",
             ]
             for clip in seq.iter("clipitem"):
@@ -3630,6 +3630,12 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
                 opaque = {}
             break
     warnings: list[str] = []
+    opaque_markers = opaque.get("markers", [])
+    if not isinstance(opaque_markers, list):
+        opaque_markers = []
+    if any(isinstance(marker, dict) and marker.get("scope") in ("track", "clip")
+           for marker in opaque_markers):
+        warnings.append("Track or clip markers are preserved in source state but are not applied through Resolve API")
     try:
         marks = sequence_marks(sequence)
     except ValueError as exc:
@@ -3685,7 +3691,6 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
                     occupied_frames.add(frame)
                     if isinstance(data, dict):
                         existing_markers[frame] = data
-                opaque_markers = opaque.get("markers", [])
                 source_markers = [item for item in opaque_markers
                                   if isinstance(item, dict) and item.get("scope") == "sequence"] if isinstance(opaque_markers, list) else []
                 for marker_index, marker in enumerate(markers):
@@ -3749,7 +3754,7 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
             record = json.loads(value)
         except (json.JSONDecodeError, TypeError):
             continue
-        if record.get("preset"):
+        if record.get("preset") or record.get("raw_color"):
             label_records.append(record)
     item_indexes: dict[tuple[str, int], dict[tuple[str, int, int], list[Any]]] = {}
     for record in label_records:
@@ -3785,14 +3790,16 @@ def _apply_fcp_timeline_state_to_resolve(timeline: Any, xml_path: Path) -> list[
             resolve_enum = PP_LABEL_TO_RESOLVE_COLOR.get(preset_index)
             color = RESOLVE_CLIP_COLORS.get(resolve_enum) if resolve_enum is not None else None
             if color is None:
+                warnings.append(f"Unmapped source clip-label preset {preset!r} for {expected_name}; raw color remains in source state")
                 continue
-            for item in item_indexes[track_key].get((expected_name, expected_start, expected_duration), []):
-                if hasattr(item, "SetClipColor"):
-                    if not item.SetClipColor(color):
-                        warnings.append(f"Resolve rejected clip color for {expected_name} at frame {expected_start}")
-                    break
-        except (AttributeError, TypeError, ValueError, RuntimeError):
-            continue
+            matches = item_indexes[track_key].get((expected_name, expected_start, expected_duration), [])
+            if len(matches) != 1:
+                warnings.append(f"Could not uniquely match clip label for {expected_name} at frame {expected_start}: {len(matches)} items")
+                continue
+            if not matches[0].SetClipColor(color):
+                warnings.append(f"Resolve rejected clip color for {expected_name} at frame {expected_start}")
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            warnings.append(f"Could not apply source clip label: {exc}")
     return warnings
 
 

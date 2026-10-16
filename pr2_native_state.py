@@ -14,6 +14,7 @@ import uuid
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from pr2_constants import PP_LABEL_TO_RESOLVE_COLOR
 
 _MARKER_COLOR_BITS = {
     "Blue": 2,
@@ -155,6 +156,34 @@ def sequence_lockable_blob(sequence_id: str, markers: list[dict[str, Any]]) -> s
     )
 
 
+def clip_color_lockable_blob(clip_id: str, color: int) -> str:
+    """Write Resolve's authoritative item color, not the clip's cached enum."""
+    protobuf = _varint(5 << 3) + _varint(color * 2)
+    blob_data = struct.pack(">II", 10001, len(protobuf) + 1) + b"\x80" + protobuf
+    key = "BlobData".encode("utf-16-be")
+    fields_blob = (
+        struct.pack(">II", 1, 1)
+        + struct.pack(">I", len(key)) + key
+        + struct.pack(">IBI", 12, 0, len(blob_data)) + blob_data
+    ).hex()
+    return (
+        '<Element><Sm2TiItemLockableBlob DbId="' + str(uuid.uuid4()) + '">'
+        '<FieldsBlob>' + fields_blob + '</FieldsBlob>'
+        '<BlobOwner>' + clip_id + '</BlobOwner><DbSavedTime>0</DbSavedTime>'
+        '</Sm2TiItemLockableBlob></Element>'
+    )
+
+
+def item_blob_elements(project_xml: str, owners: set[str]) -> list[str]:
+    """Copy only item records whose clips survive a multi-timeline merge."""
+    return [
+        record for record in re.findall(
+            r"(?s)<Element>\s*<Sm2TiItemLockableBlob\b.*?</Sm2TiItemLockableBlob>\s*</Element>",
+            project_xml,
+        ) if ET.fromstring(record).findtext("Sm2TiItemLockableBlob/BlobOwner") in owners
+    ]
+
+
 def append_lockable_blob(project_xml: str, blob_element: str) -> str:
     """Append a lockable blob to the project's Resolve lockable map."""
     updated, count = re.subn(
@@ -202,6 +231,14 @@ def unwritten_state_warnings(source: ET.Element, state: dict[str, Any]) -> list[
     ):
         warnings.append("sequence work area is not applied in native DRP")
     for key, raw in state.get("unknown", []):
+        if str(key).startswith("clip-label:"):
+            try:
+                record = json.loads(raw)
+                preset = str(record.get("preset", "")).rsplit(".", 1)[-1]
+                if not preset.isdigit() or int(preset) not in PP_LABEL_TO_RESOLVE_COLOR:
+                    warnings.append(f"Unmapped source clip-label preset {preset!r}; raw color remains in source state")
+            except (TypeError, ValueError):
+                warnings.append("Could not read source clip-label state")
         if not str(key).startswith("track-state:"):
             continue
         try:

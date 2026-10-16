@@ -22,15 +22,15 @@ v1.6.0 的目标是把源工程的参数和对象关系写成 Resolve 21 数据�
 
 ## 颜色、标记与编辑状态
 
-片段标签颜色已有 16 档 Premiere 预设到 Resolve 的映射；独立轨道颜色与旗标尚未实现，不能把片段标签当作旗标。自定义标签 RGB 也未建立映射。
+片段标签颜色使用 `project.xml` 中以片段 DbId 为 BlobOwner 的 `Sm2TiItemLockableBlob`。实录隔离 `SetClipColor` 后，`BlobData` protobuf 的 field 5 是颜色枚举的 sint 值；写入片段 `FieldsBlob` 的缓存 field 6 不会生效，已移除该错误路径。16 档 Premiere 预设在 Resolve Studio 21.0.2.4 的双时间线 native 包及 API 包中导入、保存、重开回读一致；合并时间线时同步保留对应片段状态。API 标签匹配缺失或重名、自定义/未知预设都会告警。独立轨道颜色与旗标尚未实现，不能把片段标签当作旗标；自定义标签 RGB 也未建立映射。
 
 时间线 marker 写入位置、名称、注释和时长。源 marker 颜色索引仍保留在 XML 注释中，目前输出 Blue；有颜色索引时会明确告警。Adobe 的 [Marker API](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker/) 将颜色、正文、时长分开处理，不能套用片段标签的颜色表。Resolve Studio 21.0.2.4 实录确认每个 map entry 含嵌套的 sint 帧键和独立正文；旧编码把帧键直接放入正文容器，导致实机读到半数位置及空白标签，已修正。编码器使用标准库生成 `0x80` 原始封装；实录也有 `0x81` 压缩封装，验收先解压后比较完整 protobuf 字节，再导入原生包并保存重开核对 API 返回的全部 marker 字段。
 
-轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态。音轨还必须同步 Fairlight 的两条 `0x2` 静音记录与 `0xDB` 锁定记录；仅改 Flags 会出现 API 回读已禁用但渲染仍发声的问题。属性由独立启用/锁定切换实录定位，保存重开后的三轨混音与禁用一轨渲染采样一致。视频轨的静音/锁定仍待实机核对，轨道 solo 尚未映射。
+轨道名称写入 `Sm2TiTrack.UserDefinedName`，锁定使用 `Flags` 的 bit 0，禁用/静音使用 bit 1。位值由 Resolve 21 的同一 `DC` 时间线 DRP 与 XML 配对确认：0=启用且未锁定、1=锁定、2=禁用、3=两者都有。native 和 API 共用 FCP7 track 的名称、enabled、locked 状态。音轨还必须同步 Fairlight 的两条 `0x2` 静音记录与 `0xDB` 锁定记录；仅改 Flags 会出现 API 回读已禁用但渲染仍发声的问题。属性由独立启用/锁定切换实录定位，保存重开后的三轨混音与禁用一轨渲染采样一致。视频轨的禁用、锁定及名称也已完成两路保存重开后的 SDK 回读；禁用后渲染效果仍未验收，轨道 solo 尚未映射。
 
 序列 In/Out 写入池内 `Sm2MpTimelineClip` 的 `MarkInAudio/Video`、`MarkOutAudio/Video`；空字段表示未设置。按 Apple 的 [FCP7 时间规则](https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/FinalCutPro_XML/Topics/Topics.html)，Out 减一后写为 Resolve 的最后一帧。native 和 API 导出包共用同一写入；API 在导出后与变速修正一起校验、原子替换。成对、单帧、仅 In、仅 Out、清空及未声明状态各六类在 Resolve Studio 21.0.2.4 中导入、保存、重开回读一致；`[5, 40)` 两路各渲染 35 帧，源帧号正确且 RGB 像素一致。实测 `SetMarkInOut(5, -1)` 返回失败仍会部分修改状态，故单边状态仅写入导出包，并明确报告 API 内存中的时间线未同步。
 
-工作区、轨道 marker 仅保留源记录；源片段 marker 尚未完整提取。旗标、工作区及这两类 marker 均没有目标写入实现。API 会报告 marker 冲突及拒绝写入，片段标签匹配计入时间线起始帧偏移；片段标签等未注明实测的状态仍只有模拟测试。
+工作区、轨道 marker 仅保留源记录；源片段 marker 尚未完整提取。旗标、工作区及这两类 marker 均没有目标写入实现。API 会报告未应用的轨道/片段 marker、序列 marker 冲突及拒绝写入。片段标签匹配计入时间线起始帧偏移。
 
 基础音频已从模板复制改为生成：解析 `FLStudioModelBA` 的动态 `LastClient` 段，按目标声道展开 494 条属性记录，写入名称、声像、轨道/总线关联，保留其他段。实录六种单声道、立体声及混合布局确认属性按总声道数展开；普通 FCP 音频轨按单声道源通道写入。单改 `Sm2TiTrack.SubType` 不会修复音量，必须同时生成 Fairlight 模型。
 
