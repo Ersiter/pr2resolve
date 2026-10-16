@@ -6,6 +6,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -30,18 +31,20 @@ jobs:
       - name: Validate semver tag and source versions
         id: version
         shell: bash
+        env:
+          BUILD_ONLY: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set -euo pipefail
           python - <<'PY'
           import os
           import re
-          tag = os.environ["GITHUB_REF_NAME"]
+          from pr2_constants import VERSION as source_version
+
+          tag = "v" + source_version if os.environ["BUILD_ONLY"] == "true" else os.environ["GITHUB_REF_NAME"]
           if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", tag):
               raise SystemExit(f"FATAL: release tag must match vMAJOR.MINOR.PATCH, got: {tag}")
 
           version = tag.removeprefix("v")
-
-          from pr2_constants import VERSION as source_version
 
           versions = {
               "pr2_constants.py": source_version,
@@ -180,6 +183,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs:
       - validate
@@ -267,6 +271,10 @@ jobs:
           set -euo pipefail
           mapfile -t FILES < <(find release-artifacts -type f \( -name 'pr2resolve-v*.zip' -o -name 'pr2resolve-v*.tar.gz' \) | sort)
           if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
+            if [ "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.immutable')" = "true" ]; then
+              echo "FATAL: ${TAG} is immutable; use a manual build for Actions artifacts."
+              exit 1
+            fi
             gh release upload "$TAG" "${FILES[@]}" SHA256SUMS.txt --clobber
             gh release edit "$TAG" \
               --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve" \
@@ -286,6 +294,7 @@ jobs:
 
   sync-gitee:
     name: Sync published release to Gitee
+    if: github.event_name == 'push'
     needs: [validate, release]
     permissions:
       contents: read

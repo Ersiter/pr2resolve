@@ -99,6 +99,8 @@ python tui.py
 - **验证边界**：本版通过离线结构和原始工程回归，尚未完成 Resolve 导入及视听回归。native 缩放补偿基于模板采用 fit 的假设；不同输入缩放设置下的画面尚未验证。Motion 动画、反向/定格、Bezier 变速、音频变速、非默认锚点、转场、嵌套序列和生成器会明确拒绝；曲线的 native/API 渲染一致性未验证。
 - **构建维护者**：官方 Release 二进制使用 Python 3.14、Nuitka、UPX 和平台编译工具链构建。Python 构建依赖见 `requirements-build.txt`。
 
+维护者可在 GitHub Actions → Release → Run workflow 选择分支，生成三平台构建附件。手动构建不发布 Release 或移动 tag；已发布的不可变 Release 无法替换资产及对应 tag。
+
 验证源码环境：
 
 ```bash

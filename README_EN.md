@@ -99,6 +99,8 @@ python tui.py
 - **Validation boundary**: this version passes offline structure and source-project regressions; Resolve import and audiovisual checks remain outstanding. Native zoom compensation assumes the template uses fit sizing; other input-scaling modes have not been verified. Animated Motion, reverse/holds, Bezier retiming, audio retiming, non-default anchors, transitions, nested sequences and generators fail explicitly. Native/API curve rendering parity is unverified.
 - **Build maintainers**: official release binaries are built with Python 3.14, Nuitka, UPX, and a platform compiler toolchain. Python build packages are listed in `requirements-build.txt`.
 
+Maintainers can select a branch under GitHub Actions → Release → Run workflow to produce build artifacts for all three platforms. Manual builds do not publish a release or move tags; published immutable releases cannot have their assets or associated tags replaced.
+
 Verify source-mode setup:
 
 ```bash
