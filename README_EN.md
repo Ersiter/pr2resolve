@@ -198,7 +198,7 @@ Three output formats:
 
 - **How are timeline state and grades migrated?**
 
-    The `.prproj` reader retains Lumetri effect order, shaders and keyframes by timeline clip identity. Native DRP and API share one DRX graph, with a serial node per Lumetri effect. Static exposure, contrast and saturation are approximate; other controls and animation remain source records. Node data has offline cross-checks; actual color and Resolve loading remain unverified. No cube LUT is embedded.
+    The `.prproj` reader retains Lumetri effect order, shaders and keyframes by timeline clip identity. Native DRP and API share one DRX graph, with a serial node per Lumetri effect. Static exposure, contrast and saturation are approximate; other controls and animation remain source records. Two-node loading/order and a 50-frame native/API render comparison pass in Resolve 21; matching Premiere's color response remains unverified. No cube LUT is embedded.
 
 | State | Native DRP | API DRT / DRP |
 |---|---|---|

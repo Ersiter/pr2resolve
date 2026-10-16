@@ -198,7 +198,7 @@ File → Import Timeline → Import AAF, EDL, XML... → 选择 .xml 文件
 
 - **时间线状态与调色如何迁移？**
 
-    `.prproj` 读取器按时间线片段身份提取状态、Lumetri 效果顺序、shader 与关键帧。native DRP 和 API 使用相同的 DRX 调色图，每个 Lumetri 对应一个串行节点；曝光、对比度和饱和度作静态近似，其他效果与动画保留原记录。节点数据经过离线交叉检查，实际颜色及 Resolve 导入仍未验收；不嵌入 cube LUT。
+    `.prproj` 读取器按时间线片段身份提取状态、Lumetri 效果顺序、shader 与关键帧。native DRP 和 API 使用相同的 DRX 调色图，每个 Lumetri 对应一个串行节点；曝光、对比度和饱和度作静态近似，其他效果与动画保留原记录。Resolve 21 双节点载入、顺序及 50 帧两路渲染一致性已实测；与 Premiere 的色彩匹配尚未验收，不嵌入 cube LUT。
 
 | 状态 | native DRP | API DRT / DRP |
 |---|---|---|
