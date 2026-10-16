@@ -262,18 +262,25 @@ jobs:
             fi
           } > RELEASE_NOTES.md
 
-      - name: Publish draft release with assets
+      - name: Create or update release assets
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t FILES < <(find release-artifacts -type f \( -name 'pr2resolve-v*.zip' -o -name 'pr2resolve-v*.tar.gz' \) | sort)
-          gh release create "$TAG" \
-            "${FILES[@]}" \
-            SHA256SUMS.txt \
-            --draft \
-            --verify-tag \
-            --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve" \
-            --notes-file RELEASE_NOTES.md
+          if gh release view "$TAG" --json tagName > /dev/null 2>&1; then
+            gh release upload "$TAG" "${FILES[@]}" SHA256SUMS.txt --clobber
+            gh release edit "$TAG" \
+              --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve" \
+              --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" \
+              "${FILES[@]}" \
+              SHA256SUMS.txt \
+              --draft \
+              --verify-tag \
+              --title "pr2resolve ${TAG} - Premiere Pro to DaVinci Resolve" \
+              --notes-file RELEASE_NOTES.md
+          fi
 
       - name: Publish release
         run: gh release edit "$TAG" --draft=false
